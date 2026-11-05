@@ -12,8 +12,9 @@ let admin, app;
 before(async () => {
   if (!DB_URL) throw new Error("DB_TEST_URL no definida");
   admin = new pg.Pool({ connectionString: DB_URL });
-  await admin.query("DROP TABLE IF EXISTS sites; DROP ROLE IF EXISTS app_platform;");
-  await admin.query("CREATE ROLE app_platform LOGIN PASSWORD 'test'");
+  await admin.query("DROP TABLE IF EXISTS sites");
+  await admin.query("DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='app_platform') THEN CREATE ROLE app_platform LOGIN; END IF; END $$");
+  await admin.query("ALTER ROLE app_platform LOGIN PASSWORD 'test'");
   await admin.query(readFileSync(new URL("../migrations/0001_sites_rls.sql", import.meta.url), "utf8"));
   await admin.query("GRANT SELECT, INSERT, UPDATE, DELETE ON sites TO app_platform");
   await admin.query(`INSERT INTO sites (id, owner_id, name) VALUES

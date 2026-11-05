@@ -19,8 +19,8 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const port = Number(process.env.PORT ?? 3000);
   const start = async () => {
     if (process.env.MIGRATE_ON_START === "1") {
-      const url = process.env.DATABASE_URL;
-      if (!url) throw new Error("MIGRATE_ON_START=1 requires DATABASE_URL");
+      const url = process.env.MIGRATION_DATABASE_URL ?? process.env.DATABASE_URL;
+      if (!url) throw new Error("MIGRATE_ON_START=1 requires MIGRATION_DATABASE_URL or DATABASE_URL");
       const pool = new pg.Pool({ connectionString: url });
       const applied = await migrate(pool);
       await pool.end();

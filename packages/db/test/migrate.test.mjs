@@ -9,7 +9,7 @@ after(() => pool.end());
 test("applies migrations once and is idempotent", async () => {
   await pool.query("DROP TABLE IF EXISTS sites, schema_migrations");
   const first = await migrate(pool);
-  assert.deepEqual(first, ["0001_sites_rls.sql"]);
+  assert.deepEqual(first, ["0001_sites_rls.sql", "0002_app_role.sql"]);
   const second = await migrate(pool);
   assert.deepEqual(second, []);
   const { rows } = await pool.query("SELECT relrowsecurity, relforcerowsecurity FROM pg_class WHERE relname = 'sites'");
