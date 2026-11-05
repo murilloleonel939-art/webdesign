@@ -1192,18 +1192,18 @@ platform/
 
 pnpm y Turborepo gestionan paquetes, builds, tipos, lint y pruebas. Cada aplicación tiene Dockerfile propio y no comparte secretos por defecto.
 
-**Mapa servicio → contenedor de Coolify.** Todos salen del mismo repositorio y la rama `main`; lo que cambia es el *base directory* y el Dockerfile. Los *watch paths* hacen que cada contenedor se reconstruya solo cuando cambian sus archivos o los paquetes de `packages/` que usa.
+**Mapa servicio → contenedor de Coolify.** Todos salen del mismo repositorio y la rama `main`; el *base directory* es siempre la raíz (`/`), porque el build de pnpm necesita el monorepo completo; lo que cambia es la ruta del Dockerfile. Los *watch paths* hacen que cada contenedor se reconstruya solo cuando cambian sus archivos o los paquetes de `packages/` que usa.
 
 | Servicio (3.1) | Tipo en Coolify | Base directory | Dockerfile | Watch paths (además de `packages/*` que use) |
 | --- | --- | --- | --- | --- |
-| `platform` | Application | `apps/platform` | `apps/platform/Dockerfile` | `apps/platform/**` |
-| `internal-api` | Application | `apps/internal-api` | `apps/internal-api/Dockerfile` | `apps/internal-api/**` |
-| `workers` | Application | `apps/workers` | `apps/workers/Dockerfile` | `apps/workers/**`, `agents/**` |
-| `llm-gateway` | Application | `apps/llm-gateway` | `apps/llm-gateway/Dockerfile` | `apps/llm-gateway/**` |
-| `caddy` | Application | `infra/caddy` | `infra/caddy/Dockerfile` | `infra/caddy/**` |
-| `egress-proxy` | Application | `infra/egress-proxy` | `infra/egress-proxy/Dockerfile` | `infra/egress-proxy/**` |
-| `sandbox-web` | Application | `apps/sandbox-web` | `apps/sandbox-web/Dockerfile` | `apps/sandbox-web/**` |
-| `sandbox-code` | Application | `apps/sandbox-code` | `apps/sandbox-code/Dockerfile` | `apps/sandbox-code/**` |
+| `platform` | Application | `/` (raíz del monorepo) | `apps/platform/Dockerfile` | `apps/platform/**` |
+| `internal-api` | Application | `/` (raíz del monorepo) | `apps/internal-api/Dockerfile` | `apps/internal-api/**` |
+| `workers` | Application | `/` (raíz del monorepo) | `apps/workers/Dockerfile` | `apps/workers/**`, `agents/**` |
+| `llm-gateway` | Application | `/` (raíz del monorepo) | `apps/llm-gateway/Dockerfile` | `apps/llm-gateway/**` |
+| `caddy` | Application | `/` (raíz del monorepo) | `infra/caddy/Dockerfile` | `infra/caddy/**` |
+| `egress-proxy` | Application | `/` (raíz del monorepo) | `infra/egress-proxy/Dockerfile` | `infra/egress-proxy/**` |
+| `sandbox-web` | Application | `/` (raíz del monorepo) | `apps/sandbox-web/Dockerfile` | `apps/sandbox-web/**` |
+| `sandbox-code` | Application | `/` (raíz del monorepo) | `apps/sandbox-code/Dockerfile` | `apps/sandbox-code/**` |
 | `postgres` | Database (imagen oficial con pgvector) | — | — | — |
 | `redis` | Database (imagen oficial) | — | — | — |
 

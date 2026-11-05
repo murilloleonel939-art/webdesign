@@ -1,4 +1,4 @@
-# Imagen de `platform`. Base directory en Coolify: raíz del monorepo.
+# Imagen de `platform`. Coolify: base directory "/", Dockerfile "/apps/platform/Dockerfile", puerto 3000, healthcheck /healthz.
 FROM node:22-alpine AS build
 WORKDIR /repo
 RUN corepack enable
