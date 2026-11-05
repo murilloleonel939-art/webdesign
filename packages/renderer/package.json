@@ -11,6 +11,13 @@
     "test": "node --test test/render.test.mjs"
   },
   "dependencies": {
-    "@webdesign/site-schema": "workspace:*"
+    "@webdesign/site-schema": "workspace:*",
+    "@webdesign/ui-components": "workspace:*",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0"
   }
 }

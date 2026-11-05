@@ -14,19 +14,20 @@ Construir la plataforma multi-sitio de agentes IA según `especificacion-constru
 | Paquete | Contenido | Pruebas |
 | --- | --- | --- |
 | `site-schema` | Documento canónico spec 6.1 con Zod: meta, design, theme, pages, sections, assets | 6 |
-| `renderer` | HTML por página, escape total, CSP, `rel="noopener noreferrer"`, resolver de assets | 5 |
+| `renderer` | HTML por página sobre `ui-components`, CSP, `rel="noopener noreferrer"`, testimonios sin confirmar nunca se publican | 6 |
 | `linter` | Linter estático 6.4: seguridad, datos, contraste WCAG, peso, fuentes alojadas | 10 |
 | `releases` | `/data/sites/<id>/releases/v<N>`, `public` symlink, cambio atómico, rollback | 5 |
 | `storage` | Rutas seguras, nombre físico de assets | (en `security`) |
 | `publish` | Flujo 4.3: validar, lint, renderizar, escribir release, `site_versions` y `audit_log`, activar sitio | 6 |
 | `db` | Migración `0003`: `users`, `site_members`, `site_drafts`, `site_versions`, `assets`, `audit_log`, RLS forzada, índice de un solo sitio activo | 11 |
+| `ui-components` | Componentes React puros de las 10 secciones; el renderer los usa con `renderToStaticMarkup` | 10 |
 | `puck-adapter` | Schema <-> Puck con ida y vuelta identica por pagina; guarda de `ownerProvided` para agentes | 4 |
 | `preview` | Token firmado de 15 min, de un solo uso, cookie propia, CSP y `noindex` | 9 |
 | `apps/platform` | Vista previa en `*.preview.localhost`, con prueba de aislamiento de origen en CI | 8 |
 | `auth`, `security` | Base de Fase 0 | 7 |
 
 ## Fase 1 — pendiente
-1. Componentes React de `ui-components` y editor Puck en el navegador.
+1. Editor Puck en el navegador, sobre `ui-components` y `puck-adapter`.
 2. Almacenamiento de assets con licencia registrada.
 3. Validación HTML y accesibilidad crítica en CI.
 4. Prueba de carga básica.

@@ -51,3 +51,14 @@ test("asset resolver supplies src", () => {
 test("unknown page throws", () => {
   assert.throws(() => renderPage(doc(), "nope"), /page not found/);
 });
+
+test("an unverified testimonial never reaches the published HTML", () => {
+  const d = doc();
+  d.pages[0].sections = [{ id: "s_t", type: "testimonial", props: { quote: "cita inventada", author: "X" } }];
+  const html = renderPage(d, "p_home");
+  assert.ok(!html.includes("cita inventada"));
+  assert.ok(!html.includes("<blockquote"));
+  const ok = structuredClone(d);
+  ok.pages[0].sections[0].props.ownerProvided = true;
+  assert.match(renderPage(ok, "p_home"), /cita inventada/);
+});
