@@ -18,13 +18,15 @@ Construir la plataforma multi-sitio de agentes IA según `especificacion-constru
 | `linter` | Linter estático 6.4: seguridad, datos, contraste WCAG, peso, fuentes alojadas | 10 |
 | `releases` | `/data/sites/<id>/releases/v<N>`, `public` symlink, cambio atómico, rollback | 5 |
 | `storage` | Rutas seguras, nombre físico de assets | (en `security`) |
-| `auth`, `security`, `db` | Base de Fase 0 | 7 |
+| `publish` | Flujo 4.3: validar, lint, renderizar, escribir release, `site_versions` y `audit_log`, activar sitio | 6 |
+| `db` | Migración `0003`: `users`, `site_members`, `site_drafts`, `site_versions`, `assets`, `audit_log`, RLS forzada, índice de un solo sitio activo | 11 |
+| `auth`, `security` | Base de Fase 0 | 7 |
 
 ## Fase 1 — pendiente
 1. Editor Puck sobre `site-schema` (adaptador, guardado por id).
 2. Preview aislado por origen.
-3. Publicación que encadena renderer → linter → releases, con `audit_log`.
-4. Tablas de páginas, releases y assets con RLS y sus migraciones.
+3. Almacenamiento de assets con licencia registrada.
+4. Prueba de carga básica y accesibilidad crítica.
 
 ## Decisiones
 - Una sola web publicada por cliente (`sites_one_active_per_owner`); borradores sin límite.
