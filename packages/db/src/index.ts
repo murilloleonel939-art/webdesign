@@ -19,3 +19,4 @@ export async function withUser<T>(pool: pg.Pool, userId: string, fn: (tx: Tx) =>
     client.release();
   }
 }
+export { migrate } from "./migrate.js";

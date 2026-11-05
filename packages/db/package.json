@@ -8,7 +8,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node --test test/rls.test.mjs"
+    "test": "node --test --test-concurrency=1 test/rls.test.mjs test/migrate.test.mjs"
   },
   "dependencies": {
     "pg": "^8.23.1"

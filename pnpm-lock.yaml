@@ -23,6 +23,16 @@ importers:
       '@webdesign/auth':
         specifier: workspace:*
         version: link:../../packages/auth
+      '@webdesign/db':
+        specifier: workspace:*
+        version: link:../../packages/db
+      pg:
+        specifier: ^8.13.0
+        version: 8.23.1
+    devDependencies:
+      '@types/pg':
+        specifier: ^8
+        version: 8.23.1
 
   packages/auth: {}
 

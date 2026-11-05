@@ -10,6 +10,11 @@
     "test": "node --test test/health.test.mjs"
   },
   "dependencies": {
-    "@webdesign/auth": "workspace:*"
+    "@webdesign/auth": "workspace:*",
+    "@webdesign/db": "workspace:*",
+    "pg": "^8.13.0"
+  },
+  "devDependencies": {
+    "@types/pg": "^8"
   }
 }
