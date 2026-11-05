@@ -714,6 +714,7 @@ Solo entran fuentes con **diseño abierto y licencia libre explícita**, verific
 | --- | --- | --- | --- |
 | Design systems públicos | Material Design 3, IBM Carbon, Shopify Polaris, GitHub Primer, Atlassian, GOV.UK Design System, USWDS | Apache 2.0, MIT, OGL v3, dominio público | Escalas tipográficas, tokens de color, espaciado, radios, elevación, patrones de sección |
 | Plantillas open source | HTML5 UP, Start Bootstrap, AstroWind, plantillas Astro/Next con licencia declarada | MIT, CCA 3.0, Apache 2.0 | Composición de secciones, orden de bloques, densidad y ritmo |
+| Plantillas HTML de archivo único | Linea de 8B (`github.com/8bsite/app-landing-page-template`) y otras con `LICENSE` MIT en el propio repositorio | MIT | Tokens de color, orden de secciones, técnica de animación CSS por scroll; nunca el archivo literal |
 | Colecciones de color y tipografía | Open Color, Radix Colors, Tailwind Colors, Google Fonts (OFL), Lucide, Heroicons | MIT, OFL, ISC | Paletas en OKLCH, pairings tipográficos, peso y escala |
 | Recursos de ilustración libres | unDraw, ilustraciones CC0 | Licencia declarada por el autor | Estilo de ilustración, nunca la ilustración |
 
@@ -725,7 +726,7 @@ Solo entran fuentes con **diseño abierto y licencia libre explícita**, verific
 
 **Descubrimiento de fuentes:** los orígenes no los da de alta una persona. El job `catalog-discover` (7.7.8) busca páginas nuevas en la lista semilla (nivel 1) y, si se habilita, orígenes nuevos (nivel 2). **La licencia se verifica por código** contra `license_allowlist`. Lo que no se puede verificar, se descarta.
 
-**Lista de arranque (`design_origin_seeds`):** para no empezar vacío, se siembra **una sola vez** una lista de dominios conocidos (los de la tabla anterior: `m3.material.io`, `carbondesignsystem.com`, `polaris.shopify.com`, `primer.style`, `design-system.service.gov.uk`, `designsystem.digital.gov`, `html5up.net`, `startbootstrap.com`, `astro.build/themes`, `tailwindcss.com/plus`, `fonts.google.com`, `opencolor`, `radix-ui.com/colors`, `lucide.dev`, `heroicons.com`, `undraw.co`). Desde ahí el sistema se expande solo. La lista se versiona en código, no en base de datos: solo cambia con un despliegue.
+**Lista de arranque (`design_origin_seeds`):** para no empezar vacío, se siembra **una sola vez** una lista de dominios conocidos (los de la tabla anterior: `m3.material.io`, `carbondesignsystem.com`, `polaris.shopify.com`, `primer.style`, `design-system.service.gov.uk`, `designsystem.digital.gov`, `html5up.net`, `startbootstrap.com`, `github.com/8bsite/app-landing-page-template` (MIT, archivo único), `astro.build/themes`, `tailwindcss.com/plus`, `fonts.google.com`, `opencolor`, `radix-ui.com/colors`, `lucide.dev`, `heroicons.com`, `undraw.co`). Desde ahí el sistema se expande solo. La lista se versiona en código, no en base de datos: solo cambia con un despliegue.
 
 **Licencias permitidas** (`license_allowlist`, en configuración versionada): MIT, Apache-2.0, BSD-2/3-Clause, ISC, CC0-1.0, OFL-1.1, Unlicense, OGL-3.0 y dominio público. **CC-BY y CC-BY-SA quedan fuera** hasta que el abogado determine cómo se cumple la atribución dentro de un sitio generado. Cualquier otra se descarta.
 
