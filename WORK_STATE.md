@@ -21,13 +21,14 @@ Construir la plataforma multi-sitio de agentes IA según `especificacion-constru
 | `publish` | Flujo 4.3: validar, lint, renderizar, escribir release, `site_versions` y `audit_log`, activar sitio | 6 |
 | `db` | Migración `0003`: `users`, `site_members`, `site_drafts`, `site_versions`, `assets`, `audit_log`, RLS forzada, índice de un solo sitio activo | 11 |
 | `ui-components` | Componentes React puros de las 10 secciones; el renderer los usa con `renderToStaticMarkup` | 10 |
+| `editor` | Configuración Puck de las 10 secciones; guardado del borrador con revisión optimista, rechazo de conflictos y `audit_log` | 9 |
 | `puck-adapter` | Schema <-> Puck con ida y vuelta identica por pagina; guarda de `ownerProvided` para agentes | 4 |
 | `preview` | Token firmado de 15 min, de un solo uso, cookie propia, CSP y `noindex` | 9 |
 | `apps/platform` | Vista previa en `*.preview.localhost`, con prueba de aislamiento de origen en CI | 8 |
 | `auth`, `security` | Base de Fase 0 | 7 |
 
 ## Fase 1 — pendiente
-1. Editor Puck en el navegador, sobre `ui-components` y `puck-adapter`.
+1. Panel del editor en el navegador (montaje de Puck y `iframe` de vista previa).
 2. Almacenamiento de assets con licencia registrada.
 3. Validación HTML y accesibilidad crítica en CI.
 4. Prueba de carga básica.

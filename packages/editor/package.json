@@ -1,0 +1,29 @@
+{
+  "name": "@webdesign/editor",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test test/editor.test.mjs test/save.test.mjs"
+  },
+  "dependencies": {
+    "@measured/puck": "0.20.2",
+    "@webdesign/linter": "workspace:*",
+    "@webdesign/puck-adapter": "workspace:*",
+    "@webdesign/site-schema": "workspace:*",
+    "@webdesign/ui-components": "workspace:*",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "@webdesign/db": "workspace:*",
+    "pg": "^8.13.1"
+  },
+  "devDependencies": {
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@types/pg": "^8.11.10"
+  }
+}
