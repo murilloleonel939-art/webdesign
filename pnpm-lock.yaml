@@ -20,6 +20,8 @@ importers:
 
   packages/i18n: {}
 
+  packages/security: {}
+
   packages/site-schema: {}
 
 packages:
