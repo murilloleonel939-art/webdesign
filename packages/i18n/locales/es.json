@@ -1,0 +1,6 @@
+{
+  "app.title": "Panel de administración",
+  "site.publish": "Publicar",
+  "site.rollback": "Revertir",
+  "errors.invalid_document": "El documento del sitio no es válido"
+}

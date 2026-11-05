@@ -1,0 +1,6 @@
+{
+  "app.title": "Administration panel",
+  "site.publish": "Publish",
+  "site.rollback": "Revert",
+  "errors.invalid_document": "The site document is not valid"
+}
