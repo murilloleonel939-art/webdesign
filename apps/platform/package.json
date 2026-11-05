@@ -1,0 +1,15 @@
+{
+  "name": "@webdesign/platform",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/server.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test test/health.test.mjs"
+  },
+  "dependencies": {
+    "@webdesign/auth": "workspace:*"
+  }
+}

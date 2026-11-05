@@ -1,0 +1,23 @@
+# Stack local de Fase 0. Uso: docker compose up -d
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_PASSWORD: local-only
+      POSTGRES_DB: webdesign
+    ports: ["127.0.0.1:5432:5432"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      retries: 10
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction", "--requirepass", "local-only"]
+    ports: ["127.0.0.1:6379:6379"]
+  platform:
+    build:
+      context: .
+      dockerfile: apps/platform/Dockerfile
+    depends_on:
+      postgres: { condition: service_healthy }
+    ports: ["127.0.0.1:3000:3000"]
