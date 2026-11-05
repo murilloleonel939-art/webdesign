@@ -24,6 +24,12 @@ importers:
 
   packages/site-schema: {}
 
+  packages/storage:
+    dependencies:
+      '@webdesign/security':
+        specifier: workspace:*
+        version: link:../security
+
 packages:
 
   '@turbo/darwin-64@2.11.10':
