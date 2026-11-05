@@ -19,7 +19,8 @@
         "build"
       ],
       "passThroughEnv": [
-        "DB_TEST_URL"
+        "DB_TEST_URL",
+        "DB_TEST_CONFIRM"
       ]
     }
   }

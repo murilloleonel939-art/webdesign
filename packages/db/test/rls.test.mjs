@@ -4,6 +4,9 @@ import { readFileSync } from "node:fs";
 import pg from "pg";
 import { withUser } from "../dist/index.js";
 
+if (process.env.DB_TEST_CONFIRM !== "destroy-test-db") {
+  throw new Error("Las pruebas borran tablas: define DB_TEST_CONFIRM=destroy-test-db solo contra una base de pruebas");
+}
 const DB_URL = process.env.DB_TEST_URL;
 const A = "11111111-1111-4111-8111-111111111111";
 const B = "22222222-2222-4222-8222-222222222222";
