@@ -7,12 +7,13 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node --test test/health.test.mjs"
+    "test": "node --test test/preview-isolation.test.mjs"
   },
   "dependencies": {
     "@webdesign/auth": "workspace:*",
     "@webdesign/db": "workspace:*",
-    "pg": "^8.13.0"
+    "pg": "^8.13.0",
+    "@webdesign/preview": "workspace:*"
   },
   "devDependencies": {
     "@types/pg": "^8"

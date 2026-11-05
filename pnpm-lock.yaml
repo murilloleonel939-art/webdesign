@@ -26,6 +26,9 @@ importers:
       '@webdesign/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@webdesign/preview':
+        specifier: workspace:*
+        version: link:../../packages/preview
       pg:
         specifier: ^8.13.0
         version: 8.23.1
@@ -53,6 +56,12 @@ importers:
       '@webdesign/site-schema':
         specifier: workspace:*
         version: link:../site-schema
+
+  packages/preview:
+    dependencies:
+      '@webdesign/security':
+        specifier: workspace:*
+        version: link:../security
 
   packages/publish:
     dependencies:
