@@ -10,11 +10,15 @@ import {
   type PreviewConfig,
   type UsedLinkStore,
 } from "@webdesign/preview";
+import { parseCookies, resolveSession, login, createUser, createSite, listSites, saveDraft, loadDraft, publish, rollbackTo, SESSION_COOKIE } from "./api.js";
+import { renderPage } from "@webdesign/renderer";
 
 // Punto de entrada de `platform`: healthcheck, panel y vista previa aislada.
 // La vista previa vive en su propio subdominio, con su propia cookie (spec 5.5).
 
 export interface AppOptions {
+  pool?: import("pg").Pool | undefined;
+  sitesRoot?: string | undefined;
   preview?: PreviewConfig | undefined;
   // Renderiza el HTML de una pagina para la vista previa. Se inyecta para poder probar.
   renderPreview?: ((siteId: string, pageId: string) => Promise<string | undefined>) | undefined;
@@ -82,8 +86,135 @@ export function createApp(opts: AppOptions = {}) {
       return;
     }
 
+    // --- Ciclo del editor (Fase 1): crear, editar, publicar, revertir ---
+    if (opts.pool && url.pathname.startsWith("/api/")) {
+      const handled = await handleApi(opts.pool, opts.sitesRoot ?? "/data/sites", req, res, url);
+      if (handled) return;
+    }
+
     json(res, 404, { error: "not_found" });
   });
+}
+
+async function readJson(req: IncomingMessage): Promise<unknown> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of req) {
+    size += (chunk as Buffer).length;
+    // Limite duro: un documento de sitio no se acerca a esto.
+    if (size > 2_000_000) throw new Error("payload too large");
+    chunks.push(chunk as Buffer);
+  }
+  if (chunks.length === 0) return undefined;
+  return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+}
+
+async function handleApi(pool: import("pg").Pool, sitesRoot: string, req: IncomingMessage, res: ServerResponse, url: URL): Promise<boolean> {
+  const session = await resolveSession(pool, parseCookies(req.headers.cookie)[SESSION_COOKIE]);
+
+  if (req.method === "POST" && url.pathname === "/api/login") {
+    const body = (await readJson(req)) as { email?: string; password?: string };
+    const r = await login(pool, body.email ?? "", body.password ?? "");
+    if (!r) {
+      json(res, 401, { error: "invalid_credentials" });
+      return true;
+    }
+    res.setHeader("set-cookie", `${SESSION_COOKIE}=${r.token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=86400`);
+    json(res, 200, { ok: true });
+    return true;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/sites") {
+    if (!session) {
+      json(res, 401, { error: "unauthorized" });
+      return true;
+    }
+    const body = (await readJson(req)) as { name?: string };
+    const id = await createSite(pool, session.userId, body.name ?? "Mi sitio");
+    json(res, 201, { id });
+    return true;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/sites") {
+    if (!session) {
+      json(res, 401, { error: "unauthorized" });
+      return true;
+    }
+    json(res, 200, { sites: await listSites(pool, session.userId) });
+    return true;
+  }
+
+  const draftMatch = /^\/api\/sites\/([0-9a-f-]{36})\/draft$/.exec(url.pathname);
+  if (draftMatch) {
+    if (!session) {
+      json(res, 401, { error: "unauthorized" });
+      return true;
+    }
+    const siteId = draftMatch[1] as string;
+    if (req.method === "GET") {
+      const d = await loadDraft(pool, session.userId, siteId);
+      if (!d) {
+        json(res, 404, { error: "no_draft" });
+        return true;
+      }
+      json(res, 200, d);
+      return true;
+    }
+    if (req.method === "PUT") {
+      const body = (await readJson(req)) as { doc?: unknown; expectedRev?: number };
+      const r = await saveDraft(pool, {
+        userId: session.userId, siteId, doc: body.doc,
+        expectedRev: Number(body.expectedRev ?? 0), actorType: "user",
+      });
+      if (r.ok) {
+        json(res, 200, { rev: r.rev, findings: r.findings });
+      } else if (r.reason === "conflict") {
+        // El editor debe recargar: no se pisa el trabajo de la otra pestana.
+        json(res, 409, { error: "conflict", currentRev: r.currentRev });
+      } else {
+        json(res, 422, { error: "invalid", findings: r.findings, errors: r.errors });
+      }
+      return true;
+    }
+  }
+
+  const publishMatch = /^\/api\/sites\/([0-9a-f-]{36})\/publish$/.exec(url.pathname);
+  if (req.method === "POST" && publishMatch) {
+    if (!session) {
+      json(res, 401, { error: "unauthorized" });
+      return true;
+    }
+    const siteId = publishMatch[1] as string;
+    const draft = await loadDraft(pool, session.userId, siteId);
+    if (!draft) {
+      json(res, 404, { error: "no_draft" });
+      return true;
+    }
+    const body = (await readJson(req)) as { confirmWarnings?: boolean } | undefined;
+    const r = await publish(pool, {
+      sitesRoot, userId: session.userId, siteId, doc: draft.doc,
+      ...(body?.confirmWarnings ? { confirmWarnings: true } : {}),
+    });
+    if (r.ok) json(res, 200, { version: r.version, findings: r.findings });
+    else json(res, 409, { error: "blocked", findings: r.findings });
+    return true;
+  }
+
+  const rollbackMatch = /^\/api\/sites\/([0-9a-f-]{36})\/rollback$/.exec(url.pathname);
+  if (req.method === "POST" && rollbackMatch) {
+    if (!session) {
+      json(res, 401, { error: "unauthorized" });
+      return true;
+    }
+    const siteId = rollbackMatch[1] as string;
+    const body = (await readJson(req)) as { version?: number } | undefined;
+    const version = await rollbackTo(pool, { sitesRoot, userId: session.userId, siteId },
+      body?.version === undefined ? undefined : Number(body.version));
+    json(res, 200, { version });
+    return true;
+  }
+
+  return false;
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

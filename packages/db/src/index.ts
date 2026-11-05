@@ -20,3 +20,17 @@ export async function withUser<T>(pool: pg.Pool, userId: string, fn: (tx: Tx) =>
   }
 }
 export { migrate } from "./migrate.js";
+
+// Aislamiento de pruebas: varios paquetes migran y borran tablas a la vez, así que
+// cada uno usa su propia base. Se crea si no existe y se devuelve su URL.
+export async function ensureTestDatabase(pool: pg.Pool, baseUrl: string, label: string): Promise<string> {
+  const name = `wd_test_${label.replace(/[^a-z0-9_]/gi, "_").toLowerCase()}`;
+  const exists = await pool.query("SELECT 1 FROM pg_database WHERE datname = $1", [name]);
+  if (exists.rowCount === 0) {
+    // El nombre se compone aquí, no viene de fuera; aun así se cita.
+    await pool.query(`CREATE DATABASE "${name}"`);
+  }
+  const url = new URL(baseUrl);
+  url.pathname = `/${name}`;
+  return url.toString();
+}

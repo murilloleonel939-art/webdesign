@@ -1,21 +1,25 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import pg from "pg";
-import { withUser, migrate } from "../dist/index.js";
+import { withUser, migrate, ensureTestDatabase } from "../dist/index.js";
 
 if (process.env.DB_TEST_CONFIRM !== "destroy-test-db" || !process.env.DB_TEST_URL) {
   test("pruebas de base omitidas: falta DB_TEST_URL o DB_TEST_CONFIRM", { skip: true }, () => {});
   process.exit(0);
 }
-const DB_URL = process.env.DB_TEST_URL;
+let DB_URL = process.env.DB_TEST_URL;
 const A = "11111111-1111-4111-8111-111111111111";
 const B = "22222222-2222-4222-8222-222222222222";
 let admin, app;
 
 before(async () => {
   if (!DB_URL) throw new Error("DB_TEST_URL no definida");
+  // Cada paquete usa su propia base: migrar y borrar tablas a la vez se pisaria.
+  const bootstrap = new pg.Pool({ connectionString: process.env.DB_TEST_URL });
+  DB_URL = await ensureTestDatabase(bootstrap, process.env.DB_TEST_URL, "db");
+  await bootstrap.end();
   admin = new pg.Pool({ connectionString: DB_URL });
-  await admin.query("DROP TABLE IF EXISTS sites, site_members, site_drafts, site_versions, assets, audit_log, users, schema_migrations CASCADE");
+  await admin.query("DROP TABLE IF EXISTS sites, site_members, site_drafts, site_versions, assets, audit_log, users, user_sessions, schema_migrations CASCADE");
   await admin.query("DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='app_platform') THEN CREATE ROLE app_platform LOGIN; END IF; END $$");
   await admin.query("ALTER ROLE app_platform LOGIN PASSWORD 'test'");
   // Se aplican todas las migraciones reales, no una copia: lo que se prueba es lo que corre.

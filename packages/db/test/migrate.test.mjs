@@ -14,7 +14,7 @@ test("applies migrations once and is idempotent", async () => {
   await pool.query("DROP TABLE IF EXISTS sites, site_members, site_drafts, site_versions, assets, audit_log, users, schema_migrations CASCADE");
   const first = await migrate(pool);
   // Cada migracion nueva se agrega aqui: el orden importa y no se salta ninguna.
-  assert.deepEqual(first, ["0001_sites_rls.sql", "0002_app_role.sql", "0003_site_content_rls.sql"]);
+  assert.deepEqual(first, ["0001_sites_rls.sql", "0002_app_role.sql", "0003_site_content_rls.sql", "0004_sessions.sql", "0005_user_password.sql", "0006_auth_lookup.sql", "0007_session_lookup.sql"]);
   const second = await migrate(pool);
   assert.deepEqual(second, []);
   const { rows } = await pool.query("SELECT relrowsecurity, relforcerowsecurity FROM pg_class WHERE relname = 'sites'");
@@ -22,7 +22,7 @@ test("applies migrations once and is idempotent", async () => {
   // Toda tabla con datos de sitio lleva RLS forzado.
   const forced = await pool.query(
     "SELECT relname FROM pg_class WHERE relname = ANY($1) AND relrowsecurity AND relforcerowsecurity ORDER BY relname",
-    [["assets", "audit_log", "site_drafts", "site_members", "site_versions", "sites", "users"]],
+    [["assets", "audit_log", "site_drafts", "site_members", "site_versions", "sites", "user_sessions", "users"]],
   );
-  assert.deepEqual(forced.rows.map((r) => r.relname), ["assets", "audit_log", "site_drafts", "site_members", "site_versions", "sites", "users"]);
+  assert.deepEqual(forced.rows.map((r) => r.relname), ["assets", "audit_log", "site_drafts", "site_members", "site_versions", "sites", "user_sessions", "users"]);
 });

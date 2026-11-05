@@ -4,7 +4,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import pg from "pg";
-import { migrate, withUser } from "@webdesign/db";
+import { migrate, ensureTestDatabase, withUser } from "@webdesign/db";
 import { publish, rollbackTo } from "../dist/index.js";
 import { currentVersion } from "@webdesign/releases";
 
@@ -33,7 +33,10 @@ const doc = (headline) => ({
 });
 
 before(async () => {
-  pool = new pg.Pool({ connectionString: process.env.DB_TEST_URL });
+  const admin = new pg.Pool({ connectionString: process.env.DB_TEST_URL });
+  const url = await ensureTestDatabase(admin, process.env.DB_TEST_URL, "publish");
+  await admin.end();
+  pool = new pg.Pool({ connectionString: url });
   await pool.query("DROP TABLE IF EXISTS sites, site_members, site_drafts, site_versions, assets, audit_log, users, schema_migrations CASCADE");
   await migrate(pool);
   await pool.query(`INSERT INTO users (id, email, name) VALUES ('${OWNER}', 'a@b.co', 'Ana')`);
