@@ -92,3 +92,12 @@ test("heavy page blocks, long text only informs", () => {
   assert.ok(codes(f).includes("LONG_TEXT"));
   assert.equal(f.find((x) => x.code === "LONG_TEXT").severity, "info");
 });
+
+test("an agent-written testimonial is TESTIMONIAL_UNVERIFIED, not a schema error", () => {
+  const d = structuredClone(base);
+  d.pages[0].sections = [{ id: "s_t", type: "testimonial", props: { quote: "q", author: "a", ownerProvided: false } }];
+  const f = lintSite(d);
+  assert.ok(codes(f).includes("TESTIMONIAL_UNVERIFIED"));
+  assert.ok(!codes(f).includes("SCHEMA_INVALID"));
+  assert.equal(blocksPublication(f), true);
+});

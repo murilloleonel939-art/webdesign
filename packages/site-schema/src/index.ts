@@ -33,7 +33,9 @@ const propsByType: Record<SectionType, z.ZodTypeAny> = {
   gallery: z.object({ assetIds: z.array(z.string()).max(24) }),
   features: z.object({ items: z.array(z.object({ title: z.string().max(80), body: z.string().max(300) })).max(12) }),
   pricing: z.object({ plans: z.array(z.object({ name: z.string().max(40), price: z.string().max(20), features: z.array(z.string().max(120)).max(12) })).max(6) }),
-  testimonial: z.object({ quote: z.string().max(600), author: z.string().max(80), ownerProvided: z.literal(true) }),
+  // `ownerProvided` es booleano para que el linter pueda reportar TESTIMONIAL_UNVERIFIED;
+  // solo el dueno puede ponerlo a true (spec 6.2) y el renderer no publica sin el.
+  testimonial: z.object({ quote: z.string().max(600), author: z.string().max(80), ownerProvided: z.boolean().optional() }),
   faq: z.object({ items: z.array(z.object({ q: z.string().max(200), a: z.string().max(1200) })).max(20) }),
   contact: z.object({ email: z.string().email().optional(), phone: z.string().max(30).optional(), cta: ctaSchema.optional() }),
   cta: z.object({ headline: z.string().max(120), cta: ctaSchema }),
