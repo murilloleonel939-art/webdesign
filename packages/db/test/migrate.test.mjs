@@ -3,8 +3,9 @@ import assert from "node:assert/strict";
 import pg from "pg";
 import { migrate } from "../dist/index.js";
 
-if (process.env.DB_TEST_CONFIRM !== "destroy-test-db") {
-  throw new Error("Las pruebas borran tablas: define DB_TEST_CONFIRM=destroy-test-db solo contra una base de pruebas");
+if (process.env.DB_TEST_CONFIRM !== "destroy-test-db" || !process.env.DB_TEST_URL) {
+  test("pruebas de base omitidas: falta DB_TEST_URL o DB_TEST_CONFIRM", { skip: true }, () => {});
+  process.exit(0);
 }
 const pool = new pg.Pool({ connectionString: process.env.DB_TEST_URL });
 after(() => pool.end());
