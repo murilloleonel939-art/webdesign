@@ -87,6 +87,7 @@ El repositorio es un monorepo diseñado para añadir agentes y funciones sin toc
 | Tema | Decisión |
 | --- | --- |
 | Modelo de hosting | Compartido, una carpeta por sitio. Sin contenedor por usuario |
+| Sitios por cuenta | **Un sitio publicado por cuenta.** El cliente puede crear varios diseños (borradores), pero solo uno puede estar `active` a la vez. Publicar otro exige despublicar el anterior de forma explícita. Los borradores no cobran; el cobro es por el sitio publicado |
 | Representación del sitio | Documento JSON estructurado (páginas, secciones, bloques) validado por `site-schema`. Nunca HTML libre generado por agentes |
 | Dónde vive el documento | Borrador y versiones en **PostgreSQL (`jsonb`)**. En disco solo los releases generados y las imágenes |
 | Publicación | Borrador y publicado separados, versiones inmutables, rollback. Los agentes nunca publican; solo el dueño pulsa Publicar |
@@ -593,7 +594,7 @@ Migraciones versionadas con Drizzle. Toda tabla con datos de un sitio incluye `s
 ### 7.2 Núcleo
 
 - `users` (id, email, email_verified_at, name, role `owner|operator`, mfa_enabled, created_at)
-- `sites` (id uuid, owner_id, name, status `draft|active|dark|suspended|deleted`, published_page_count, subdomain único, domain_pool_id, published_version, created_at, dark_since, delete_after, deleted_at) — sin cupo de páginas; `published_page_count` es la unidad de cobro. `dark_since` es cuando el sitio dejó de servirse y `delete_after` es la fecha de borrado total (`payment_due_date + 30 días`), calculada al entrar en `dark`
+- `sites` (id uuid, owner_id, name, status `draft|active|dark|suspended|deleted`, published_page_count, subdomain único, domain_pool_id, published_version, created_at, dark_since, delete_after, deleted_at) — sin cupo de páginas; **índice único parcial `sites_one_active_per_owner` sobre `(owner_id) WHERE status = 'active'`**, para que una cuenta no tenga dos sitios publicados aunque falle la aplicación; `published_page_count` es la unidad de cobro. `dark_since` es cuando el sitio dejó de servirse y `delete_after` es la fecha de borrado total (`payment_due_date + 30 días`), calculada al entrar en `dark`
 - `account_terms` (user_id, account_created_at, trial_ends_at) — el fin de la prueba se fija al crear la cuenta y no se recalcula. La gracia no vive aquí: depende del ciclo de cobro de cada suscripción
 - `site_members` (site_id, user_id, role `owner|editor|viewer`) — permisos por sitio
 - `site_drafts` (site_id, rev, doc jsonb, doc_hash, updated_by_type `user|agent`, updated_by, updated_at)
@@ -1248,9 +1249,9 @@ Schema completo, migraciones, renderer, componentes, adaptador Puck, editor, pre
 
 ### Fase 2 · Multiusuario y hosting
 
-Usuarios, miembros, RLS, cuotas, Redis/BullMQ, Caddy detrás de Traefik, Cloudflare, pool de dominios, formularios `/_f/lead`, antispam y avisos al panel.
+Usuarios, miembros, RLS, cuotas, Redis/BullMQ, Caddy detrás de Traefik, Cloudflare, pool de dominios, formularios `/_f/lead`, antispam y avisos al panel. **Dos paneles mínimos:** operador (clientes y estado de sitios) y dueño (su sitio publicado, sus borradores y su plan contratado).
 
-**Aceptación:** dos usuarios no pueden verse; dos sitios se sirven correctamente; host no registrado devuelve respuesta uniforme; cuota excedida se rechaza; backup se restaura; formulario llega al panel.
+**Aceptación:** dos usuarios no pueden verse; una cuenta puede tener varios borradores pero solo un sitio `active` (el índice lo impide); dos sitios de cuentas distintas se sirven correctamente; host no registrado devuelve respuesta uniforme; cuota excedida se rechaza; backup se restaura; formulario llega al panel.
 
 ### Fase 2b · Suscripciones, pagos y créditos
 
@@ -1454,6 +1455,8 @@ Esta sección **no contiene reglas vigentes**: explica cómo se llegó a la vers
 - Sección 11: mapa servicio → contenedor de Coolify (base directory, Dockerfile y watch paths); cada servicio tiene su Dockerfile.
 - Sección 3.1: lista de lanzamiento corregida (incluye `internal-api`; sandboxes desde Fase 5).
 - Sección 14.2: valor por defecto en cada decisión abierta.
+- Un sitio publicado por cuenta: varios borradores, un solo `active` (índice parcial `sites_one_active_per_owner`).
+- Dos paneles: operador y dueño, en la Fase 2.
 - Plataforma bilingüe: interfaz en `es` y `en` como locales de primera clase desde la Fase 0; el idioma del contenido del sitio es independiente.
 - Sección 12: flujo de promoción `staging` → `main` cerrado (único camino a producción).
 - `docs/runbooks/content-csam.md` redactado como plantilla; no válido hasta revisión legal. Falta `docs/legal/csam-jurisdicciones.md`.
