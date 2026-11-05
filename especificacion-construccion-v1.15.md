@@ -1204,10 +1204,11 @@ pnpm y Turborepo gestionan paquetes, builds, tipos, lint y pruebas. Cada aplicac
 | `egress-proxy` | Application | `/` (raíz del monorepo) | `infra/egress-proxy/Dockerfile` | `infra/egress-proxy/**` |
 | `sandbox-web` | Application | `/` (raíz del monorepo) | `apps/sandbox-web/Dockerfile` | `apps/sandbox-web/**` |
 | `sandbox-code` | Application | `/` (raíz del monorepo) | `apps/sandbox-code/Dockerfile` | `apps/sandbox-code/**` |
-| `postgres` | Database (imagen oficial con pgvector) | — | — | — |
-| `redis` | Database (imagen oficial) | — | — | — |
+| `postgres` | Database de Coolify (PostgreSQL con pgvector), creada por el dueño desde Coolify | — | — | — |
+| `redis` | Database de Coolify (Redis), creada por el dueño desde Coolify | — | — | — |
 
 - **`platform` y `internal-api`** comparten código de `packages/` pero tienen Dockerfile y contenedor propios: así la red de un sandbox nunca alcanza la API completa (3.1).
+- **Bases de datos:** `postgres` y `redis` son recursos *Database* de Coolify, creados a mano por el dueño. Nunca se instalan en el servidor ni dentro de un contenedor de aplicación. Las aplicaciones se conectan por la red interna de Coolify con las variables protegidas.
 - **`sandbox-code-jobs`** no aparece en Coolify como servicio: lo crea `workers` por incidente con la imagen de `sandbox-code`.
 - **Ramas:** `main` es producción y `staging` es el entorno previo. Cada contenedor de Coolify tiene su entorno y su rama de despliegue.
 
