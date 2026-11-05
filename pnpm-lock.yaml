@@ -48,6 +48,12 @@ importers:
 
   packages/i18n: {}
 
+  packages/releases:
+    dependencies:
+      '@webdesign/storage':
+        specifier: workspace:*
+        version: link:../storage
+
   packages/renderer:
     dependencies:
       '@webdesign/site-schema':
