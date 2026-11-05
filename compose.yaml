@@ -1,7 +1,7 @@
 # Stack local de Fase 0. Uso: docker compose up -d
 services:
   postgres:
-    image: pgvector/pgvector:pg17
+    image: pgvector/pgvector:pg18
     environment:
       POSTGRES_PASSWORD: local-only
       POSTGRES_DB: webdesign
