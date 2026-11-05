@@ -48,6 +48,12 @@ importers:
 
   packages/i18n: {}
 
+  packages/renderer:
+    dependencies:
+      '@webdesign/site-schema':
+        specifier: workspace:*
+        version: link:../site-schema
+
   packages/security: {}
 
   packages/site-schema: {}
