@@ -49,6 +49,22 @@ importers:
         specifier: ^8
         version: 8.23.1
 
+  packages/assets:
+    dependencies:
+      '@webdesign/db':
+        specifier: workspace:*
+        version: link:../db
+      '@webdesign/storage':
+        specifier: workspace:*
+        version: link:../storage
+      pg:
+        specifier: ^8.13.1
+        version: 8.23.1
+    devDependencies:
+      '@types/pg':
+        specifier: ^8.11.10
+        version: 8.23.1
+
   packages/auth: {}
 
   packages/db:
