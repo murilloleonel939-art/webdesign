@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { createApp } from "../../../apps/platform/dist/server.js";
+import { createApp } from "@webdesign/platform/dist/server.js";
 import { samplePage } from "./fixtures.mjs";
 
 // Prueba de carga basica (spec 12, aceptacion de Fase 1). No hay umbrales en la

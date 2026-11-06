@@ -11,6 +11,7 @@
     "@webdesign/site-schema": "workspace:*",
     "html-validate": "^9.5.0",
     "axe-core": "^4.10.0",
-    "jsdom": "^25.0.1"
+    "jsdom": "^25.0.1",
+    "@webdesign/platform": "workspace:*"
   }
 }

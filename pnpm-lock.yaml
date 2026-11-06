@@ -170,6 +170,9 @@ importers:
 
   packages/quality:
     dependencies:
+      '@webdesign/platform':
+        specifier: workspace:*
+        version: link:../../apps/platform
       '@webdesign/renderer':
         specifier: workspace:*
         version: link:../renderer
