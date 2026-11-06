@@ -32,6 +32,7 @@ test("escapes user text", () => {
 
 test("renders title, description, CSP and lang", () => {
   const html = renderPage(doc(), "p_home");
+  assert.match(html, /^<!DOCTYPE html>/);
   assert.match(html, /<html lang="es">/);
   assert.match(html, /<title>Inicio<\/title>/);
   assert.match(html, /name="description"/);

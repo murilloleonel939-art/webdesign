@@ -34,7 +34,7 @@ export function renderPage(input: unknown, pageId: string, resolveAsset: AssetRe
 
   const title = escapeHtml(page.seo.title || doc.meta.name);
   return (
-    `<!doctype html><html lang="${escapeHtml(doc.meta.lang)}"><head>` +
+    `<!DOCTYPE html><html lang="${escapeHtml(doc.meta.lang)}"><head>` +
     `<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">` +
     `<title>${title}</title>` +
     (page.seo.description ? `<meta name="description" content="${escapeHtml(page.seo.description)}">` : "") +

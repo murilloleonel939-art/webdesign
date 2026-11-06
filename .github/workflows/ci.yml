@@ -24,4 +24,6 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
       - run: pnpm test
+      # Calidad del HTML publicado (aceptacion de Fase 1): validez y accesibilidad critica.
+      - run: pnpm --filter @webdesign/quality test
       - run: pnpm i18n:check
