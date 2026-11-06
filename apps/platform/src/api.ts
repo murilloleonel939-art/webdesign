@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { join } from "node:path";
 import type { Pool } from "pg";
 import { withUser } from "@webdesign/db";
 import { hashPassword, verifyPassword, newSessionToken } from "@webdesign/auth";
@@ -96,6 +97,24 @@ export async function listSites(pool: Pool, userId: string): Promise<{ id: strin
     );
     return r.rows;
   });
+}
+
+// Assets activos de un sitio: id -> ruta publica y ruta fisica. Los retirados no entran.
+export async function activeAssets(pool: Pool, userId: string, siteId: string, sitesRoot: string): Promise<{
+  resolveAssetPath: (assetId: string) => string | undefined;
+  assetFiles: Record<string, string>;
+}> {
+  const rows = await withUser(pool, userId, async (tx) =>
+    (await tx.query<{ id: string; path: string }>(
+      "SELECT id, path FROM assets WHERE site_id = $1 AND takedown_status = 'active'",
+      [siteId],
+    )).rows,
+  );
+  // Ruta absoluta: una relativa rompe en paginas anidadas ("/precios/" buscaria /precios/assets).
+  const byId = new Map(rows.map((r) => [r.id, `/assets/${r.path}`]));
+  const assetFiles: Record<string, string> = {};
+  for (const r of rows) assetFiles[`assets/${r.path}`] = join(sitesRoot, siteId, "assets", r.path);
+  return { resolveAssetPath: (id) => byId.get(id), assetFiles };
 }
 
 export { saveDraft, loadDraft, publish, rollbackTo, SESSION_COOKIE };

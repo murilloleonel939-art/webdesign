@@ -1,5 +1,5 @@
-import { mkdirSync, writeFileSync, readdirSync, rmSync, existsSync, lstatSync, readlinkSync, symlinkSync, renameSync } from "node:fs";
-import { join } from "node:path";
+import { mkdirSync, writeFileSync, linkSync, copyFileSync, readdirSync, rmSync, existsSync, lstatSync, readlinkSync, symlinkSync, renameSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { releaseDir, assertSiteId } from "@webdesign/storage";
 
 // Estructura (spec 6):
@@ -30,15 +30,43 @@ export function listVersions(sitesRoot: string, siteId: string): number[] {
     .sort((a, b) => a - b);
 }
 
+// Una release lleva ficheros en subdirectorios: "/precios" es precios/index.html.
+// Se valida cada segmento para que ninguna ruta se salga del directorio.
+function releasePath(dir: string, name: string): string {
+  const segments = name.split("/");
+  if (segments.some((s) => s === "" || s === "." || s === "..")) {
+    throw new Error(`invalid release path: ${name}`);
+  }
+  return join(dir, ...segments);
+}
+
 // Escribe una release nueva y la activa. Devuelve el número de versión.
-export function publishRelease(sitesRoot: string, siteId: string, files: Record<string, string>): number {
+// `assets` son hardlinks a los ficheros de /data/sites/<siteId>/assets: no se copian
+// (spec 5.4), así que dos versiones que usan la misma imagen no gastan doble disco.
+export function publishRelease(
+  sitesRoot: string,
+  siteId: string,
+  files: Record<string, string>,
+  assets: Record<string, string> = {},
+): number {
   const versions = listVersions(sitesRoot, siteId);
   const version = (versions.at(-1) ?? 0) + 1;
   const dir = releaseDir(sitesRoot, siteId, version);
   mkdirSync(dir, { recursive: true });
   for (const [name, content] of Object.entries(files)) {
-    if (name.includes("/") || name.includes("..")) throw new Error(`invalid asset name: ${name}`);
-    writeFileSync(join(dir, name), content, "utf8");
+    const target = releasePath(dir, name);
+    mkdirSync(dirname(target), { recursive: true });
+    writeFileSync(target, content, "utf8");
+  }
+  for (const [name, source] of Object.entries(assets)) {
+    const target = releasePath(dir, name);
+    mkdirSync(dirname(target), { recursive: true });
+    // Hardlink; si el sistema de ficheros no lo permite, copia como respaldo.
+    try {
+      linkSync(source, target);
+    } catch {
+      copyFileSync(source, target);
+    }
   }
   switchRelease(sitesRoot, siteId, version);
   return version;

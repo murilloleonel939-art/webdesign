@@ -20,6 +20,8 @@ export interface PublishOptions {
   // El dueno decide publicar aun con hallazgos: queda registrado.
   confirmWarnings?: boolean;
   resolveAssetPath?: (assetId: string) => string | undefined;
+  // Ficheros a enlazar en la release: "assets/<ruta>" -> ruta absoluta del asset.
+  assetFiles?: Record<string, string>;
   licensedAssetIds?: string[];
 }
 
@@ -60,7 +62,7 @@ export async function publish(pool: Pool, opts: PublishOptions): Promise<Publish
   }
 
   // Primero el sistema de ficheros: si falla, no se toca la base.
-  const version = publishRelease(opts.sitesRoot, opts.siteId, files);
+  const version = publishRelease(opts.sitesRoot, opts.siteId, files, opts.assetFiles ?? {});
   const hash = docHash(opts.doc);
 
   await withUser(pool, opts.userId, async (tx: Tx) => {

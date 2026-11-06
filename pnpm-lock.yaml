@@ -20,6 +20,9 @@ importers:
 
   apps/platform:
     dependencies:
+      '@webdesign/assets':
+        specifier: workspace:*
+        version: link:../../packages/assets
       '@webdesign/auth':
         specifier: workspace:*
         version: link:../../packages/auth

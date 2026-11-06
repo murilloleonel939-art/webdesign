@@ -17,6 +17,7 @@ if (process.env.DB_TEST_CONFIRM !== "destroy-test-db" || !process.env.DB_TEST_UR
 }
 
 let pool, appPool, server, port, sitesRoot, cookie;
+const PNG = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, ...new Array(40).fill(0)]);
 
 const call = (method, path, body) =>
   new Promise((resolve, reject) => {
@@ -172,4 +173,62 @@ test("audit records every publish and rollback", async () => {
   assert.ok(actions.includes("site.publish"));
   assert.ok(actions.includes("site.rollback"));
   assert.equal(existsSync(join(sitesRoot, pool.siteId, "releases", "v1")), true);
+});
+
+test("an uploaded asset is linked into the release, not copied", async () => {
+  const up = await new Promise((resolve, reject) => {
+    const req = http.request(
+      { host: "127.0.0.1", port, path: `/api/sites/${pool.siteId}/assets?kind=image`, method: "POST",
+        headers: { host: "panel.example.com", cookie, "content-type": "image/png", "content-length": PNG.length } },
+      (res) => {
+        let text = "";
+        res.setEncoding("utf8");
+        res.on("data", (c) => (text += c));
+        res.on("end", () => resolve({ status: res.statusCode, json: text ? JSON.parse(text) : undefined }));
+      },
+    );
+    req.on("error", reject);
+    req.write(Buffer.from(PNG));
+    req.end();
+  });
+  assert.equal(up.status, 201);
+  assert.match(up.json.id, /^[0-9a-f-]{36}$/);
+
+  const withImage = siteDoc("Hola");
+  withImage.assets = [{ id: up.json.id, alt: "", credit: null }];
+  withImage.pages[0].sections = [{
+    id: "s_img", type: "image", props: { assetId: up.json.id, alt: "Foto" },
+  }];
+  const rev = await call("GET", `/api/sites/${pool.siteId}/draft`);
+  const saved = await call("PUT", `/api/sites/${pool.siteId}/draft`, { doc: withImage, expectedRev: rev.json.rev });
+  assert.equal(saved.status, 200);
+
+  const pub = await call("POST", `/api/sites/${pool.siteId}/publish`, { confirmWarnings: true });
+  assert.equal(pub.status, 200);
+  const html = readFileSync(join(sitesRoot, pool.siteId, "public", "index.html"), "utf8");
+  assert.match(html, /\/assets\/image\//);
+  // La release contiene el asset enlazado.
+  const relAssets = join(sitesRoot, pool.siteId, "releases", `v${pub.json.version}`, "assets", "image");
+  assert.equal(existsSync(relAssets), true);
+});
+
+test("a file whose content is not an image is refused", async () => {
+  const svg = Buffer.from("<svg onload=alert(1)>");
+  const r = await new Promise((resolve, reject) => {
+    const req = http.request(
+      { host: "127.0.0.1", port, path: `/api/sites/${pool.siteId}/assets?kind=image`, method: "POST",
+        headers: { host: "panel.example.com", cookie, "content-type": "image/png", "content-length": svg.length } },
+      (res) => {
+        let text = "";
+        res.setEncoding("utf8");
+        res.on("data", (c) => (text += c));
+        res.on("end", () => resolve({ status: res.statusCode, json: text ? JSON.parse(text) : undefined }));
+      },
+    );
+    req.on("error", reject);
+    req.write(svg);
+    req.end();
+  });
+  assert.equal(r.status, 422);
+  assert.equal(r.json.error, "mime_not_allowed");
 });

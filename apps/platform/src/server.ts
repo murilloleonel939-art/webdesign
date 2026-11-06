@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import pg from "pg";
-import { migrate } from "@webdesign/db";
+import { migrate, withUser } from "@webdesign/db";
 import {
   verifyPreviewToken,
   previewCookie,
@@ -10,8 +10,9 @@ import {
   type PreviewConfig,
   type UsedLinkStore,
 } from "@webdesign/preview";
-import { parseCookies, resolveSession, login, createUser, createSite, listSites, saveDraft, loadDraft, publish, rollbackTo, SESSION_COOKIE } from "./api.js";
+import { parseCookies, resolveSession, login, createUser, createSite, listSites, saveDraft, loadDraft, publish, rollbackTo, activeAssets, SESSION_COOKIE } from "./api.js";
 import { renderPage } from "@webdesign/renderer";
+import { registerAsset, type AssetKind } from "@webdesign/assets";
 
 // Punto de entrada de `platform`: healthcheck, panel y vista previa aislada.
 // La vista previa vive en su propio subdominio, con su propia cookie (spec 5.5).
@@ -96,6 +97,18 @@ export function createApp(opts: AppOptions = {}) {
   });
 }
 
+// Lee el cuerpo crudo con limite duro. Devuelve undefined si excede el limite.
+async function readBinary(req: IncomingMessage, limit: number): Promise<Uint8Array | undefined> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of req) {
+    size += (chunk as Buffer).length;
+    if (size > limit) return undefined;
+    chunks.push(chunk as Buffer);
+  }
+  return Buffer.concat(chunks);
+}
+
 async function readJson(req: IncomingMessage): Promise<unknown> {
   const chunks: Buffer[] = [];
   let size = 0;
@@ -142,6 +155,42 @@ async function handleApi(pool: import("pg").Pool, sitesRoot: string, req: Incomi
     }
     json(res, 200, { sites: await listSites(pool, session.userId) });
     return true;
+  }
+
+  // Subida de asset: cuerpo binario crudo; el tipo real se detecta del contenido.
+  const assetsMatch = /^\/api\/sites\/([0-9a-f-]{36})\/assets$/.exec(url.pathname);
+  if (assetsMatch) {
+    if (!session) {
+      json(res, 401, { error: "unauthorized" });
+      return true;
+    }
+    const siteId = assetsMatch[1] as string;
+    if (req.method === "POST") {
+      const kind = url.searchParams.get("kind");
+      if (kind !== "image" && kind !== "video" && kind !== "poster") {
+        json(res, 422, { error: "invalid_kind" });
+        return true;
+      }
+      const content = await readBinary(req, 9 * 1024 * 1024);
+      if (!content) {
+        json(res, 413, { error: "too_large" });
+        return true;
+      }
+      const r = await registerAsset(pool, {
+        userId: session.userId, siteId, kind: kind as AssetKind, content,
+        declaredMime: req.headers["content-type"], source: "own", sitesRoot,
+      });
+      if (r.ok) json(res, 201, { id: r.id, bytes: r.bytes });
+      else json(res, 422, { error: r.reason });
+      return true;
+    }
+    if (req.method === "GET") {
+      const rows = await withUser(pool, session.userId, async (tx) =>
+        (await tx.query("SELECT id, kind, bytes, takedown_status FROM assets WHERE site_id = $1 ORDER BY created_at", [siteId])).rows,
+      );
+      json(res, 200, { assets: rows });
+      return true;
+    }
   }
 
   const draftMatch = /^\/api\/sites\/([0-9a-f-]{36})\/draft$/.exec(url.pathname);
@@ -191,8 +240,10 @@ async function handleApi(pool: import("pg").Pool, sitesRoot: string, req: Incomi
       return true;
     }
     const body = (await readJson(req)) as { confirmWarnings?: boolean } | undefined;
+    const assets = await activeAssets(pool, session.userId, siteId, sitesRoot);
     const r = await publish(pool, {
       sitesRoot, userId: session.userId, siteId, doc: draft.doc,
+      resolveAssetPath: assets.resolveAssetPath, assetFiles: assets.assetFiles,
       ...(body?.confirmWarnings ? { confirmWarnings: true } : {}),
     });
     if (r.ok) json(res, 200, { version: r.version, findings: r.findings });

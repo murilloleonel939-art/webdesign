@@ -22,6 +22,7 @@ Construir la plataforma multi-sitio de agentes IA según `especificacion-constru
 | `db` | Migración `0003`: `users`, `site_members`, `site_drafts`, `site_versions`, `assets`, `audit_log`, RLS forzada, índice de un solo sitio activo | 11 |
 | `ui-components` | Componentes React puros de las 10 secciones; el renderer los usa con `renderToStaticMarkup` | 10 |
 | `platform` (ciclo) | Superficie HTTP de crear, editar, publicar y revertir, con sesión y RLS; 18 pruebas de ciclo y aislamiento | 18 |
+| `releases` | Rutas anidadas (`/precios` → `precios/index.html`) y assets por hardlink; dos páginas ya se publican | 8 |
 | `assets` | Registro de assets: tipo por bytes (no por cabecera), límites de 14.1, cuota por sitio, licencia obligatoria para publicar, retirada por reclamación | 10 |
 | `editor` | Configuración Puck de las 10 secciones; guardado del borrador con revisión optimista, rechazo de conflictos y `audit_log` | 9 |
 | `puck-adapter` | Schema <-> Puck con ida y vuelta identica por pagina; guarda de `ownerProvided` para agentes | 4 |
@@ -31,10 +32,10 @@ Construir la plataforma multi-sitio de agentes IA según `especificacion-constru
 
 ## Fase 1 — pendiente
 1. Panel del editor en el navegador (montaje de Puck y `iframe` de vista previa).
-2. Conectar `assets` a la subida HTTP y al renderer (ruta `/assets/`).
+2. Servir `/assets/` del sitio publicado (Caddy en Fase 2) y validación HTML + accesibilidad crítica en CI.
 3. Validación HTML y accesibilidad crítica en CI.
 4. Prueba de carga básica.
-2. Conectar `assets` a la subida HTTP y al renderer (ruta `/assets/`).
+2. Servir `/assets/` del sitio publicado (Caddy en Fase 2) y validación HTML + accesibilidad crítica en CI.
 3. Validación HTML y accesibilidad crítica en CI.
 4. Prueba de carga básica.
 

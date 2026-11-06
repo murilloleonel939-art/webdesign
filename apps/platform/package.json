@@ -17,7 +17,8 @@
     "@webdesign/editor": "workspace:*",
     "@webdesign/publish": "workspace:*",
     "@webdesign/site-schema": "workspace:*",
-    "@webdesign/renderer": "workspace:*"
+    "@webdesign/renderer": "workspace:*",
+    "@webdesign/assets": "workspace:*"
   },
   "devDependencies": {
     "@types/pg": "^8"
