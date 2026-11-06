@@ -5,22 +5,27 @@
   "type": "module",
   "main": "dist/server.js",
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && node build-ui.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "node --test test/preview-isolation.test.mjs test/cycle.test.mjs"
   },
   "dependencies": {
+    "@measured/puck": "0.20.2",
+    "@webdesign/assets": "workspace:*",
     "@webdesign/auth": "workspace:*",
     "@webdesign/db": "workspace:*",
-    "pg": "^8.13.0",
-    "@webdesign/preview": "workspace:*",
     "@webdesign/editor": "workspace:*",
+    "@webdesign/preview": "workspace:*",
     "@webdesign/publish": "workspace:*",
-    "@webdesign/site-schema": "workspace:*",
+    "@webdesign/puck-adapter": "workspace:^",
     "@webdesign/renderer": "workspace:*",
-    "@webdesign/assets": "workspace:*"
+    "@webdesign/site-schema": "workspace:*",
+    "pg": "^8.13.0"
   },
   "devDependencies": {
-    "@types/pg": "^8"
+    "@types/pg": "^8",
+    "esbuild": "^0.25.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
   }
 }

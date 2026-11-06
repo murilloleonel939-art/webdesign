@@ -27,6 +27,7 @@
     "@types/pg": "^8.11.10"
   },
   "exports": {
-    "./save": "./dist/save.js"
+    "./save": "./dist/save.js",
+    "./config": "./dist/config.js"
   }
 }

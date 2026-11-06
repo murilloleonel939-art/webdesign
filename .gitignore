@@ -7,3 +7,6 @@ dist
 !.env.example
 .pnpm-store
 graphify-out/cache
+
+# bundle del panel del editor (se construye)
+apps/platform/ui-dist/

@@ -150,6 +150,8 @@ test("another account cannot see or touch this site", async () => {
     const list = await call("GET", "/api/sites");
     assert.deepEqual(list.json.sites, []);
     assert.equal((await call("GET", `/api/sites/${pool.siteId}/draft`)).status, 404);
+    // La vista previa del borrador no puede servir el contenido de otro sitio.
+    assert.equal((await callRaw("GET", `/api/sites/${pool.siteId}/preview?page=p_home`, true)).status, 404);
   } finally {
     cookie = saved;
   }
@@ -231,4 +233,58 @@ test("a file whose content is not an image is refused", async () => {
   });
   assert.equal(r.status, 422);
   assert.equal(r.json.error, "mime_not_allowed");
+});
+
+// Peticion en crudo: permite omitir la cookie y leer HTML, que `call` no hace.
+const callRaw = (method, path, withCookie) =>
+  new Promise((resolve, reject) => {
+    const req = http.request(
+      { host: "127.0.0.1", port, path, method, headers: { host: "panel.example.com", ...(withCookie && cookie ? { cookie } : {}) } },
+      (res) => {
+        let text = "";
+        res.setEncoding("utf8");
+        res.on("data", (c) => (text += c));
+        res.on("end", () => resolve({ status: res.statusCode, headers: res.headers, text }));
+      },
+    );
+    req.on("error", reject);
+    req.end();
+  });
+
+test("the editor preview renders the draft with noindex and the site CSP", async () => {
+  const r = await callRaw("GET", `/api/sites/${pool.siteId}/preview?page=p_home`, true);
+  assert.equal(r.status, 200);
+  // Cabeceras de vista previa: nunca indexable en ningun caso (spec 5.5).
+  assert.equal(r.headers["x-robots-tag"], "noindex");
+  assert.match(r.headers["content-security-policy"] ?? "", /default-src 'self'/);
+  assert.match(r.text, /<\/html>/);
+});
+
+test("the editor preview refuses without a session", async () => {
+  const r = await callRaw("GET", `/api/sites/${pool.siteId}/preview?page=p_home`, false);
+  assert.equal(r.status, 401);
+});
+
+test("the panel is served with a strict CSP and never indexable", async () => {
+  const r = await callRaw("GET", "/app/", false);
+  // El panel no exige sesion para cargar el HTML: el JS pide los datos y ahi 401.
+  assert.equal(r.status, 200);
+  assert.match(r.headers["content-security-policy"] ?? "", /default-src 'none'/);
+  assert.match(r.headers["content-security-policy"] ?? "", /frame-ancestors|frame-src 'self'/);
+  assert.notEqual(r.headers["content-security-policy"]?.includes("allow-same-origin"), true);
+  assert.equal(r.headers["x-robots-tag"], "noindex");
+  assert.match(r.text, /<div id="root">/);
+});
+
+test("the panel bundle is served as javascript", async () => {
+  const r = await callRaw("GET", "/app/panel.js", false);
+  assert.equal(r.status, 200);
+  assert.match(r.headers["content-type"] ?? "", /javascript/);
+});
+
+test("the panel rejects path traversal", async () => {
+  for (const path of ["/app/../src/server.ts", "/app/..%2Fserver.js", "/app/x.svg"]) {
+    const r = await callRaw("GET", path, false);
+    assert.equal(r.status, 404, path);
+  }
 });

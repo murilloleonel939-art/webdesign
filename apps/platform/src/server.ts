@@ -1,5 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import pg from "pg";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { migrate, withUser } from "@webdesign/db";
 import {
   verifyPreviewToken,
@@ -25,6 +27,11 @@ export interface AppOptions {
   renderPreview?: ((siteId: string, pageId: string) => Promise<string | undefined>) | undefined;
   usedLinks?: UsedLinkStore | undefined;
 }
+
+// El panel solo carga su propio bundle; ningun tercero entra (spec 5.3).
+const PANEL_CSP =
+  "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-src 'self'; base-uri 'none'; form-action 'none'";
+const UI_DIR = process.env.UI_DIR ?? new URL("../ui-dist/", import.meta.url).pathname;
 
 const PREVIEW_CSP = "default-src 'self'; img-src 'self' https:; style-src 'self' 'unsafe-inline'; script-src 'none'";
 
@@ -84,6 +91,28 @@ export function createApp(opts: AppOptions = {}) {
       // La cookie queda acotada a este subdominio y a este sitio.
       const cookie = previewCookie(`pv_${verified.claims.siteId}`, verified.claims.jti, opts.preview);
       send(res, 200, html, previewHeaders(PREVIEW_CSP, { "set-cookie": cookie }));
+      return;
+    }
+
+    // --- Panel del editor (Fase 1) ---
+    // Se sirve en su propio origen con una CSP estricta: el panel maneja la sesion,
+    // asi que no admite scripts ni estilos de terceros.
+    if (req.method === "GET" && (url.pathname === "/app" || url.pathname === "/app/" || url.pathname.startsWith("/app/"))) {
+      const file = url.pathname === "/app" || url.pathname === "/app/" ? "panel.html" : url.pathname.slice("/app/".length);
+      if (!/^[a-z0-9.-]+\.(html|js|css)$/.test(file)) {
+        json(res, 404, { error: "not_found" });
+        return;
+      }
+      const type = file.endsWith(".js") ? "text/javascript; charset=utf-8"
+        : file.endsWith(".css") ? "text/css; charset=utf-8"
+        : "text/html; charset=utf-8";
+      try {
+        const body = await readFile(join(UI_DIR, file));
+        res.writeHead(200, { "content-type": type, "content-security-policy": PANEL_CSP, "x-robots-tag": "noindex" });
+        res.end(body);
+      } catch {
+        json(res, 404, { error: "not_found" });
+      }
       return;
     }
 
@@ -225,6 +254,35 @@ async function handleApi(pool: import("pg").Pool, sitesRoot: string, req: Incomi
       }
       return true;
     }
+  }
+
+  // Vista previa del borrador para el iframe del panel. Devuelve HTML con la CSP
+  // del sitio y las cabeceras de vista previa: nunca indexable (spec 5.5).
+  const previewDraftMatch = /^\/api\/sites\/([0-9a-f-]{36})\/preview$/.exec(url.pathname);
+  if (req.method === "GET" && previewDraftMatch) {
+    if (!session) {
+      json(res, 401, { error: "unauthorized" });
+      return true;
+    }
+    const siteId = previewDraftMatch[1] as string;
+    const d = await loadDraft(pool, session.userId, siteId);
+    if (!d) {
+      json(res, 404, { error: "no_draft" });
+      return true;
+    }
+    const pageId = url.searchParams.get("page") ?? "p_home";
+    const assets = await activeAssets(pool, session.userId, siteId, sitesRoot);
+    try {
+      const rendered = renderPage(d.doc, pageId, (id) => {
+        const path = assets.resolveAssetPath(id);
+        return path ? { src: path, alt: "" } : undefined;
+      });
+      send(res, 200, rendered, previewHeaders(PREVIEW_CSP));
+    } catch {
+      // Un borrador invalido no tumba el panel: se muestra el aviso.
+      json(res, 422, { error: "invalid_draft" });
+    }
+    return true;
   }
 
   const publishMatch = /^\/api\/sites\/([0-9a-f-]{36})\/publish$/.exec(url.pathname);
