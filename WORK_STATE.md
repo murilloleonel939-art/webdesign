@@ -16,6 +16,7 @@ Construir la plataforma multi-sitio de agentes IA según `especificacion-constru
 | `site-schema` | Documento canónico spec 6.1 con Zod: meta, design, theme, pages, sections, assets | 6 |
 | `renderer` | HTML por página sobre `ui-components`, CSP, `rel="noopener noreferrer"`, testimonios sin confirmar nunca se publican | 6 |
 | `linter` | Linter estático 6.4: seguridad, datos, contraste WCAG, peso, fuentes alojadas | 10 |
+| `quality` (carga) | Prueba de carga básica: 2000 peticiones a 50 de concurrencia, sin errores, p95 < 250 ms (umbral propio; la spec no fija cifras) | 2 |
 | `quality` | HTML válido (html-validate) y accesibilidad crítica (axe-core sobre jsdom) de las páginas de muestra; canario verificado | 4 |
 | `releases` | `/data/sites/<id>/releases/v<N>`, `public` symlink, cambio atómico, rollback | 5 |
 | `storage` | Rutas seguras, nombre físico de assets | (en `security`) |
@@ -33,12 +34,10 @@ Construir la plataforma multi-sitio de agentes IA según `especificacion-constru
 
 ## Fase 1 — pendiente
 1. Panel del editor en el navegador (montaje de Puck y `iframe` de vista previa).
-2. Prueba de carga básica.
-3. Servir `/assets/` del sitio publicado (Caddy en Fase 2).
+2. Servir `/assets/` del sitio publicado (Caddy en Fase 2).
 3. Validación HTML y accesibilidad crítica en CI.
 4. Prueba de carga básica.
-2. Prueba de carga básica.
-3. Servir `/assets/` del sitio publicado (Caddy en Fase 2).
+2. Servir `/assets/` del sitio publicado (Caddy en Fase 2).
 3. Validación HTML y accesibilidad crítica en CI.
 4. Prueba de carga básica.
 

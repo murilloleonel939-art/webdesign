@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --test test/html.test.mjs test/a11y.test.mjs"
+    "test": "node --test test/html.test.mjs test/a11y.test.mjs test/load.test.mjs"
   },
   "dependencies": {
     "@webdesign/renderer": "workspace:*",
