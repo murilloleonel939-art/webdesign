@@ -1,0 +1,37 @@
+{
+  auto_https off
+  admin off
+  storage file_system /caddy-data
+  servers {
+    trusted_proxies static private_ranges
+  }
+}
+
+:80 {
+  @badhost not header_regexp Host ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$
+  respond @badhost 404
+
+  header {
+    Strict-Transport-Security "max-age=31536000"
+    X-Content-Type-Options "nosniff"
+    Referrer-Policy "strict-origin-when-cross-origin"
+    Permissions-Policy "camera=(), microphone=(), geolocation=()"
+    Content-Security-Policy "default-src 'self'; img-src 'self' data: https://i.ytimg.com; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; form-action 'self'; base-uri 'none'"
+    -Server
+  }
+
+  handle /_f/* {
+    reverse_proxy platform:3000
+  }
+  handle /_c/* {
+    reverse_proxy platform:3000
+  }
+  handle {
+    root * /data/hosts/{host}
+    file_server
+    encode zstd gzip
+  }
+  handle_errors {
+    respond "Sitio no disponible" 404
+  }
+}

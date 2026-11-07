@@ -36,12 +36,9 @@ Construir la plataforma multi-sitio de agentes IA según `especificacion-constru
 
 ## Fase 1 — pendiente
 
-2. Servir `/assets/` del sitio publicado (Caddy en Fase 2).
-3. Validación HTML y accesibilidad crítica en CI.
-4. Prueba de carga básica.
-2. Servir `/assets/` del sitio publicado (Caddy en Fase 2).
-3. Validación HTML y accesibilidad crítica en CI.
-4. Prueba de carga básica.
+1. Integrar el ciclo de dominios y enlaces `/data/hosts/<hostname>` en Fase 2.
+2. Validar Caddy en un entorno Coolify de prueba.
+3. Completar paneles de operador y dueño en Fase 2.
 
 ## Decisiones
 - Una sola web publicada por cliente (`sites_one_active_per_owner`); borradores sin límite.

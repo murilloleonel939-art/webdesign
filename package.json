@@ -7,7 +7,8 @@
     "build": "turbo run build",
     "test": "turbo run test",
     "typecheck": "turbo run typecheck",
-    "i18n:check": "node scripts/check-i18n.mjs"
+    "i18n:check": "node scripts/check-i18n.mjs",
+    "test:caddy": "node --test deploy/caddy/Caddyfile.test.mjs"
   },
   "devDependencies": {
     "turbo": "^2.1.0",
