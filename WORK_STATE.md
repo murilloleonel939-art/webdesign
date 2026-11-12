@@ -49,4 +49,25 @@ Construir la plataforma multi-sitio de agentes IA según `especificacion-constru
 - Respuestas en español, identificadores en inglés.
 
 ## Próximos pasos
-Editor Puck y preview; luego publicación transaccional con `audit_log`.
+Primera tarea de Fase 2 (§5.2): validar convivencia Traefik/Caddy en Coolify de prueba,
+antes de construir el ciclo de dominios. Procedimiento en `docs/runbooks/hosting-edge.md`.
+No hay validación real del borde: en este entorno no se encontraron docker, caddy ni traefik.
+La configuración Caddy y sus pruebas de texto no sustituyen esa aceptación.
+Preparado `deploy/caddy/compose.test.yaml` para ejecutar `caddy validate` sin publicar puertos;
+no ejecutado aquí por falta de Docker. Detectadas variables de Coolify, sin conexión administrativa
+verificada al entorno de prueba. CSP de Caddy alineada con los proveedores de vídeo de §5.6.
+Verificación adicional: descargado Caddy oficial 2.10.2 en /tmp; `caddy adapt` y `caddy validate`
+correctos. Para validate se cambió únicamente la raíz de almacenamiento a /tmp en el JSON derivado.
+Además se ejecutó Caddy con listener loopback y raíz temporal: inicio, página anidada,
+asset CSS con bytes/MIME correctos, cabecera nosniff y 404 de host inexistente verificados por HTTP.
+Prueba reproducible en `deploy/caddy/http.test.py`: comprobados también cambio atómico v1→v2,
+rollback v2→v1 con assets correspondientes y retirada del enlace del host: mismo 404 que host inexistente.
+Ejecutada correctamente con Caddy 2.10.2; proceso detenido al terminar.
+Traefik oficial 3.6.1 probado con `deploy/caddy/traefik.test.py` en loopback: proveedor de
+archivos recarga un router comodín prioridad 1 y conserva la respuesta del router existente.
+Backends de fixture HTTP; no es una prueba conjunta con Caddy ni con el proveedor Docker de Coolify.
+Sigue pendiente la convivencia real Traefik/Coolify, Cloudflare y TLS.
+Punto solicitado alcanzado: crear el nuevo recurso Caddy en Coolify de prueba.
+Imagen preparada en `deploy/caddy/Dockerfile` (no construida aquí; Docker no disponible).
+Runbook detalla contexto, puerto interno 80, datos compartidos de solo lectura y red de prueba.
+No se creó contenedor, no se desplegó ni se hizo commit/push.

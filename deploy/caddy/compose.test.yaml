@@ -1,0 +1,18 @@
+# Validación del Caddyfile real sin publicar puertos ni modificar el proxy de Coolify.
+# Ejecutar desde el repositorio:
+# docker compose -f deploy/caddy/compose.test.yaml run --rm validate
+services:
+  validate:
+    image: caddy:2.10.2-alpine
+    command: ["caddy", "validate", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    tmpfs:
+      - /caddy-data
+      - /config
+      - /data
+    networks:
+      - validation
+networks:
+  validation:
+    internal: true
