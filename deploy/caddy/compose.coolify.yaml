@@ -1,0 +1,28 @@
+# Coolify: contexto /, archivo Compose /deploy/caddy/compose.coolify.yaml.
+# Las rutas build son relativas a este archivo.
+services:
+  caddy:
+    build:
+      context: ../..
+      dockerfile: deploy/caddy/Dockerfile
+    restart: unless-stopped
+    expose:
+      - "80"
+    volumes:
+      - type: bind
+        source: /data/webdesign
+        target: /data
+        read_only: true
+        bind:
+          create_host_path: false
+      - caddy-data:/caddy-data
+    networks:
+      - coolify
+
+volumes:
+  caddy-data:
+
+networks:
+  coolify:
+    external: true
+    name: coolify
