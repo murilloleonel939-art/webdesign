@@ -24,7 +24,7 @@ volumes:
   # Usar el nombre Docker exacto del volumen creado en platform.
   sites-data:
     external: true
-    name: ${SITES_VOLUME_NAME:?Configura el nombre del volumen compartido de platform}
+    name: ${SITES_VOLUME_NAME}
 
 networks:
   coolify:
