@@ -9,18 +9,22 @@ services:
     expose:
       - "80"
     volumes:
-      - type: bind
-        source: /data/webdesign
+      - type: volume
+        source: sites-data
         target: /data
         read_only: true
-        bind:
-          create_host_path: false
+        volume:
+          nocopy: true
       - caddy-data:/caddy-data
     networks:
       - coolify
 
 volumes:
   caddy-data:
+  # Usar el nombre Docker exacto del volumen creado en platform.
+  sites-data:
+    external: true
+    name: ${SITES_VOLUME_NAME:?Configura el nombre del volumen compartido de platform}
 
 networks:
   coolify:
