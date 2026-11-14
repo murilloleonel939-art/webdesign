@@ -1,84 +1,45 @@
 import { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { Puck } from "@measured/puck";
-// Estilos de Puck: sin ellos el panel sale sin maquetar.
 import "@measured/puck/puck.css";
+import "./brand.css";
 import { buildEditorConfig } from "@webdesign/editor/config";
 import { documentToPuck, puckToDocument, mergeEditedPage } from "@webdesign/puck-adapter";
 
-// Panel del editor (spec 6.3 y 4.3). Vive en su propio origen y nunca comparte
-// cookie con los sitios publicados ni con la vista previa (spec 5.3).
-// La vista previa va en un iframe con sandbox="allow-scripts" y SIN allow-same-origin:
-// el contenido del sitio jamas alcanza la sesion del panel.
-
-const siteId = new URLSearchParams(location.search).get("site") ?? "";
-const PAGE = new URLSearchParams(location.search).get("page") ?? "p_home";
-
+type Site = { id: string; name: string; status: string };
 type Draft = { rev: number; doc: unknown };
+const api = (path: string, init?: RequestInit) => fetch(path, { credentials: "same-origin", ...init });
+const go = (path: string) => { history.pushState({}, "", path); window.dispatchEvent(new PopStateEvent("popstate")); };
 
-async function load(): Promise<Draft> {
-  const res = await fetch(`/api/sites/${siteId}/draft`, { credentials: "same-origin" });
-  if (res.status === 401) throw new Error("sesion");
-  if (!res.ok) throw new Error("no se pudo cargar el borrador");
-  return (await res.json()) as Draft;
+function Brand() { return <div className="brand"><span className="brand-mark">Z</span><span>Zottaweb</span></div>; }
+function Login({ onDone }: { onDone: () => void }) {
+  const [email, setEmail] = useState(""); const [password, setPassword] = useState(""); const [busy, setBusy] = useState(false); const [error, setError] = useState("");
+  async function submit(e: React.FormEvent) { e.preventDefault(); setBusy(true); setError(""); const r = await api("/api/login", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ email, password }) }); setBusy(false); if (!r.ok) { setError("El correo o la contraseña no son correctos."); return; } onDone(); }
+  return <main className="auth-shell"><div className="auth-card"><Brand/><p className="eyebrow">TU PRESENCIA DIGITAL</p><h1>Haz que tu idea se vea increíble.</h1><p className="muted">Entra a tu espacio de trabajo y crea sitios que conectan con tus clientes.</p><form onSubmit={submit}><label>Correo electrónico<input type="email" value={email} onChange={e => setEmail(e.target.value)} required autoFocus placeholder="tu@empresa.com"/></label><label>Contraseña<input type="password" value={password} onChange={e => setPassword(e.target.value)} required placeholder="••••••••"/></label>{error && <div className="alert">{error}</div>}<button className="primary full" disabled={busy}>{busy ? "Entrando…" : "Entrar a mi cuenta"}</button></form><p className="fine">¿Aún no tienes cuenta? <span className="link">Solicita acceso</span></p></div><div className="auth-art"><div className="orb orb-one"/><div className="orb orb-two"/><p>Diseña. Publica.<br/><strong>Crece.</strong></p></div></main>;
 }
-
-function Panel() {
-  const [doc, setDoc] = useState<any>(null);
-  const [rev, setRev] = useState(0);
-  const [status, setStatus] = useState("");
-
-  useEffect(() => {
-    load().then((d) => { setDoc(d.doc); setRev(d.rev); }).catch((e) => setStatus(String(e.message)));
-  }, []);
-
-  if (!doc) return <p>{status || "Cargando"}</p>;
-
-  const config = buildEditorConfig({});
-
-  const save = async (data: any) => {
-    const next = mergeEditedPage(doc, puckToDocument({ content: data.content, root: data.root }, PAGE));
-    const res = await fetch(`/api/sites/${siteId}/draft`, {
-      method: "PUT",
-      credentials: "same-origin",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ doc: next, expectedRev: rev }),
-    });
-    if (res.status === 409) {
-      // Revision vieja: se recarga en vez de pisar lo que otro escribio.
-      const current = (await res.json()) as { currentRev: number };
-      const fresh = await load();
-      setDoc(fresh.doc);
-      setRev(fresh.rev);
-      setStatus(`Otra sesion guardo antes (rev ${current.currentRev}). Recargado.`);
-      return;
-    }
-    if (!res.ok) {
-      const body = (await res.json()) as { findings?: unknown };
-      setStatus(`No se guardo: ${JSON.stringify(body.findings ?? body)}`);
-      return;
-    }
-    const ok = (await res.json()) as { rev: number };
-    setDoc(next);
-    setRev(ok.rev);
-    setStatus(`Guardado (rev ${ok.rev})`);
-  };
-
-  return (
-    <div>
-      <div style={{ padding: 8, fontFamily: "system-ui", fontSize: 13 }}>
-        <strong>Sitio</strong> {siteId} · <span role="status">{status}</span>
-        <button onClick={() => { setStatus("Publicando"); fetch(`/api/sites/${siteId}/publish`, { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" }, body: "{}" }).then((r) => setStatus(r.ok ? "Publicado" : "No publicado")); }}>Publicar</button>
-      </div>
-      <Puck config={config} data={documentToPuck(doc, PAGE)} onPublish={save} />
-      <iframe
-        title="Vista previa"
-        sandbox="allow-scripts"
-        src={`/api/sites/${siteId}/preview?page=${PAGE}`}
-        style={{ width: "100%", height: 400, border: "1px solid #ccc", borderTop: 0 }}
-      />
-    </div>
-  );
+function Dashboard({ sites, refresh }: { sites: Site[]; refresh: () => void }) {
+  const [name, setName] = useState(""); const [creating, setCreating] = useState(false); const [error, setError] = useState("");
+  async function create(e: React.FormEvent) { e.preventDefault(); if (!name.trim()) return; setCreating(true); const r = await api("/api/sites", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: name.trim() }) }); setCreating(false); if (!r.ok) { setError("No se pudo crear el sitio."); return; } const d = await r.json() as { id: string }; go(`/app?site=${d.id}`); }
+  return <div className="app-shell"><header className="topbar"><Brand/><div className="user-pill"><span className="avatar">A</span><span>Mi espacio</span></div></header><main className="dashboard"><div className="hero"><div><p className="eyebrow">PANEL DE CONTROL</p><h1>Tu próxima gran web empieza aquí.</h1><p className="muted">Gestiona tus sitios y convierte tus ideas en experiencias memorables.</p></div><span className="spark">✦</span></div><section className="section-head"><div><h2>Mis sitios</h2><p className="muted">{sites.length ? "Tus proyectos, siempre a mano." : "Crea tu primer proyecto en unos segundos."}</p></div></section><div className="create-card"><div className="create-icon">＋</div><div><h3>Crear un nuevo sitio</h3><p className="muted">Empieza con una página pensada para tu marca.</p></div><form onSubmit={create}><input value={name} onChange={e => setName(e.target.value)} placeholder="Nombre del sitio" aria-label="Nombre del sitio"/><button className="primary" disabled={creating}>{creating ? "Creando…" : "Crear sitio"}</button></form></div>{error && <div className="alert">{error}</div>}<div className="site-grid">{sites.map(site => <article className="site-card" key={site.id}><div className="site-preview"><span>ZW</span></div><div className="site-info"><div><h3>{site.name}</h3><p className="muted">{site.status === "active" ? "Publicado" : "Borrador"}</p></div><button className="secondary" onClick={() => go(`/app?site=${site.id}`)}>Editar sitio <span>→</span></button></div></article>)}</div></main></div>;
 }
-
-createRoot(document.getElementById("root")!).render(<Panel />);
+function Editor({ siteId }: { siteId: string }) {
+  const PAGE = new URLSearchParams(location.search).get("page") ?? "p_home"; const [doc, setDoc] = useState<any>(null); const [rev, setRev] = useState(0); const [status, setStatus] = useState("Cargando tu editor…");
+  useEffect(() => { api(`/api/sites/${siteId}/draft`).then(async r => { if (r.status === 401) return go("/app"); if (!r.ok) throw new Error("No se pudo cargar"); const d = await r.json() as Draft; setDoc(d.doc); setRev(d.rev); setStatus("Listo para crear"); }).catch(() => setStatus("No se pudo cargar el editor")); }, [siteId]);
+  if (!doc) return <div className="loading"><Brand/><p>{status}</p></div>;
+  const save = async (data: any) => { const next = mergeEditedPage(doc, puckToDocument({ content: data.content, root: data.root }, PAGE)); setStatus("Guardando…"); const r = await api(`/api/sites/${siteId}/draft`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ doc: next, expectedRev: rev }) }); if (r.status === 409) { setStatus("Otro cambio fue guardado. Recargando…"); const d = await (await api(`/api/sites/${siteId}/draft`)).json() as Draft; setDoc(d.doc); setRev(d.rev); return; } if (!r.ok) { setStatus("No se pudo guardar"); return; } const d = await r.json() as { rev: number }; setDoc(next); setRev(d.rev); setStatus("Guardado"); };
+  async function publish() { setStatus("Publicando…"); const r = await api(`/api/sites/${siteId}/publish`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }); setStatus(r.ok ? "Publicado correctamente" : "Revisa el contenido antes de publicar"); }
+  return <div className="editor-shell"><header className="editorbar"><button className="back" onClick={() => go("/app")}>←</button><Brand/><span className="divider"/><span className="editor-status">{status}</span><button className="primary publish" onClick={publish}>Publicar sitio</button></header><div className="editor-body"><Puck config={buildEditorConfig({})} data={documentToPuck(doc, PAGE)} onPublish={save}/><iframe title="Vista previa" sandbox="allow-scripts" src={`/api/sites/${siteId}/preview?page=${PAGE}`} /></div></div>;
+}
+function App() {
+  const [route, setRoute] = useState(location.href); const [sites, setSites] = useState<Site[]>([]);
+  const [state, setState] = useState("loading");
+  useEffect(() => { const f = () => setRoute(location.href); addEventListener("popstate", f); return () => removeEventListener("popstate", f); }, []);
+  async function refresh() { setState("loading"); try { const r = await api("/api/sites"); if (r.status === 401) { setState("login"); return; } if (!r.ok) throw new Error(); setSites((await r.json() as { sites: Site[] }).sites); setState("ready"); } catch { setState("error"); } }
+  useEffect(() => { void refresh(); }, [route]);
+  if (state === "loading") return <div className="loading"><Brand/><p>Cargando tu espacio…</p></div>;
+  if (state === "login") return <Login onDone={() => { void refresh(); }}/>;
+  if (state === "error") return <div className="loading"><Brand/><p>No pudimos conectar con tu espacio.</p><button className="primary" onClick={refresh}>Reintentar</button></div>;
+  const siteId = new URL(route).searchParams.get("site");
+  return siteId ? <Editor key={siteId} siteId={siteId}/> : <Dashboard sites={sites} refresh={refresh}/>;
+}
+createRoot(document.getElementById("root")!).render(<App/>);
