@@ -347,30 +347,30 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       if (password.length < 12) throw new Error("BOOTSTRAP_OWNER_PASSWORD requires at least 12 characters");
       if (!process.env.DATABASE_URL) throw new Error("DATABASE_URL is required for owner bootstrap");
       const bootstrapPool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
-      const existing = await bootstrapPool.query<{ id: string }>("SELECT id FROM users WHERE lower(email) = lower($1) LIMIT 1", [email]);
-      if (existing.rows.length === 0) {
-        const bootstrapId = randomUUID();
-        const passwordHash = await hashPassword(password);
-        const client = await bootstrapPool.connect();
-        try {
-          await client.query("BEGIN");
-          await client.query("SELECT set_config('app.user_id', $1, true)", [bootstrapId]);
-          await client.query(
-            "INSERT INTO users (id, email, name, password_hash) VALUES ($1, lower($2), $3, $4)",
-            [bootstrapId, email, name, passwordHash],
-          );
+      const bootstrapId = randomUUID();
+      const passwordHash = await hashPassword(password);
+      const client = await bootstrapPool.connect();
+      try {
+        await client.query("BEGIN");
+        const found = await client.query<{ id: string }>("SELECT id FROM auth_lookup_login($1)", [email]);
+        const userId = found.rows[0]?.id ?? bootstrapId;
+        await client.query("SELECT set_config('app.user_id', $1, true)", [userId]);
+        if (found.rows[0]) {
+          await client.query("UPDATE users SET name = $2, password_hash = $3 WHERE id = $1", [userId, name, passwordHash]);
           await client.query("COMMIT");
-        } catch (error) {
-          await client.query("ROLLBACK");
-          throw error;
-        } finally {
-          client.release();
+          console.log(`bootstrap owner password synchronized: ${email}`);
+        } else {
+          await client.query("INSERT INTO users (id, email, name, password_hash) VALUES ($1, lower($2), $3, $4)", [userId, email, name, passwordHash]);
+          await client.query("COMMIT");
+          console.log(`bootstrap owner created: ${email}`);
         }
-        console.log(`bootstrap owner created: ${email}`);
-      } else {
-        console.log(`bootstrap owner already exists: ${email}`);
+      } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+      } finally {
+        client.release();
+        await bootstrapPool.end();
       }
-      await bootstrapPool.end();
     }
     const preview: PreviewConfig | undefined = process.env.PREVIEW_SECRET
       ? {
