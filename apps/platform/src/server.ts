@@ -239,11 +239,18 @@ async function handleApi(pool: import("pg").Pool, sitesRoot: string, req: Incomi
       else json(res, 422, { error: r.reason });
       return true;
     }
+    if (req.method === "DELETE") {
+      const assetId = url.searchParams.get("id");
+      if (!assetId) { json(res, 422, { error: "missing_id" }); return true; }
+      await withUser(pool, session.userId, async (tx) => { await tx.query("DELETE FROM assets WHERE id = $1 AND site_id = $2", [assetId, siteId]); });
+      json(res, 204, {});
+      return true;
+    }
     if (req.method === "GET") {
       const rows = await withUser(pool, session.userId, async (tx) =>
         (await tx.query("SELECT id, kind, bytes, mime, path, takedown_status FROM assets WHERE site_id = $1 ORDER BY created_at", [siteId])).rows,
       );
-      json(res, 200, { assets: rows });
+      json(res, 200, { assets: rows.map((a) => ({ ...a, publicUrl: `/assets/${siteId}/${a.path}` })) });
       return true;
     }
   }
