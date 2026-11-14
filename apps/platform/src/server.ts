@@ -337,6 +337,23 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       await pool.end();
       console.log(`migrations applied: ${applied.length ? applied.join(", ") : "none"}`);
     }
+    if (process.env.BOOTSTRAP_OWNER_EMAIL || process.env.BOOTSTRAP_OWNER_PASSWORD) {
+      const email = process.env.BOOTSTRAP_OWNER_EMAIL;
+      const password = process.env.BOOTSTRAP_OWNER_PASSWORD;
+      const name = process.env.BOOTSTRAP_OWNER_NAME ?? "Propietario";
+      if (!email || !password) throw new Error("BOOTSTRAP_OWNER_EMAIL and BOOTSTRAP_OWNER_PASSWORD are required together");
+      if (password.length < 12) throw new Error("BOOTSTRAP_OWNER_PASSWORD requires at least 12 characters");
+      if (!process.env.DATABASE_URL) throw new Error("DATABASE_URL is required for owner bootstrap");
+      const bootstrapPool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
+      const existing = await bootstrapPool.query<{ id: string }>("SELECT id FROM users WHERE lower(email) = lower($1) LIMIT 1", [email]);
+      if (existing.rows.length === 0) {
+        await createUser(bootstrapPool, email, name, password);
+        console.log(`bootstrap owner created: ${email}`);
+      } else {
+        console.log(`bootstrap owner already exists: ${email}`);
+      }
+      await bootstrapPool.end();
+    }
     const preview: PreviewConfig | undefined = process.env.PREVIEW_SECRET
       ? {
           baseDomain: process.env.PREVIEW_BASE_DOMAIN ?? "preview.localhost",
