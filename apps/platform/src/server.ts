@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { hashPassword } from "@webdesign/auth";
 import pg from "pg";
 import { readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { extname, join } from "node:path";
 import { migrate, withUser } from "@webdesign/db";
 import {
   verifyPreviewToken,
@@ -207,7 +207,8 @@ async function handleApi(pool: import("pg").Pool, sitesRoot: string, req: Incomi
     const physical = join(sitesRoot, siteId, "assets", relative);
     try {
       const body = await readFile(physical);
-      res.writeHead(200, { "content-type": publicAssetMatch[2] === "image" ? "image/*" : "application/octet-stream", "cache-control": "private, max-age=3600", "x-content-type-options": "nosniff" });
+      const mime = { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp" }[extname(physical).toLowerCase()] ?? "application/octet-stream";
+       res.writeHead(200, { "content-type": mime, "cache-control": "private, max-age=3600" });
       res.end(body);
     } catch { json(res, 404, { error: "not_found" }); }
     return true;
