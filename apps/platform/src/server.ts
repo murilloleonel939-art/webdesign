@@ -345,7 +345,11 @@ if (import.meta.url === `file://${process.argv[1]}`) {
           secure: process.env.PREVIEW_SECURE === "1",
         }
       : undefined;
-    createApp({ preview }).listen(port, () => console.log(`platform on :${port}`));
+    const pool = process.env.DATABASE_URL
+      ? new pg.Pool({ connectionString: process.env.DATABASE_URL })
+      : undefined;
+    createApp({ preview, pool, sitesRoot: process.env.SITES_ROOT ?? "/data/sites" })
+      .listen(port, () => console.log(`platform on :${port}`));
   };
   start().catch((e) => {
     console.error(e);
