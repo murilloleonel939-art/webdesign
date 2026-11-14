@@ -11,10 +11,14 @@ type Props = Record<string, unknown>;
 
 // Puck exige que cada componente declare sus campos; el render delega en el
 // componente puro compartido con el renderer para que no haya dos disenos.
+export function resolveEditorAssetPath(path: string): string {
+  return path.startsWith("/") ? path : `/assets/${path}`;
+}
+
 function makeRender(type: Section["type"], assets: readonly { id: string; path?: string }[]) {
   const Component = SECTION_COMPONENTS[type] as unknown as (p: { section: Section; editing?: boolean; resolveAsset?: (id: string) => { src: string; alt: string } | undefined }) => ReactElement;
   return function Render(props: Props) {
-    const resolveAsset = (id: string) => { const asset = assets.find(a => a.id === id); return asset?.path ? { src: `/assets/${asset.path}`, alt: "" } : undefined; };
+    const resolveAsset = (id: string) => { const asset = assets.find(a => a.id === id); return asset?.path ? { src: resolveEditorAssetPath(asset.path), alt: "" } : undefined; };
     return <Component section={{ id: "preview", type, props }} editing resolveAsset={resolveAsset} />;
   };
 }
