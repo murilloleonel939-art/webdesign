@@ -1,5 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
+import { hashPassword } from "@webdesign/auth";
 import pg from "pg";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -349,8 +350,22 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       const existing = await bootstrapPool.query<{ id: string }>("SELECT id FROM users WHERE lower(email) = lower($1) LIMIT 1", [email]);
       if (existing.rows.length === 0) {
         const bootstrapId = randomUUID();
-        await bootstrapPool.query("SELECT set_config('app.user_id', $1, false)", [bootstrapId]);
-        await createUser(bootstrapPool, email, name, password, bootstrapId);
+        const passwordHash = await hashPassword(password);
+        const client = await bootstrapPool.connect();
+        try {
+          await client.query("BEGIN");
+          await client.query("SELECT set_config('app.user_id', $1, true)", [bootstrapId]);
+          await client.query(
+            "INSERT INTO users (id, email, name, password_hash) VALUES ($1, lower($2), $3, $4)",
+            [bootstrapId, email, name, passwordHash],
+          );
+          await client.query("COMMIT");
+        } catch (error) {
+          await client.query("ROLLBACK");
+          throw error;
+        } finally {
+          client.release();
+        }
         console.log(`bootstrap owner created: ${email}`);
       } else {
         console.log(`bootstrap owner already exists: ${email}`);
