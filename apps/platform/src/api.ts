@@ -88,6 +88,15 @@ export async function createSite(pool: Pool, userId: string, name: string): Prom
   await withUser(pool, userId, async (tx) => {
     await tx.query("INSERT INTO sites (id, owner_id, name) VALUES ($1, $2, $3)", [id, userId, name]);
   });
+  const doc = {
+    schemaVersion: 1, meta: { name, lang: "es", favicon: null },
+    design: { brief: "", idea: "", presetId: "editorial", dials: { variance: 3, motion: 2, density: 5 } },
+    theme: { colors: { ground: "#f7f7f2", ink: "#172033", accent: "#3b82f6" }, typography: { family: "Inter", scale: "normal" }, spacing: { margin: 48, sectionGap: 48 }, radius: "rounded" },
+    pages: [{ id: "p_home", slug: "/", seo: { title: name, description: "", noindex: false }, sections: [] }],
+    assets: [], integrations: { chatWidget: { enabled: false }, whatsapp: { phone: null, message: "" } },
+  };
+  const initialized = await saveDraft(pool, { userId, siteId: id, doc, expectedRev: 0, actorType: "user" });
+  if (!initialized.ok) throw new Error("failed to initialize site draft");
   return id;
 }
 
