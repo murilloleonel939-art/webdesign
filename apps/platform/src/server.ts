@@ -1,4 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { randomUUID } from "node:crypto";
 import pg from "pg";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -347,7 +348,9 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       const bootstrapPool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
       const existing = await bootstrapPool.query<{ id: string }>("SELECT id FROM users WHERE lower(email) = lower($1) LIMIT 1", [email]);
       if (existing.rows.length === 0) {
-        await createUser(bootstrapPool, email, name, password);
+        const bootstrapId = randomUUID();
+        await bootstrapPool.query("SELECT set_config('app.user_id', $1, false)", [bootstrapId]);
+        await createUser(bootstrapPool, email, name, password, bootstrapId);
         console.log(`bootstrap owner created: ${email}`);
       } else {
         console.log(`bootstrap owner already exists: ${email}`);

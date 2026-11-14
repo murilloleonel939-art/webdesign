@@ -49,8 +49,7 @@ function hashToken(token: string): { tokenHash: string } {
   return { tokenHash: createHash("sha256").update(token).digest("hex") };
 }
 
-export async function createUser(pool: Pool, email: string, name: string, password: string): Promise<string> {
-  const id = randomUUID();
+export async function createUser(pool: Pool, email: string, name: string, password: string, id = randomUUID()): Promise<string> {
   const passwordHash = await hashPassword(password);
   await pool.query(
     `INSERT INTO users (id, email, name, password_hash) VALUES ($1, lower($2), $3, $4)`,
