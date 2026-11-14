@@ -100,6 +100,13 @@ export async function createSite(pool: Pool, userId: string, name: string): Prom
   return id;
 }
 
+export async function deleteSite(pool: Pool, userId: string, siteId: string): Promise<boolean> {
+  return withUser(pool, userId, async (tx) => {
+    const result = await tx.query("DELETE FROM sites WHERE id = $1 AND owner_id = $2", [siteId, userId]);
+    return result.rowCount === 1;
+  });
+}
+
 export async function listSites(pool: Pool, userId: string): Promise<{ id: string; name: string; status: string }[]> {
   return withUser(pool, userId, async (tx) => {
     const r = await tx.query<{ id: string; name: string; status: string }>(

@@ -14,7 +14,7 @@ import {
   type PreviewConfig,
   type UsedLinkStore,
 } from "@webdesign/preview";
-import { parseCookies, resolveSession, login, createUser, createSite, listSites, saveDraft, loadDraft, publish, rollbackTo, activeAssets, SESSION_COOKIE } from "./api.js";
+import { parseCookies, resolveSession, login, createUser, createSite, deleteSite, listSites, saveDraft, loadDraft, publish, rollbackTo, activeAssets, SESSION_COOKIE } from "./api.js";
 import { renderPage } from "@webdesign/renderer";
 import { registerAsset, type AssetKind } from "@webdesign/assets";
 
@@ -176,6 +176,17 @@ async function handleApi(pool: import("pg").Pool, sitesRoot: string, req: Incomi
     const body = (await readJson(req)) as { name?: string };
     const id = await createSite(pool, session.userId, body.name ?? "Mi sitio");
     json(res, 201, { id });
+    return true;
+  }
+
+  const deleteSiteMatch = /^\/api\/sites\/([0-9a-f-]{36})$/.exec(url.pathname);
+  if (req.method === "DELETE" && deleteSiteMatch) {
+    if (!session) {
+      json(res, 401, { error: "unauthorized" });
+      return true;
+    }
+    const deleted = await deleteSite(pool, session.userId, deleteSiteMatch[1]!);
+    json(res, deleted ? 200 : 404, deleted ? { ok: true } : { error: "not_found" });
     return true;
   }
 
