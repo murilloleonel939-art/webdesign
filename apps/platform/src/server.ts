@@ -119,7 +119,7 @@ export function createApp(opts: AppOptions = {}) {
     }
 
     // --- Ciclo del editor (Fase 1): crear, editar, publicar, revertir ---
-    if (opts.pool && url.pathname.startsWith("/api/")) {
+    if (opts.pool && (url.pathname.startsWith("/api/") || url.pathname.startsWith("/assets/"))) {
       const handled = await handleApi(opts.pool, opts.sitesRoot ?? "/data/sites", req, res, url);
       if (handled) return;
     }
