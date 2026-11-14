@@ -200,6 +200,21 @@ async function handleApi(pool: import("pg").Pool, sitesRoot: string, req: Incomi
   }
 
   // Subida de asset: cuerpo binario crudo; el tipo real se detecta del contenido.
+  const publicAssetMatch = /^\/assets\/([0-9a-f-]{36})\/(image|video|poster)\/([a-zA-Z0-9._-]+)$/.exec(url.pathname);
+  if (req.method === "GET" && publicAssetMatch && session) {
+    const siteId = publicAssetMatch[1]!;
+    const assets = await activeAssets(pool, session.userId, siteId, sitesRoot);
+    const relative = `${publicAssetMatch[2]}/${publicAssetMatch[3]}`;
+    const physical = assets.assetFiles[`assets/${relative}`];
+    if (!physical) { json(res, 404, { error: "not_found" }); return true; }
+    try {
+      const body = await readFile(physical);
+      res.writeHead(200, { "content-type": publicAssetMatch[2] === "image" ? "image/*" : "application/octet-stream", "cache-control": "private, max-age=3600", "x-content-type-options": "nosniff" });
+      res.end(body);
+    } catch { json(res, 404, { error: "not_found" }); }
+    return true;
+  }
+
   const assetsMatch = /^\/api\/sites\/([0-9a-f-]{36})\/assets$/.exec(url.pathname);
   if (assetsMatch) {
     if (!session) {
