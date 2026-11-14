@@ -23,11 +23,11 @@ function makeRender(type: Section["type"]) {
 const text = (label: string) => ({ type: "text" as const, label });
 
 export interface EditorConfigOptions {
-  // Lista de tipografias alojadas: Puck no ofrece nada fuera de ella (6.2).
   hostedFonts: readonly string[];
+  assets?: readonly { id: string; label?: string }[];
 }
 
-export function buildEditorConfig(_opts: EditorConfigOptions): Config {
+export function buildEditorConfig(opts: EditorConfigOptions): Config {
   return {
     components: {
       hero: {
@@ -48,7 +48,7 @@ export function buildEditorConfig(_opts: EditorConfigOptions): Config {
       },
       image: {
         label: "Imagen",
-        fields: { assetId: { type: "text", label: "Asset" }, alt: text("Texto alternativo") },
+        fields: { assetId: { type: "custom", label: "Imagen", render: ({ value, onChange }) => <div style={{ display: "grid", gap: 8 }} onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); const id = e.dataTransfer.getData("text/asset-id"); if (id) onChange(id); }}>{opts.assets?.length ? opts.assets.map(a => <button type="button" key={a.id} draggable onDragStart={e => e.dataTransfer.setData("text/asset-id", a.id)} onClick={() => onChange(a.id)} style={{ textAlign: "left", border: value === a.id ? "2px solid #2563eb" : "1px solid #d1d5db", borderRadius: 8, padding: 8, cursor: "grab", background: "white" }}>{a.label ?? a.id}</button>) : <small>Sube una imagen para seleccionarla</small>}<small>Arrastra una imagen aquí o haz clic para seleccionarla.</small></div> }, alt: text("Texto alternativo") },
         defaultProps: { assetId: "" },
         render: makeRender("image"),
       },

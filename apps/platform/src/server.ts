@@ -201,12 +201,10 @@ async function handleApi(pool: import("pg").Pool, sitesRoot: string, req: Incomi
 
   // Subida de asset: cuerpo binario crudo; el tipo real se detecta del contenido.
   const publicAssetMatch = /^\/assets\/([0-9a-f-]{36})\/(image|video|poster)\/([a-zA-Z0-9._-]+)$/.exec(url.pathname);
-  if (req.method === "GET" && publicAssetMatch && session) {
+  if (req.method === "GET" && publicAssetMatch) {
     const siteId = publicAssetMatch[1]!;
-    const assets = await activeAssets(pool, session.userId, siteId, sitesRoot);
     const relative = `${publicAssetMatch[2]}/${publicAssetMatch[3]}`;
-    const physical = assets.assetFiles[`assets/${relative}`];
-    if (!physical) { json(res, 404, { error: "not_found" }); return true; }
+    const physical = join(sitesRoot, siteId, "assets", relative);
     try {
       const body = await readFile(physical);
       res.writeHead(200, { "content-type": publicAssetMatch[2] === "image" ? "image/*" : "application/octet-stream", "cache-control": "private, max-age=3600", "x-content-type-options": "nosniff" });
@@ -243,7 +241,7 @@ async function handleApi(pool: import("pg").Pool, sitesRoot: string, req: Incomi
     }
     if (req.method === "GET") {
       const rows = await withUser(pool, session.userId, async (tx) =>
-        (await tx.query("SELECT id, kind, bytes, takedown_status FROM assets WHERE site_id = $1 ORDER BY created_at", [siteId])).rows,
+        (await tx.query("SELECT id, kind, bytes, mime, path, takedown_status FROM assets WHERE site_id = $1 ORDER BY created_at", [siteId])).rows,
       );
       json(res, 200, { assets: rows });
       return true;
