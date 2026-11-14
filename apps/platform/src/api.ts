@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
+import { readFile } from "node:fs/promises";
 import type { Pool } from "pg";
 import { withUser } from "@webdesign/db";
 import { hashPassword, verifyPassword, newSessionToken } from "@webdesign/auth";
@@ -120,6 +121,7 @@ export async function listSites(pool: Pool, userId: string): Promise<{ id: strin
 export async function activeAssets(pool: Pool, userId: string, siteId: string, sitesRoot: string): Promise<{
   resolveAssetPath: (assetId: string) => string | undefined;
   assetFiles: Record<string, string>;
+  assetFilesById: Map<string, Buffer>;
 }> {
   const rows = await withUser(pool, userId, async (tx) =>
     (await tx.query<{ id: string; path: string }>(
@@ -128,10 +130,15 @@ export async function activeAssets(pool: Pool, userId: string, siteId: string, s
     )).rows,
   );
   // Ruta absoluta: una relativa rompe en paginas anidadas ("/precios/" buscaria /precios/assets).
-  const byId = new Map(rows.map((r) => [r.id, `/assets/${r.path}`]));
+  const byId = new Map(rows.map((r) => [r.id, `/assets/${siteId}/${r.path}`]));
   const assetFiles: Record<string, string> = {};
   for (const r of rows) assetFiles[`assets/${r.path}`] = join(sitesRoot, siteId, "assets", r.path);
-  return { resolveAssetPath: (id) => byId.get(id), assetFiles };
+  // Bytes en memoria: la vista previa los incrusta como data URI y asi no depende de rutas.
+  const assetFilesById = new Map<string, Buffer>();
+  for (const r of rows) {
+    try { assetFilesById.set(r.id, await readFile(join(sitesRoot, siteId, "assets", r.path))); } catch { /* asset sin archivo */ }
+  }
+  return { resolveAssetPath: (id) => byId.get(id), assetFiles, assetFilesById };
 }
 
 export { saveDraft, loadDraft, publish, rollbackTo, SESSION_COOKIE };

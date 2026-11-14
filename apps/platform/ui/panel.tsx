@@ -30,11 +30,52 @@ function Editor({ siteId }: { siteId: string }) {
   async function removeAsset(id: string) { if (!confirm("¿Eliminar esta imagen?")) return; const r = await api(`/api/sites/${siteId}/assets?id=${encodeURIComponent(id)}`, { method: "DELETE" }); if (r.ok) { await refreshAssets(); setStatus("Imagen eliminada"); } }
   async function upload(file: File) { setUploading(true); const r = await api(`/api/sites/${siteId}/assets?kind=image`, { method: "POST", headers: { "content-type": file.type }, body: file }); setUploading(false); if (r.ok) { await refreshAssets(); setStatus("Imagen subida. Copia su ID en el bloque Imagen."); } else setStatus("No se pudo subir la imagen"); }
   useEffect(() => { void refreshAssets(); }, [siteId]);
-  const saving = useRef(false); const pending = useRef<any>(null); const docRef = useRef<any>(null); const revRef = useRef(0); const [showPreview, setShowPreview] = useState(false);
+  const saving = useRef(false); const pending = useRef<any>(null); const docRef = useRef<any>(null); const revRef = useRef(0); const [showPreview, setShowPreview] = useState(false); const [showAssets, setShowAssets] = useState(true);
   useEffect(() => { api(`/api/sites/${siteId}/draft`).then(async r => { if (r.status === 401) return go("/app"); if (!r.ok) throw new Error("No se pudo cargar"); const d = await r.json() as Draft; docRef.current = d.doc; revRef.current = d.rev; setDoc(d.doc); setRev(d.rev); setStatus("Listo para crear"); }).catch(() => setStatus("No se pudo cargar el editor")); }, [siteId]);
   if (!doc) return <div className="loading"><Brand/><p>{status}</p></div>; const save = async (data: any) => { pending.current = data; if (saving.current) return; saving.current = true; while (pending.current) { const current = pending.current; pending.current = null; const next = mergeEditedPage(docRef.current ?? doc, puckToDocument({ content: current.content, root: current.root }, PAGE)); setStatus("Guardando…"); const r = await api(`/api/sites/${siteId}/draft`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ doc: next, expectedRev: revRef.current }) }); if (r.status === 409) { setStatus("Otro cambio fue guardado. Recargando…"); const d = await (await api(`/api/sites/${siteId}/draft`)).json() as Draft; docRef.current = d.doc; revRef.current = d.rev; setDoc(d.doc); setRev(d.rev); continue; } if (!r.ok) { setStatus("No se pudo guardar"); continue; } const d = await r.json() as { rev: number }; docRef.current = next; revRef.current = d.rev; setDoc(next); setRev(d.rev); setStatus("Guardado"); } saving.current = false; };
   async function publish() { setStatus("Publicando…"); const r = await api(`/api/sites/${siteId}/publish`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }); setStatus(r.ok ? "Publicado correctamente" : "Revisa el contenido antes de publicar"); }
-  return <div className="editor-shell"><header className="editorbar"><button className="back" onClick={() => go("/app")}>←</button><Brand/><span className="divider"/><span className="editor-status">{status}</span><button className="back" onClick={() => setShowPreview(true)}>Vista previa</button><button className="primary publish" onClick={publish}>Publicar sitio</button></header><div className="editor-body"><Puck config={buildEditorConfig({ assets: assets.map(a => ({ id: a.id, path: a.publicUrl })) })} data={documentToPuck(doc, PAGE)} onChange={save} onPublish={save}/><aside className="asset-panel"><strong>Biblioteca de imágenes</strong><small>Arrastra una miniatura al campo Imagen.</small><label className="upload-button">{uploading ? "Subiendo…" : "＋ Subir imagen"}<input type="file" accept="image/png,image/jpeg,image/webp" hidden disabled={uploading} onChange={e => { const f = e.target.files?.[0]; if (f) void upload(f); e.currentTarget.value = ""; }}/></label>{assets.length ? assets.map(a => <button className="asset-item" key={a.id} draggable onDragStart={e => e.dataTransfer.setData("text/asset-id", a.id)} title="Arrastra o haz clic para usar esta imagen" onClick={() => { void navigator.clipboard?.writeText(a.id); setStatus("Imagen seleccionada. Arrástrala al campo Imagen."); }}>{a.publicUrl && <img src={a.publicUrl} alt="" onError={e => { e.currentTarget.style.display = "none"; }}/>}<span>{a.id.slice(0, 8)}</span><b role="button" tabIndex={0} onClick={e => { e.stopPropagation(); void removeAsset(a.id); }}>×</b></button>) : <small>Aún no hay imágenes.</small>}</aside>{showPreview && <div role="dialog" aria-label="Vista previa" style={{ position: "fixed", inset: 0, zIndex: 1000, background: "#0f1424", display: "flex", flexDirection: "column" }}><div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 22px", color: "#fff", fontFamily: "Inter, system-ui, sans-serif" }}><div style={{ display: "flex", alignItems: "center", gap: 12 }}><span style={{ fontWeight: 800, fontSize: 16 }}>Vista previa</span><span style={{ fontSize: 13, color: "#9aa4b8" }}>Así verán tu sitio los visitantes</span></div><button onClick={() => setShowPreview(false)} style={{ border: 0, borderRadius: 10, padding: "10px 18px", background: "#fff", color: "#18212f", fontWeight: 750, cursor: "pointer" }}>✕ Cerrar vista previa</button></div><iframe title="Vista previa" sandbox="allow-scripts" src={`/api/sites/${siteId}/preview?page=${PAGE}`} style={{ flex: 1, width: "100%", border: 0, background: "#fff" }}/></div>}</div></div>;
+  return <div className="editor-shell">
+    <header className="editorbar">
+      <button className="back" onClick={() => go("/app")} aria-label="Volver al panel">←</button>
+      <Brand/>
+      <span className="divider"/>
+      <span className="editor-status">{status}</span>
+      <div className="editor-actions">
+        <button className="asset-trigger" aria-expanded={showAssets} onClick={() => setShowAssets(v => !v)}>
+          Imágenes {assets.length > 0 && <span className="asset-count">{assets.length}</span>}
+        </button>
+        <button className="ghost" onClick={() => setShowPreview(true)}>Vista previa</button>
+        <button className="primary publish" onClick={publish}>Publicar sitio</button>
+      </div>
+    </header>
+    <div className="editor-body">
+      <Puck config={buildEditorConfig({ assets: assets.map(a => ({ id: a.id, path: a.publicUrl })) })} data={documentToPuck(doc, PAGE)} onChange={save} onPublish={save}/>
+      {showAssets && <aside className="asset-drawer" aria-label="Biblioteca de imágenes">
+        <header>
+          <div><h3>Biblioteca de imágenes</h3><p>Arrastra una miniatura al campo Imagen.</p></div>
+          <button className="close" onClick={() => setShowAssets(false)} aria-label="Cerrar biblioteca">✕</button>
+        </header>
+        <label className="upload-button">{uploading ? "Subiendo…" : "Subir imagen"}<input type="file" accept="image/png,image/jpeg,image/webp" hidden disabled={uploading} onChange={e => { const f = e.target.files?.[0]; if (f) void upload(f); e.currentTarget.value = ""; }}/></label>
+        <div className="asset-list">
+          {assets.length ? assets.map(a => <button className="asset-item" key={a.id} draggable onDragStart={e => e.dataTransfer.setData("text/asset-id", a.id)} title="Arrastra al campo Imagen o haz clic para copiar el ID" onClick={() => { void navigator.clipboard?.writeText(a.id); setStatus("ID copiado al portapapeles"); }}>
+            {a.publicUrl ? <img className="asset-thumb" src={a.publicUrl} alt="" onError={e => { e.currentTarget.style.visibility = "hidden"; }}/> : <span className="asset-thumb asset-thumb--empty">—</span>}
+            <span className="asset-meta"><span>{a.id.slice(0, 8)}</span><small>{a.bytes ? `${Math.round(a.bytes / 1024)} KB` : "imagen"}</small></span>
+            <b className="asset-remove" role="button" tabIndex={0} aria-label="Eliminar imagen" onClick={e => { e.stopPropagation(); void removeAsset(a.id); }}>✕</b>
+          </button>) : <p className="asset-empty">Aún no has subido imágenes.</p>}
+        </div>
+      </aside>}
+      {showPreview && <div role="dialog" aria-modal="true" aria-label="Vista previa del sitio" className="preview-overlay" style={{ position: "fixed", inset: 0, zIndex: 1000, background: "#0b1020", display: "flex", flexDirection: "column" }}>
+        <header style={{ flex: "none", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16, padding: "12px 20px", background: "#0b1020", borderBottom: "1px solid #1d2740" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, color: "#fff" }}>
+            <span style={{ fontWeight: 700, fontSize: 14 }}>Vista previa</span>
+            <span style={{ fontSize: 12, color: "#8b97b3" }}>Así verán tu sitio los visitantes</span>
+          </div>
+          <button onClick={() => setShowPreview(false)} style={{ display: "inline-flex", alignItems: "center", gap: 7, padding: "9px 16px", borderRadius: 10, border: "1px solid #2b3757", background: "#131c33", color: "#fff", fontWeight: 650, fontSize: 13 }}>✕ Cerrar</button>
+        </header>
+        <iframe title="Vista previa" sandbox="allow-scripts" src={`/api/sites/${siteId}/preview?page=${PAGE}`} style={{ flex: 1, width: "100%", border: 0, background: "#fff" }}/>
+      </div>}
+    </div>
+  </div>;
 }
 function App() {
   const [route, setRoute] = useState(location.href); const [sites, setSites] = useState<Site[]>([]);

@@ -308,8 +308,15 @@ async function handleApi(pool: import("pg").Pool, sitesRoot: string, req: Incomi
     const assets = await activeAssets(pool, session.userId, siteId, sitesRoot);
     try {
       const rendered = renderPage(d.doc, pageId, (id) => {
+        // El iframe de vista previa corre aislado: una ruta relativa no resolveria.
+        // Se incrusta la imagen como data URI para que se vea igual que al publicar.
         const path = assets.resolveAssetPath(id);
-        return path ? { src: path, alt: "" } : undefined;
+        if (!path) return undefined;
+        const mime = { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp" }[extname(path).toLowerCase()] ?? "image/png";
+        const found = assets.assetFilesById.get(id);
+        return found
+          ? { src: `data:${mime};base64,${found.toString("base64")}`, alt: "" }
+          : { src: path, alt: "" };
       });
       send(res, 200, rendered, previewHeaders(PREVIEW_CSP));
     } catch {
