@@ -60,10 +60,12 @@ export async function createUser(pool: Pool, email: string, name: string, passwo
 
 export async function startSession(pool: Pool, userId: string, ttlMinutes = 60 * 24): Promise<string> {
   const { token, tokenHash } = newSessionToken();
-  await pool.query(
-    `INSERT INTO user_sessions (id, user_id, token_hash, expires_at) VALUES ($1, $2, $3, now() + ($4 || ' minutes')::interval)`,
-    [randomUUID(), userId, tokenHash, String(ttlMinutes)],
-  );
+  await withUser(pool, userId, async (tx) => {
+    await tx.query(
+      `INSERT INTO user_sessions (id, user_id, token_hash, expires_at) VALUES ($1, $2, $3, now() + ($4 || ' minutes')::interval)`,
+      [randomUUID(), userId, tokenHash, String(ttlMinutes)],
+    );
+  });
   return token;
 }
 
