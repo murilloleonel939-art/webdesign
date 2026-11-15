@@ -71,3 +71,16 @@ test("los assets entran por hardlink, no copiados", () => {
   // Un hardlink comparte inodo con el original: no es una copia.
   assert.equal(statSync(target).ino, statSync(source).ino);
 });
+
+test("un asset publicado queda en la URL que sirve el sitio", () => {
+  // El 404 en produccion vino de aqui: sin esta prueba, la clave del asset y la
+  // URL /assets/<siteId>/... podian divergir sin que nada fallara.
+  const path = "image/foto.jpg";
+  const origen = join(root, SITE, "assets", path);
+  mkdirSync(join(root, SITE, "assets", "image"), { recursive: true });
+  writeFileSync(origen, "contenido");
+  publishRelease(root, SITE, { "index.html": "<p>hola</p>" }, { [`assets/${SITE}/${path}`]: origen });
+  const servido = join(root, SITE, "releases", "v1", "assets", SITE, path);
+  assert.ok(existsSync(servido), `no se copio el asset: ${servido}`);
+  assert.equal(readFileSync(servido, "utf8"), "contenido");
+});
