@@ -321,3 +321,51 @@ test("the panel rejects path traversal", async () => {
     assert.equal(r.status, 404, path);
   }
 });
+
+test("the diagnostic endpoint is invisible without a token", async () => {
+  const r = await callRaw("GET", "/app/diagnose", false);
+  // Sin DIAGNOSTIC_TOKEN la ruta no existe: 404, no 401. No revela que exista.
+  assert.equal(r.status, 404);
+});
+
+test("the diagnostic reports migrations and counts, with no personal data", async () => {
+  process.env.DIAGNOSTIC_TOKEN = "token-de-prueba-1234567890";
+  const withToken = (header) =>
+    new Promise((resolve, reject) => {
+      const req = http.request(
+        { host: "127.0.0.1", port, path: "/app/diagnose", method: "GET", headers: { host: "panel.example.com", ...header } },
+        (res) => {
+          let text = "";
+          res.setEncoding("utf8");
+          res.on("data", (c) => (text += c));
+          res.on("end", () => resolve({ status: res.statusCode, headers: res.headers, text }));
+        },
+      );
+      req.on("error", reject);
+      req.end();
+    });
+
+  try {
+    // Sin cabecera o con token incorrecto: cerrado.
+    assert.equal((await withToken({})).status, 401);
+    assert.equal((await withToken({ "x-diagnostic-token": "otro-token-distinto-12345" })).status, 401);
+
+    const r = await withToken({ "x-diagnostic-token": "token-de-prueba-1234567890" });
+    assert.equal(r.status, 200);
+    assert.equal(r.headers["cache-control"], "no-store");
+    assert.equal(r.headers["x-robots-tag"], "noindex");
+
+    const body = JSON.parse(r.text);
+    assert.equal(body.ok, true);
+    assert.equal(body.database.reachable, true);
+    // Las siete migraciones de Fase 1 mas la de dominios.
+    assert.equal(body.migrations.missing.includes("0003_site_content_rls.sql"), false);
+    assert.equal(typeof body.counts.sites, "number");
+    assert.equal(body.counts.sites >= 1, true);
+    // No se filtran datos personales: solo recuentos y estados.
+    assert.equal(r.text.includes("@"), false, "el informe no debe traer emails");
+    assert.equal(/password|token_hash/i.test(r.text), false, "el informe no debe traer secretos");
+  } finally {
+    delete process.env.DIAGNOSTIC_TOKEN;
+  }
+});

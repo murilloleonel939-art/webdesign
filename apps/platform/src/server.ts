@@ -17,6 +17,7 @@ import {
 import { parseCookies, resolveSession, login, createUser, createSite, deleteSite, listSites, saveDraft, loadDraft, publish, rollbackTo, activeAssets, SESSION_COOKIE } from "./api.js";
 import { renderPage } from "@webdesign/renderer";
 import { registerAsset, type AssetKind } from "@webdesign/assets";
+import { diagnosticsEnabled, tokenMatches, runDiagnostics } from "./diagnose.js";
 
 // Punto de entrada de `platform`: healthcheck, panel y vista previa aislada.
 // La vista previa vive en su propio subdominio, con su propia cookie (spec 5.5).
@@ -115,6 +116,33 @@ export function createApp(opts: AppOptions = {}) {
       } catch {
         json(res, 404, { error: "not_found" });
       }
+      return;
+    }
+
+    // --- Diagnostico de base de datos (solo lectura, opt-in por token) ---
+    // Sin DIAGNOSTIC_TOKEN configurado esta ruta no existe.
+    if (url.pathname === "/app/diagnose" && diagnosticsEnabled()) {
+      if (req.method !== "GET" && req.method !== "HEAD") {
+        json(res, 405, { error: "method_not_allowed" });
+        return;
+      }
+      const presented = req.headers["x-diagnostic-token"];
+      if (!tokenMatches(typeof presented === "string" ? presented : null)) {
+        json(res, 401, { error: "unauthorized" });
+        return;
+      }
+      if (!opts.pool) {
+        json(res, 503, { error: "database_not_configured" });
+        return;
+      }
+      const report = await runDiagnostics(opts.pool, opts.sitesRoot ?? "/data/sites");
+      res.writeHead(report.ok ? 200 : 503, {
+        "content-type": "application/json; charset=utf-8",
+        // Nunca indexable ni cacheable: lleva estados internos.
+        "x-robots-tag": "noindex",
+        "cache-control": "no-store",
+      });
+      res.end(JSON.stringify(report, null, 2));
       return;
     }
 

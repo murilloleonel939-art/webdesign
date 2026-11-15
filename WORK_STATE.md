@@ -9,6 +9,11 @@ Construir la plataforma multi-sitio de agentes IA según `especificacion-constru
   rol `app_platform` con RLS forzada (`rolbypassrls = f`), migraciones forward-only,
   `apps/platform` con `/healthz` y migración al arrancar, CI verde.
 - **Fase 1 — Núcleo del sitio: en curso.**
+- **Orden de fases reordenado (ADR 0001, 15-nov-2026).** Se construye por prioridad de producto,
+  no por numeración: **1b → 2 → 4 → 3 → 2b → 2c → 5b**. Motivo verificado por HTTP: no hay ningún
+  sitio publicado (`https://zottaweb.site/` devuelve el 404 JSON de `platform`, Caddy no sirve
+  ninguna carpeta de `/data/hosts`) y el editor arranca en un lienzo vacío (`presetId` es texto
+  libre que no lee nadie). La Fase 1b adelanta el catálogo inicial desde 5b.
 
 ## Fase 1 — hecho
 | Paquete | Contenido | Pruebas |
@@ -71,3 +76,24 @@ Punto solicitado alcanzado: crear el nuevo recurso Caddy en Coolify de prueba.
 Imagen preparada en `deploy/caddy/Dockerfile` (no construida aquí; Docker no disponible).
 Runbook detalla contexto, puerto interno 80, datos compartidos de solo lectura y red de prueba.
 No se creó contenedor, no se desplegó ni se hizo commit/push.
+
+## Diagnóstico operativo (15-nov-2026, Fase 1b previa)
+
+`GET /app/diagnose`, de solo lectura y opt-in por `DIAGNOSTIC_TOKEN`. Sin esa variable la ruta
+no existe. Devuelve conectividad, versión y rol de Postgres, migraciones aplicadas y ausentes,
+recuentos por tabla y contenido de `/data/sites`. Nunca datos personales ni secretos.
+Runbook en `docs/runbooks/diagnostico.md`.
+
+Verificado: lógica del token (8 casos) y `runDiagnostics` con pool simulado (sano, migración
+ausente, base caída). **No verificado contra Postgres real**: 5432 cerrado en este entorno.
+
+## Próximo paso inmediato
+
+1. Añadir `DIAGNOSTIC_TOKEN` a `plataforma` en Coolify y redeploy.
+2. Ejecutar el runbook y confirmar que la base responde y qué migraciones hay.
+3. Con el parte en la mano, construir Fase 1b: catálogo, 8 presets y `apply-preset`.
+
+## Riesgo abierto
+
+`packages/db/migrations/0008_domains_leads.sql` existe sin probar: no hay Postgres accesible.
+Corre sola al arrancar. **No mezclarla con un redeploy hasta validarla.**

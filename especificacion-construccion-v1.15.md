@@ -1237,6 +1237,11 @@ Backups: Postgres con restauración probada y `/data/sites` con restic o rclone 
 
 Cada fase entrega código, migraciones, pruebas, README, evidencias de aceptación, riesgos y pendientes.
 
+**Orden de ejecución (ADR 0001).** Las fases se numeran por dependencia técnica, pero se construyen
+por prioridad de producto. Orden vigente: **1b → 2 → 4 → 3 → 2b → 2c → 5b**, y después 5 a 11 en su
+orden actual. Motivo: no hay ningún sitio publicado y el editor arranca en un lienzo vacío, así que
+el catálogo inicial va antes que el hosting y los cobros.
+
 ### Fase 0 · Fundamentos
 
 Monorepo, CI, TypeScript estricto, compose local, `site-schema`, `storage`, `db`, auth base, paquetes de seguridad e **i18n con `es` y `en`** (catálogos de mensajes, selector de idioma por cuenta y verificación en CI de que ambos catálogos tienen las mismas claves).
@@ -1248,6 +1253,22 @@ Monorepo, CI, TypeScript estricto, compose local, `site-schema`, `storage`, `db`
 Schema completo, migraciones, renderer, componentes, adaptador Puck, editor, preview aislada, releases, rollback, linter estático y almacenamiento.
 
 **Aceptación:** crear, editar, previsualizar, publicar y revertir; HTML válido, CSP, accesibilidad crítica y prueba de carga básica; tipo desconocido rechazado.
+
+### Fase 1b · Catálogo inicial y punto de partida
+
+Adelanta una parte acotada de 4 y 5b (ADR 0001): el editor deja de arrancar en un lienzo vacío.
+
+Tablas de §7.5 reducidas a `design_styles`, `design_palettes` y `design_font_pairings`, con
+`source`, `license`, `verified_at` y `status`. **Ocho presets escritos a mano** (autoría propia,
+`source = 'platform'`, `license = 'platform-generated'`), con contraste AA verificado y orden de
+secciones. `presetId` deja de ser texto libre y referencia una fila. Endpoint
+`POST /api/sites/:id/apply-preset` con revisión optimista y `audit_log`. Pantalla de inicio del
+editor para elegir estilo.
+
+**Aceptación:** un sitio nuevo se crea con un preset aplicado en una sola acción; aplicar un preset
+no altera páginas ni assets existentes; los ocho presets pasan la comprobación de contraste del
+linter; el cambio queda en `audit_log`; un `presetId` inexistente se rechaza con 400. **No entra:**
+crawl, verificación automática de licencias ni generación de variantes, que siguen en 5b.
 
 ### Fase 2 · Multiusuario y hosting
 
