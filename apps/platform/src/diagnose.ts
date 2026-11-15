@@ -15,7 +15,9 @@ export interface DiagnosticReport {
   // Presente solo en modo abierto: recuerda que hay que retirarlo.
   warning?: string | undefined;
   database: { reachable: boolean; version?: string | undefined; role?: string | undefined; error?: string | undefined };
-  migrations: { applied: number; files: string[]; missing: string[] };
+  migrations: { applied: number; files: string[]; missing: string[]; note?: string | undefined };
+  // Filas reales cuando RLS las oculta al rol de la app.
+  rlsHidden?: Record<string, number>;
   tables: { name: string; rows: number | null }[];
   counts: Record<string, number | null>;
   storage: { sitesRoot: string; sitesOnDisk: string[] | null; error?: string | undefined };
@@ -69,6 +71,8 @@ export async function runDiagnostics(pool: Pool, sitesRoot: string): Promise<Dia
     report.warning = "DIAGNOSTIC_OPEN activo: endpoint sin autenticacion. Retirar cuanto antes.";
   }
 
+  report.rlsHidden = {};
+
   try {
     const v = await pool.query<{ version: string; role: string }>(
       "SELECT version(), current_user AS role",
@@ -91,7 +95,9 @@ export async function runDiagnostics(pool: Pool, sitesRoot: string): Promise<Dia
       missing: EXPECTED_MIGRATIONS.filter((m) => !files.includes(m)),
     };
   } catch (e) {
-    report.database.error = `schema_migrations: ${(e as Error).message}`;
+    // Falta de permiso no es falta de migracion. Se distingue para no dar un
+    // falso negativo: el rol de la app no puede leer schema_migrations.
+    report.migrations.note = `sin permiso de lectura: ${(e as Error).message}`;
   }
 
   // Recuentos por tabla. Cada uno se intenta por separado: una tabla ausente
@@ -115,6 +121,17 @@ export async function runDiagnostics(pool: Pool, sitesRoot: string): Promise<Dia
     report.tables = [];
   }
 
+  // Con RLS forzada y sin app.user_id, count(*) devuelve 0 aunque haya filas.
+  // pg_stat_user_tables da el dato real. Se anota la diferencia para no
+  // confundir "vacio" con "oculto por RLS".
+  const realRows = new Map(report.tables.map((t) => [t.name, t.rows]));
+  for (const [table, value] of Object.entries(report.counts)) {
+    const real = realRows.get(table);
+    if (value === 0 && typeof real === "number" && real > 0) {
+      report.rlsHidden[table] = real;
+    }
+  }
+
   try {
     const { readdir } = await import("node:fs/promises");
     report.storage.sitesOnDisk = await readdir(sitesRoot);
@@ -123,6 +140,10 @@ export async function runDiagnostics(pool: Pool, sitesRoot: string): Promise<Dia
   }
 
   // Solo se declara sano si conecta y no falta ninguna migracion esperada.
-  report.ok = report.database.reachable && report.migrations.missing.length === 0;
+  // Sin permiso para leer schema_migrations no se puede afirmar que falten:
+  // se declara sano si la base responde y las tablas esperadas existen.
+  const migrationsUnknown = Boolean(report.migrations.note);
+  report.ok = report.database.reachable
+    && (migrationsUnknown ? report.tables.some((t) => t.name === "sites") : report.migrations.missing.length === 0);
   return report;
 }
