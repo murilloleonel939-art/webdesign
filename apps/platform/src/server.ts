@@ -39,7 +39,10 @@ const PANEL_CSP =
   "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-src 'self'; base-uri 'none'; form-action 'none'";
 const UI_DIR = process.env.UI_DIR ?? new URL("../ui-dist/", import.meta.url).pathname;
 
-const PREVIEW_CSP = "default-src 'self'; img-src 'self' https:; style-src 'self' 'unsafe-inline'; script-src 'none'";
+// La vista previa incrusta cada imagen como data: URI para que se vea igual
+// que al publicar sin depender del origen del panel. Sin `data:` en img-src el
+// navegador las bloqueaba y la imagen no aparecia en la vista previa.
+const PREVIEW_CSP = "default-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; script-src 'none'";
 
 function send(res: ServerResponse, status: number, body: string, headers: Record<string, string> = {}): void {
   res.writeHead(status, { "content-type": "text/html; charset=utf-8", ...headers });

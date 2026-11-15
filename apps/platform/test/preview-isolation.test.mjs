@@ -99,3 +99,11 @@ test("an unknown site renders 404 inside the preview origin", async () => {
   assert.equal(r.status, 404);
   assert.equal(r.headers["x-robots-tag"], "noindex");
 });
+
+test("la vista previa permite las imagenes incrustadas", async () => {
+  // La vista previa incrusta cada imagen como data: URI para verse igual que al
+  // publicar. Sin `data:` en img-src el navegador las bloqueaba en silencio.
+  const { token } = signPreviewLink(cfg, SITE, "p_home");
+  const r = await get(`/${encodeURIComponent(token)}`, `abc.preview.localhost`);
+  assert.match(r.headers["content-security-policy"] ?? "", /img-src[^;]*data:/);
+});
