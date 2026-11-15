@@ -6,6 +6,7 @@ import "./brand.css";
 import { buildEditorConfig } from "@webdesign/editor/config";
 import { documentToPuck, puckToDocument, mergeEditedPage } from "@webdesign/puck-adapter";
 import { StyleStart } from "./StyleStart";
+import { themeCss } from "@webdesign/renderer";
 
 type Site = { id: string; name: string; status: string };
 type Draft = { rev: number; doc: unknown };
@@ -65,6 +66,24 @@ function findingLabel(code: string): string {
     TOO_MANY_IMAGES: "Hay demasiadas imagenes en una seccion",
   };
   return map[code] ?? code;
+}
+
+// Puck monta el lienzo en un iframe, asi que hereda el CSS del panel pero no el
+// del tema: el editor ensenaba el sitio sin diseno. Este componente mete la
+// hoja del tema dentro del documento del iframe.
+function FrameTheme({ frame, css, children }: { frame?: Document | undefined; css: string; children: any }) {
+  useEffect(() => {
+    if (!frame?.head || !css) return;
+    const id = "sitio-theme";
+    let el = frame.getElementById(id) as HTMLStyleElement | null;
+    if (!el) {
+      el = frame.createElement("style");
+      el.id = id;
+      frame.head.appendChild(el);
+    }
+    el.textContent = css;
+  }, [frame, css]);
+  return children;
 }
 
 function Editor({ siteId }: { siteId: string }) {
@@ -147,7 +166,20 @@ function Editor({ siteId }: { siteId: string }) {
       </div>
     </header>
     <div className="editor-body">
-      <Puck config={buildEditorConfig({ assets: assets.map(a => ({ id: a.id, path: a.publicUrl })) })} data={documentToPuck(doc, PAGE)} onChange={save} overrides={{ "headerActions": () => null }}/>
+      <Puck
+        config={buildEditorConfig({ assets: assets.map(a => ({ id: a.id, path: a.publicUrl })) })}
+        data={documentToPuck(doc, PAGE)}
+        onChange={save}
+        overrides={{
+          // El lienzo es un iframe: el CSS del panel no llega dentro, asi que
+          // el editor mostraba las secciones desnudas. Se inyecta el tema del
+          // documento para ver el sitio como quedara publicado.
+          iframe: ({ children, document: frame }) => (
+            <FrameTheme frame={frame} css={doc ? themeCss(doc.theme) : ""}>{children}</FrameTheme>
+          ),
+          "headerActions": () => null,
+        }}
+      />
       {showAssets && <aside className="asset-popover" aria-label="Biblioteca de imágenes">
         <header>
           <div><h3>Biblioteca de imágenes</h3><p>Arrastra una miniatura al campo Imagen.</p></div>

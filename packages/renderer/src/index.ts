@@ -7,6 +7,8 @@ import { themeCss } from "./theme-css.js";
 // Renderiza HTML estatico a partir de los mismos componentes que usa el editor
 // (spec 6.3): una sola implementacion de cada seccion, sin hidratacion.
 
+export { themeCss } from "./theme-css.js";
+
 export function escapeHtml(s: string): string {
   return s
     .replaceAll("&", "&amp;")
