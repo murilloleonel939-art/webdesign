@@ -16,6 +16,7 @@ import {
 } from "@webdesign/preview";
 import { listStyles, getStyle, applyStyleToDocument } from "./catalog.js";
 import { handleLead, clientIp, parseLeadForm } from "./lead.js";
+import { ensureHostname, linkHost } from "./hosting.js";
 import { parseCookies, resolveSession, login, createUser, createSite, deleteSite, listSites, saveDraft, loadDraft, publish, rollbackTo, activeAssets, SESSION_COOKIE } from "./api.js";
 import { renderPage } from "@webdesign/renderer";
 import { registerAsset, type AssetKind } from "@webdesign/assets";
@@ -502,8 +503,25 @@ async function handleApi(pool: import("pg").Pool, sitesRoot: string, req: Incomi
       resolveAssetPath: assets.resolveAssetPath, assetFiles: assets.assetFiles,
       ...(body?.confirmWarnings ? { confirmWarnings: true } : {}),
     });
-    if (r.ok) json(res, 200, { version: r.version, findings: r.findings });
-    else json(res, 409, { error: "blocked", findings: r.findings });
+    if (!r.ok) {
+      json(res, 409, { error: "blocked", findings: r.findings });
+      return true;
+    }
+    // Publicar sin enlace en /data/hosts no sirve el sitio: Caddy no consulta
+    // la base. Si el pool esta lleno la publicacion vale, pero se avisa para
+    // que no parezca que el sitio ya esta en la red.
+    let hostname: string | undefined;
+    try {
+      const site = await pool.query<{ name: string }>("SELECT name FROM sites WHERE id = $1", [siteId]);
+      const assigned = await ensureHostname(pool, { siteId, siteName: site.rows[0]?.name ?? "sitio" });
+      if (assigned) {
+        linkHost(process.env.HOSTS_ROOT ?? "/data/hosts", assigned.hostname, sitesRoot, siteId);
+        hostname = assigned.hostname;
+      }
+    } catch {
+      // El sitio ya esta publicado; un fallo de enlace no debe deshacerlo.
+    }
+    json(res, 200, { version: r.version, findings: r.findings, ...(hostname ? { hostname } : {}) });
     return true;
   }
 
