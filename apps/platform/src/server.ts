@@ -15,6 +15,7 @@ import {
   type UsedLinkStore,
 } from "@webdesign/preview";
 import { listStyles, getStyle, applyStyleToDocument } from "./catalog.js";
+import { handleLead, clientIp, parseLeadForm } from "./lead.js";
 import { parseCookies, resolveSession, login, createUser, createSite, deleteSite, listSites, saveDraft, loadDraft, publish, rollbackTo, activeAssets, SESSION_COOKIE } from "./api.js";
 import { renderPage } from "@webdesign/renderer";
 import { registerAsset, type AssetKind } from "@webdesign/assets";
@@ -199,6 +200,38 @@ async function readJson(req: IncomingMessage): Promise<unknown> {
 }
 
 async function handleApi(pool: import("pg").Pool, sitesRoot: string, req: IncomingMessage, res: ServerResponse, url: URL): Promise<boolean> {
+  // --- Formularios publicos (Fase 2) ---
+  // El sitio se resuelve por `Host`, nunca por un parametro del cliente.
+  // Caddy reenvia /_f/* aqui conservando el Host (spec linea 403).
+  if (url.pathname === "/_f/lead") {
+    if (req.method !== "POST") {
+      send(res, 405, "method not allowed");
+      return true;
+    }
+    let raw: Record<string, unknown>;
+    try {
+      raw = await parseLeadForm(req);
+    } catch {
+      send(res, 400, "bad request");
+      return true;
+    }
+    const result = await handleLead(pool, raw, {
+      host: req.headers.host ?? "",
+      ip: clientIp(req.headers, req.socket.remoteAddress),
+      userAgent: String(req.headers["user-agent"] ?? ""),
+      consentVersion: "v1",
+    });
+    // `invalid` se decide antes de mirar el host, asi que responder 400 no
+    // revela si el sitio existe. Host desconocido y limite superado comparten
+    // la misma respuesta que un envio correcto (spec linea 404).
+    if (!result.ok && result.reason === "invalid") {
+      send(res, 400, "invalid");
+      return true;
+    }
+    send(res, 200, "ok");
+    return true;
+  }
+
   const session = await resolveSession(pool, parseCookies(req.headers.cookie)[SESSION_COOKIE]);
 
   if (req.method === "POST" && url.pathname === "/api/login") {

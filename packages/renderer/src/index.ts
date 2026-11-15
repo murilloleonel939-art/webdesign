@@ -2,6 +2,7 @@ import type { ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { validateSiteDocument, type Page, type SiteDocument } from "@webdesign/site-schema";
 import { renderSection } from "@webdesign/ui-components";
+import { themeCss } from "./theme-css.js";
 
 // Renderiza HTML estatico a partir de los mismos componentes que usa el editor
 // (spec 6.3): una sola implementacion de cada seccion, sin hidratacion.
@@ -40,6 +41,9 @@ export function renderPage(input: unknown, pageId: string, resolveAsset: AssetRe
     (page.seo.description ? `<meta name="description" content="${escapeHtml(page.seo.description)}">` : "") +
     (page.seo.noindex ? '<meta name="robots" content="noindex">' : "") +
     `<meta http-equiv="Content-Security-Policy" content="${CSP}">` +
+    // El CSS se genera del tema del documento: sin esto el sitio sale sin
+    // estilos, porque no hay hoja compartida que servir.
+    `<style>${themeCss(doc.theme)}</style>` +
     `</head><body>\n${body}\n</body></html>`
   );
 }

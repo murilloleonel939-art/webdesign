@@ -63,3 +63,27 @@ test("an unverified testimonial never reaches the published HTML", () => {
   ok.pages[0].sections[0].props.ownerProvided = true;
   assert.match(renderPage(ok, "p_home"), /cita inventada/);
 });
+
+test("el sitio publicado lleva el CSS de su tema y el formulario", () => {
+  const doc = {
+    schemaVersion: 1,
+    meta: { name: "Luna", lang: "es" },
+    design: { brief: "", idea: "", presetId: "tech", dials: { variance: 3, motion: 2, density: 5 } },
+    theme: {
+      colors: { ground: "#0e1117", ink: "#e8eef7", accent: "#7dd3fc" },
+      typography: { family: "Inter", scale: "normal" },
+      spacing: { margin: 48, sectionGap: 64 },
+      radius: "rounded",
+    },
+    pages: [{ id: "p_home", slug: "/", seo: { title: "Luna", description: "", noindex: true },
+      sections: [{ id: "s1", type: "contact", props: { email: "ana@ejemplo.com" } }] }],
+    assets: [],
+  };
+  const html = renderPage(doc, "p_home");
+  // Regresion: antes el renderer no emitia CSS y el sitio salia sin tema.
+  assert.ok(html.includes("<style>"), "debe incluir la hoja del tema");
+  assert.ok(html.includes("#0e1117"), "debe usar el color del documento");
+  assert.ok(html.includes("/_f/lead"), "el formulario apunta al endpoint");
+  // Sin fuentes externas: cargarlas revelaria el sitio del cliente a un tercero.
+  assert.equal(/fonts\.googleapis|fonts\.gstatic/.test(html), false);
+});

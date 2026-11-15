@@ -83,3 +83,25 @@ test("a gallery renders one image per resolved asset", () => {
   assert.equal((out.match(/<img/g) ?? []).length, 3);
   assert.match(out, /src="\/a\/a2\.webp"/);
 });
+
+test("el formulario de contacto apunta al mismo origen y exige consentimiento", () => {
+  const out = html({ id: "c1", type: "contact", props: {} }, { editing: false });
+  // Sin CORS y sin dominio comun: la accion es relativa, Caddy conserva el Host.
+  assert.match(out, /action="\/_f\/lead"/);
+  assert.match(out, /method="post"/);
+  // El consentimiento es obligatorio: sin el no se guarda el dato.
+  // React puede emitir `required=""` antes o despues del nombre: se comprueba
+  // que el input del consentimiento lleve el atributo, en cualquier orden.
+  const consentInput = out.match(/<input[^>]*name="consent"[^>]*>/)?.[0] ?? "";
+  assert.match(consentInput, /required/, "el consentimiento debe ser obligatorio");
+  // Los campos que espera el servidor existen con el nombre exacto.
+  for (const name of ["name", "email", "phone", "message"]) {
+    assert.match(out, new RegExp(`name="${name}"`), `falta el campo ${name}`);
+  }
+});
+
+test("el formulario no se pinta dentro del editor", () => {
+  const out = html({ id: "c1", type: "contact", props: {} }, { editing: true });
+  // En el editor solo se ve el bloque, no un formulario que enviaria a medias.
+  assert.equal(out.includes("/_f/lead"), false);
+});

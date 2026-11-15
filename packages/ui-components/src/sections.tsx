@@ -143,7 +143,7 @@ export function FaqSection({ section }: SectionProps) {
   );
 }
 
-export function ContactSection({ section }: SectionProps) {
+export function ContactSection({ section, editing }: SectionProps) {
   const p = section.props as { email?: unknown; phone?: unknown; cta?: { label?: string; href?: string } };
   const email = typeof p.email === "string" ? p.email : undefined;
   const phone = typeof p.phone === "string" ? p.phone : undefined;
@@ -151,8 +151,43 @@ export function ContactSection({ section }: SectionProps) {
     <section className="contact" data-section-id={section.id}>
       {email ? <a href={`mailto:${encodeURIComponent(email)}`}>{email}</a> : null}
       {phone ? <a href={`tel:${phone.replace(/[^\d+]/g, "")}`}>{phone}</a> : null}
+      {editing ? null : <LeadForm />}
       <Cta cta={p.cta} editing={false} />
     </section>
+  );
+}
+
+// Formulario de contacto (Fase 2).
+// Envia a `/_f/lead` en el MISMO origen del sitio: Caddy lo reenvia a la
+// plataforma conservando el Host, que es como se resuelve el sitio. Sin
+// JavaScript y sin CORS (spec linea 403), asi que `form-action 'self'` basta.
+// El aviso de privacidad va en el propio formulario y el consentimiento es
+// obligatorio: sin el, el envio no se guarda.
+function LeadForm() {
+  return (
+    <form className="lead-form" action="/_f/lead" method="post">
+      <div className="field">
+        <label htmlFor="lead-name">Nombre</label>
+        <input id="lead-name" name="name" type="text" maxLength={120} autoComplete="name" />
+      </div>
+      <div className="field">
+        <label htmlFor="lead-email">Correo</label>
+        <input id="lead-email" name="email" type="email" maxLength={254} autoComplete="email" required />
+      </div>
+      <div className="field">
+        <label htmlFor="lead-phone">Teléfono</label>
+        <input id="lead-phone" name="phone" type="tel" maxLength={40} autoComplete="tel" />
+      </div>
+      <div className="field">
+        <label htmlFor="lead-message">Mensaje</label>
+        <textarea id="lead-message" name="message" rows={4} maxLength={4000} required />
+      </div>
+      <label className="consent">
+        <input type="checkbox" name="consent" required />
+        <span>Acepto que se guarden mis datos para responder a esta consulta.</span>
+      </label>
+      <button type="submit">Enviar</button>
+    </form>
   );
 }
 
