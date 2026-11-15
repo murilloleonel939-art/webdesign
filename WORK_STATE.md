@@ -103,3 +103,18 @@ Corre sola al arrancar. **No mezclarla con un redeploy hasta validarla.**
 `DIAGNOSTIC_OPEN=1` habilita `/app/diagnose` **sin autenticación**. Es provisional, para
 depurar sin poder generar token. Retirar: borrar la variable en Coolify y redeploy.
 Registrado en claude-mem #217.
+
+## Fase 1b — entregada (e3aee20)
+
+Catalogo inicial: `design_styles` sin RLS, 8 presets con contraste AA verificado,
+tipos de seccion cruzados contra el esquema. `GET /api/design-styles`,
+`POST /api/sites/:id/apply-preset` (400 en preset desconocido, rev optimista,
+`audit_log`). Pantalla `StyleStart` cuando el documento esta vacio.
+
+**Verificado en produccion (usuario confirma):** `0009_design_catalog.sql` se
+aplico sin romper el arranque, la pantalla de estilos funciona y el boton
+"Estilos" del editor abre el catalogo. Ya no es riesgo abierto.
+
+**Corregido de paso:** `panel.js` y `panel.css` se servian sin `cache-control`,
+asi que un despliegue no se veia sin forzar recarga. Ahora HTML `no-store`,
+JS/CSS `no-cache` + ETag (76288c0).
