@@ -34,6 +34,28 @@ services:
       - caddy-data:/caddy-data
     networks:
       - coolify
+    # Router comodin de sitios (spec 5.3). Coolify no acepta `*.dominio` en su
+    # campo de dominio porque lo valida como URL, asi que el comodin se declara
+    # aqui.
+    #
+    # `zottaweb.site` va escapado como `zottaweb\.site` y la etiqueta es UNA:
+    # los hosts del pool son `<etiqueta>.zottaweb.site`. Un regex con dos
+    # etiquetas no recogeria ninguno.
+    #
+    # Prioridad 1: los routers de Coolify usan la prioridad por longitud de
+    # regla, asi que cualquier dominio exacto gana y el comodin solo recoge lo
+    # que nadie mas reclama.
+    #
+    # Sin `entrypoints` a proposito: se ata a los que tenga Traefik sin tener
+    # que acertar su nombre. `tls=true` deja que Coolify emita el certificado.
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=coolify"
+      - "traefik.http.routers.sites-wildcard.rule=HostRegexp(`^[a-zA-Z0-9-]+\\.zottaweb\\.site$`)"
+      - "traefik.http.routers.sites-wildcard.priority=1"
+      - "traefik.http.routers.sites-wildcard.tls=true"
+      - "traefik.http.routers.sites-wildcard.tls.certresolver=letsencrypt"
+      - "traefik.http.services.sites-wildcard.loadbalancer.server.port=80"
 
 volumes:
   caddy-data:
