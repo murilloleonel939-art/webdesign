@@ -95,24 +95,41 @@ export async function getStyle(pool: pg.Pool, id: string): Promise<DesignStyle |
   return all.find((s) => s.id === id);
 }
 
-// Aplica un preset al documento. Cambia tema, dials y la pagina de inicio.
-// No toca assets, ni paginas adicionales, ni SEO, ni integraciones: un preset
-// no debe borrar trabajo previo.
+// Como se combina un estilo con lo que el sitio ya tiene.
+// - `inherit`: el tema cambia, el contenido se queda. Es lo que espera un dueno
+//   que ya escribio el suyo y solo quiere otro aire.
+// - `reset`: el contenido se sustituye por la estructura del preset. Solo es
+//   correcto si el dueno lo pide de forma explicita.
+export type StyleApplyMode = "inherit" | "reset";
+
+export function isStyleApplyMode(v: unknown): v is StyleApplyMode {
+  return v === "inherit" || v === "reset";
+}
+
+// Aplica un preset al documento.
+// No toca assets, ni paginas adicionales, ni SEO, ni integraciones.
 export function applyStyleToDocument(
   doc: SiteDocument,
   style: DesignStyle,
+  mode: StyleApplyMode = "inherit",
 ): { doc: SiteDocument; sectionsChanged: boolean } {
   const home = doc.pages.find((p) => p.slug === "/") ?? doc.pages[0];
   const pageId = home?.id ?? "p_home";
 
-  const sections = style.sections.map((s, i) => {
-    const type = safeType(s.type);
-    return {
-      id: `s_${style.id}_${i}`,
-      type,
-      props: SECTION_DEFAULTS[type] ?? {},
-    };
-  }) as unknown as Section[];
+  // Conservar el contenido es el defecto: un sitio con texto propio no puede
+  // quedar vacio por probar otro estilo.
+  const keep = mode === "inherit" && (home?.sections?.length ?? 0) > 0;
+
+  const sections = keep
+    ? (home?.sections ?? [])
+    : (style.sections.map((s, i) => {
+        const type = safeType(s.type);
+        return {
+          id: `s_${style.id}_${i}`,
+          type,
+          props: SECTION_DEFAULTS[type] ?? {},
+        };
+      }) as unknown as Section[]);
 
   const pages = doc.pages.map((p) =>
     p.id === pageId ? { ...p, sections } : p,
@@ -141,6 +158,6 @@ export function applyStyleToDocument(
         sections,
       }],
     },
-    sectionsChanged: true,
+    sectionsChanged: !keep,
   };
 }

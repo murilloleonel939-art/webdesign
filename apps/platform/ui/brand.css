@@ -255,3 +255,18 @@ button{cursor:pointer;border:0;background:none}
 .publish-blockers ul{margin:0;padding-left:1.1rem}
 .publish-blockers li+li{margin-top:.3rem}
 .publish-blockers button{position:absolute;top:.4rem;right:.5rem;background:none;border:0;font-size:1.1rem;cursor:pointer;color:inherit}
+
+/* Cambiar de estilo con contenido ya escrito: se pregunta antes de tocar nada. */
+.modal-veil{position:fixed;inset:0;z-index:80;display:grid;place-items:center;padding:24px;background:#0b1020cc;backdrop-filter:blur(3px)}
+.modal-card{width:min(520px,100%);background:var(--surface);border:1px solid var(--line);border-radius:18px;padding:26px 26px 20px;box-shadow:0 30px 70px #0000003d}
+.modal-card h2{margin:0 0 6px;font-size:19px;letter-spacing:-.01em}
+.modal-card>p{margin:0 0 18px;font-size:13.5px;line-height:1.55}
+.mode-option{display:flex;gap:12px;align-items:flex-start;padding:14px 16px;margin-bottom:10px;border:1px solid var(--line);border-radius:12px;cursor:pointer;transition:border-color .15s,background .15s}
+.mode-option:hover{border-color:var(--accent)}
+.mode-option.is-on{border-color:var(--accent);background:#6c5ce70d}
+.mode-option input{margin-top:3px;accent-color:var(--accent)}
+.mode-option span{display:block}
+.mode-option strong{display:block;font-size:14px;margin-bottom:3px}
+.mode-option em{display:block;font-style:normal;font-size:12.5px;line-height:1.5;color:var(--muted)}
+.modal-actions{display:flex;align-items:center;justify-content:flex-end;gap:14px;margin-top:18px}
+.modal-actions .text-link{margin:0}

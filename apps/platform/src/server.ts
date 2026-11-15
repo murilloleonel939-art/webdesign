@@ -14,7 +14,7 @@ import {
   type PreviewConfig,
   type UsedLinkStore,
 } from "@webdesign/preview";
-import { listStyles, getStyle, applyStyleToDocument } from "./catalog.js";
+import { listStyles, getStyle, applyStyleToDocument, isStyleApplyMode } from "./catalog.js";
 import { handleLead, clientIp, parseLeadForm } from "./lead.js";
 import { ensureHostname, linkHost } from "./hosting.js";
 import { parseCookies, resolveSession, login, createUser, createSite, deleteSite, listSites, saveDraft, loadDraft, publish, rollbackTo, activeAssets, SESSION_COOKIE } from "./api.js";
@@ -453,12 +453,18 @@ async function handleApi(pool: import("pg").Pool, sitesRoot: string, req: Incomi
       return true;
     }
     const siteId = presetMatch[1] as string;
-    const body = (await readJson(req)) as { presetId?: unknown; expectedRev?: unknown };
+    const body = (await readJson(req)) as { presetId?: unknown; expectedRev?: unknown; mode?: unknown };
     const presetId = typeof body.presetId === "string" ? body.presetId : "";
     if (!presetId) {
       json(res, 400, { error: "preset_required" });
       return true;
     }
+    // Sin modo explicito se conserva el contenido: destructivo nunca por defecto.
+    if (body.mode !== undefined && !isStyleApplyMode(body.mode)) {
+      json(res, 400, { error: "unknown_mode", mode: body.mode });
+      return true;
+    }
+    const mode = isStyleApplyMode(body.mode) ? body.mode : "inherit";
     const style = await getStyle(pool, presetId);
     if (!style) {
       // Preset inexistente: 400, no 404. El cliente pidio algo invalido.
@@ -470,13 +476,14 @@ async function handleApi(pool: import("pg").Pool, sitesRoot: string, req: Incomi
       json(res, 404, { error: "no_draft" });
       return true;
     }
-    const { doc } = applyStyleToDocument(current.doc as Parameters<typeof applyStyleToDocument>[0], style);
+    const applied = applyStyleToDocument(current.doc as Parameters<typeof applyStyleToDocument>[0], style, mode);
+    const { doc } = applied;
     const saved = await saveDraft(pool, {
       userId: session.userId, siteId, doc,
       expectedRev: Number(body.expectedRev ?? current.rev), actorType: "user",
     });
     if (saved.ok) {
-      json(res, 200, { rev: saved.rev, presetId, findings: saved.findings });
+      json(res, 200, { rev: saved.rev, presetId, mode, sectionsChanged: applied.sectionsChanged, findings: saved.findings });
     } else if (saved.reason === "conflict") {
       json(res, 409, { error: "conflict", currentRev: saved.currentRev });
     } else {

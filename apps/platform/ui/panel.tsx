@@ -140,6 +140,9 @@ function Editor({ siteId }: { siteId: string }) {
     return <StyleStart
       siteId={siteId}
       expectedRev={rev}
+      // Aqui se llega desde el editor con un sitio ya escrito: cambiar de
+      // estilo debe preguntar si conserva el contenido o empieza de cero.
+      hasContent
       onApplied={() => { setShowStyles(false); void reloadDraft(); }}
       onSkip={() => setShowStyles(false)}
     />;

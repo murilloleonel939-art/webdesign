@@ -47,7 +47,8 @@ test("cada preset produce un documento que pasa el esquema", () => {
   ];
   cases.forEach((types, i) => {
     const s = style(`p${i}`, { sections: types.map((type) => ({ type })) });
-    const { doc } = applyStyleToDocument(baseDoc(), s);
+    // Se valida el sembrado del preset, que es lo que trae el estilo.
+    const { doc } = applyStyleToDocument(baseDoc(), s, "reset");
     const parsed = siteDocumentSchema.safeParse(doc);
     assert.equal(parsed.success, true, `preset ${i} invalido: ${JSON.stringify(parsed.error?.issues?.slice(0, 2))}`);
   });
@@ -75,7 +76,8 @@ test("aplicar un preset cambia tema y dials, no el resto del documento", () => {
 
 test("un testimonio nunca se rellena con datos inventados", () => {
   const s = style("with-testimonial", { sections: [{ type: "hero" }, { type: "testimonial" }] });
-  const { doc } = applyStyleToDocument(baseDoc(), s);
+  // Sembrar es cosa del preset: se pide `reset` de forma explicita.
+  const { doc } = applyStyleToDocument(baseDoc(), s, "reset");
   const types = doc.pages[0].sections.map((x) => x.type);
   // `testimonial` no tiene props por defecto a proposito: se degrada a `text`.
   assert.equal(types.includes("testimonial"), false, "no se siembra un testimonio falso");
@@ -105,4 +107,28 @@ test("aplicar un estilo deja la pagina publicable", () => {
   const home = next.pages[0];
   assert.ok(home.seo.title.trim().length > 0, "el titulo no puede ir vacio");
   assert.ok(home.seo.description.trim().length > 0, "la descripcion no puede ir vacia");
+});
+
+test("cambiar de estilo conserva el contenido del dueno", () => {
+  // Un sitio con texto propio no puede quedar vacio por probar otro estilo:
+  // el dueno perderia su trabajo. Cambian tema y dials, no las secciones.
+  const s = style("editorial", { sections: [{ type: "hero" }, { type: "faq" }] });
+  const { doc, sectionsChanged } = applyStyleToDocument(baseDoc(), s, "inherit");
+  const home = doc.pages[0];
+  assert.equal(sectionsChanged, false);
+  assert.equal(home.sections.length, 1);
+  assert.equal(home.sections[0].props.headline, "Hola");
+  // El tema si cambia: es el sentido de aplicar un estilo.
+  assert.equal(doc.design.presetId, "editorial");
+  assert.equal(doc.theme.colors.accent, "#0b5fff");
+});
+
+test("heredar es el defecto y reiniciar exige pedirlo", () => {
+  const s = style("otro", { sections: [{ type: "hero" }, { type: "cta" }] });
+  const heredado = applyStyleToDocument(baseDoc(), s);
+  assert.equal(heredado.doc.pages[0].sections[0].props.headline, "Hola");
+
+  const reiniciado = applyStyleToDocument(baseDoc(), s, "reset");
+  assert.equal(reiniciado.sectionsChanged, true);
+  assert.equal(reiniciado.doc.pages[0].sections.length, 2);
 });
