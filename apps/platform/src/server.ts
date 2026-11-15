@@ -14,6 +14,7 @@ import {
   type PreviewConfig,
   type UsedLinkStore,
 } from "@webdesign/preview";
+import { listStyles, getStyle, applyStyleToDocument } from "./catalog.js";
 import { parseCookies, resolveSession, login, createUser, createSite, deleteSite, listSites, saveDraft, loadDraft, publish, rollbackTo, activeAssets, SESSION_COOKIE } from "./api.js";
 import { renderPage } from "@webdesign/renderer";
 import { registerAsset, type AssetKind } from "@webdesign/assets";
@@ -299,6 +300,66 @@ async function handleApi(pool: import("pg").Pool, sitesRoot: string, req: Incomi
       json(res, 200, { assets: rows.map((a) => ({ ...a, publicUrl: `/assets/${siteId}/${a.path}` })) });
       return true;
     }
+  }
+
+  // Catalogo de diseno (Fase 1b). Datos globales: la lista no exige sesion solo
+  // se expone con sesion valida para no publicar el catalogo a cualquiera.
+  if (url.pathname === "/api/design-styles" && req.method === "GET") {
+    if (!session) {
+      json(res, 401, { error: "unauthorized" });
+      return true;
+    }
+    if (!pool) {
+      json(res, 503, { error: "database_not_configured" });
+      return true;
+    }
+    json(res, 200, { styles: await listStyles(pool) });
+    return true;
+  }
+
+  // Aplicar un preset: transforma el borrador y lo guarda por la via normal,
+  // con revision optimista y audit_log como cualquier otro cambio.
+  const presetMatch = /^\/api\/sites\/([0-9a-f-]{36})\/apply-preset$/.exec(url.pathname);
+  if (presetMatch && req.method === "POST") {
+    if (!session) {
+      json(res, 401, { error: "unauthorized" });
+      return true;
+    }
+    if (!pool) {
+      json(res, 503, { error: "database_not_configured" });
+      return true;
+    }
+    const siteId = presetMatch[1] as string;
+    const body = (await readJson(req)) as { presetId?: unknown; expectedRev?: unknown };
+    const presetId = typeof body.presetId === "string" ? body.presetId : "";
+    if (!presetId) {
+      json(res, 400, { error: "preset_required" });
+      return true;
+    }
+    const style = await getStyle(pool, presetId);
+    if (!style) {
+      // Preset inexistente: 400, no 404. El cliente pidio algo invalido.
+      json(res, 400, { error: "unknown_preset", presetId });
+      return true;
+    }
+    const current = await loadDraft(pool, session.userId, siteId);
+    if (!current) {
+      json(res, 404, { error: "no_draft" });
+      return true;
+    }
+    const { doc } = applyStyleToDocument(current.doc as Parameters<typeof applyStyleToDocument>[0], style);
+    const saved = await saveDraft(pool, {
+      userId: session.userId, siteId, doc,
+      expectedRev: Number(body.expectedRev ?? current.rev), actorType: "user",
+    });
+    if (saved.ok) {
+      json(res, 200, { rev: saved.rev, presetId, findings: saved.findings });
+    } else if (saved.reason === "conflict") {
+      json(res, 409, { error: "conflict", currentRev: saved.currentRev });
+    } else {
+      json(res, 422, { error: "invalid", findings: saved.findings, errors: saved.errors });
+    }
+    return true;
   }
 
   const draftMatch = /^\/api\/sites\/([0-9a-f-]{36})\/draft$/.exec(url.pathname);

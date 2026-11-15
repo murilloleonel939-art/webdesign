@@ -219,3 +219,27 @@ button{cursor:pointer;border:0;background:none}
   .editor-status{display:none}
   .asset-popover{left:12px;right:12px;width:auto}
 }
+
+/* --- Pantalla de inicio: elegir estilo (Fase 1b) --- */
+.start-screen{max-width:1120px;margin:0 auto;padding:48px 28px 72px}
+.start-head{max-width:640px;margin-bottom:36px}
+.start-head h1{font-size:clamp(26px,3.4vw,40px);line-height:1.15;margin:10px 0 12px;letter-spacing:-.02em}
+.start-head .muted{font-size:15px;line-height:1.6;margin:0}
+.style-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(268px,1fr));gap:20px}
+.style-card{display:flex;flex-direction:column;border:1px solid var(--line);border-radius:16px;overflow:hidden;background:var(--surface);transition:border-color .15s,box-shadow .15s,transform .15s}
+.style-card:hover{border-color:var(--accent);box-shadow:0 14px 34px #6c5ce714;transform:translateY(-2px)}
+/* La muestra usa los colores reales del preset: se ve antes de aplicar. */
+.style-swatch{position:relative;height:132px;padding:22px;display:flex;flex-direction:column;gap:9px;justify-content:center}
+.style-swatch.radius-square{border-radius:0}
+.swatch-headline{display:block;height:13px;width:64%;border-radius:3px}
+.swatch-line{display:block;height:6px;width:88%;border-radius:2px}
+.swatch-line.short{width:52%}
+.swatch-dot{display:block;height:22px;width:66px;border-radius:11px;margin-top:6px}
+.style-body{padding:18px 20px 22px;display:flex;flex-direction:column;gap:10px;flex:1}
+.style-body h2{margin:0;font-size:17px;letter-spacing:-.01em}
+.style-body .muted{margin:0;font-size:13.5px;line-height:1.5;flex:1}
+.style-sections{margin:0;font-size:11.5px;letter-spacing:.04em;text-transform:uppercase;color:var(--muted);font-weight:600}
+.style-body .primary{margin-top:4px;width:100%}
+.text-link{display:block;margin:28px auto 0;background:none;border:0;color:var(--muted);font:inherit;font-size:13.5px;cursor:pointer;text-decoration:underline;text-underline-offset:3px}
+.text-link:hover{color:var(--ink)}
+@media (max-width:560px){.start-screen{padding:28px 16px 56px}.style-grid{grid-template-columns:1fr}}

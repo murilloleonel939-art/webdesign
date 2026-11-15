@@ -5,12 +5,29 @@ import "@measured/puck/puck.css";
 import "./brand.css";
 import { buildEditorConfig } from "@webdesign/editor/config";
 import { documentToPuck, puckToDocument, mergeEditedPage } from "@webdesign/puck-adapter";
+import { StyleStart } from "./StyleStart";
 
 type Site = { id: string; name: string; status: string };
 type Draft = { rev: number; doc: unknown };
 type EditorAsset = { id: string; kind: string; bytes: number; mime?: string; path?: string; publicUrl?: string };
 const api = (path: string, init?: RequestInit) => fetch(path, { credentials: "same-origin", ...init });
 const go = (path: string) => { history.pushState({}, "", path); window.dispatchEvent(new PopStateEvent("popstate")); };
+
+// Un documento necesita estilo cuando la pagina de inicio no tiene contenido
+// propio: o no hay secciones, o solo hay una con texto de relleno.
+function needsStyle(doc: unknown): boolean {
+  const pages = (doc as { pages?: Array<{ sections?: Array<{ type?: string; props?: unknown }> }> })?.pages ?? [];
+  if (pages.length === 0) return true;
+  const home = pages[0];
+  const sections = home?.sections ?? [];
+  if (sections.length === 0) return true;
+  // El borrador inicial trae un unico hero con el titular por defecto.
+  // Se compara con ese texto exacto, no con la longitud: un titular corto y
+  // real ({"headline":"Panadería Luna"}) es contenido legitimo del dueno.
+  const props = JSON.stringify(sections[0]?.props ?? {});
+  const isPlaceholder = props === "{}" || /Tu titular aquí|Una línea que explica/.test(props);
+  return sections.length === 1 && isPlaceholder;
+}
 
 function Brand() { return <div className="brand"><span className="brand-mark">Z</span><span>Zottaweb</span></div>; }
 function Login({ onDone }: { onDone: () => void }) {
@@ -32,7 +49,23 @@ function Editor({ siteId }: { siteId: string }) {
   useEffect(() => { void refreshAssets(); }, [siteId]);
   const saving = useRef(false); const pending = useRef<any>(null); const docRef = useRef<any>(null); const revRef = useRef(0); const [showPreview, setShowPreview] = useState(false); const [showAssets, setShowAssets] = useState(true);
   useEffect(() => { api(`/api/sites/${siteId}/draft`).then(async r => { if (r.status === 401) return go("/app"); if (!r.ok) throw new Error("No se pudo cargar"); const d = await r.json() as Draft; docRef.current = d.doc; revRef.current = d.rev; setDoc(d.doc); setRev(d.rev); setStatus("Listo para crear"); }).catch(() => setStatus("No se pudo cargar el editor")); }, [siteId]);
-  if (!doc) return <div className="loading"><Brand/><p>{status}</p></div>; const save = async (data: any) => { pending.current = data; if (saving.current) return; saving.current = true; while (pending.current) { const current = pending.current; pending.current = null; const next = mergeEditedPage(docRef.current ?? doc, puckToDocument({ content: current.content, root: current.root }, PAGE)); setStatus("Guardando…"); const r = await api(`/api/sites/${siteId}/draft`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ doc: next, expectedRev: revRef.current }) }); if (r.status === 409) { setStatus("Otro cambio fue guardado. Recargando…"); const d = await (await api(`/api/sites/${siteId}/draft`)).json() as Draft; docRef.current = d.doc; revRef.current = d.rev; setDoc(d.doc); setRev(d.rev); continue; } if (!r.ok) { setStatus("No se pudo guardar"); continue; } const d = await r.json() as { rev: number }; docRef.current = next; revRef.current = d.rev; setDoc(next); setRev(d.rev); setStatus("Guardado"); } saving.current = false; };
+  if (!doc) return <div className="loading"><Brand/><p>{status}</p></div>;
+  // Pantalla de inicio: solo si el sitio no tiene contenido propio todavia.
+  // `start=0` la desactiva cuando el dueno elige empezar en blanco.
+  async function reloadDraft() {
+    const r = await api(`/api/sites/${siteId}/draft`);
+    if (!r.ok) return;
+    const d = await r.json() as Draft;
+    docRef.current = d.doc; revRef.current = d.rev; setDoc(d.doc); setRev(d.rev);
+  }
+  if (needsStyle(doc) && new URLSearchParams(location.search).get("start") !== "0") {
+    return <StyleStart
+      siteId={siteId}
+      expectedRev={rev}
+      onApplied={() => { void reloadDraft(); }}
+      onSkip={() => go(`/app?site=${siteId}&start=0`)}
+    />;
+  } const save = async (data: any) => { pending.current = data; if (saving.current) return; saving.current = true; while (pending.current) { const current = pending.current; pending.current = null; const next = mergeEditedPage(docRef.current ?? doc, puckToDocument({ content: current.content, root: current.root }, PAGE)); setStatus("Guardando…"); const r = await api(`/api/sites/${siteId}/draft`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ doc: next, expectedRev: revRef.current }) }); if (r.status === 409) { setStatus("Otro cambio fue guardado. Recargando…"); const d = await (await api(`/api/sites/${siteId}/draft`)).json() as Draft; docRef.current = d.doc; revRef.current = d.rev; setDoc(d.doc); setRev(d.rev); continue; } if (!r.ok) { setStatus("No se pudo guardar"); continue; } const d = await r.json() as { rev: number }; docRef.current = next; revRef.current = d.rev; setDoc(next); setRev(d.rev); setStatus("Guardado"); } saving.current = false; };
   async function publish() { setStatus("Publicando…"); const r = await api(`/api/sites/${siteId}/publish`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }); setStatus(r.ok ? "Publicado correctamente" : "Revisa el contenido antes de publicar"); }
   return <div className="editor-shell">
     <header className="editorbar">

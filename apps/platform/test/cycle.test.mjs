@@ -384,3 +384,45 @@ test("the diagnostic reports migrations and counts, with no personal data", asyn
     delete process.env.DIAGNOSTIC_TOKEN;
   }
 });
+
+test("the design catalog is not public without a session", async () => {
+  const r = await callRaw("GET", "/api/design-styles", false);
+  assert.equal(r.status, 401);
+});
+
+test("applying an unknown preset is rejected with 400, not 404", async () => {
+  const r = await new Promise((resolve, reject) => {
+    const body = JSON.stringify({ presetId: "no-existe-este-estilo", expectedRev: 0 });
+    const req = http.request(
+      { host: "127.0.0.1", port, path: `/api/sites/${pool.siteId}/apply-preset`, method: "POST",
+        headers: { host: "panel.example.com", cookie, "content-type": "application/json", "content-length": Buffer.byteLength(body) } },
+      (res) => { let t = ""; res.setEncoding("utf8"); res.on("data", (c) => (t += c)); res.on("end", () => resolve({ status: res.statusCode, text: t })); },
+    );
+    req.on("error", reject);
+    req.end(body);
+  });
+  assert.equal(r.status, 400);
+  assert.equal(JSON.parse(r.text).error, "unknown_preset");
+});
+
+test("applying a real preset changes the theme and keeps the draft valid", async () => {
+  const before = JSON.parse((await callRaw("GET", `/api/sites/${pool.siteId}/draft`, true)).text);
+  const body = JSON.stringify({ presetId: "tech", expectedRev: before.rev });
+  const r = await new Promise((resolve, reject) => {
+    const req = http.request(
+      { host: "127.0.0.1", port, path: `/api/sites/${pool.siteId}/apply-preset`, method: "POST",
+        headers: { host: "panel.example.com", cookie, "content-type": "application/json", "content-length": Buffer.byteLength(body) } },
+      (res) => { let t = ""; res.setEncoding("utf8"); res.on("data", (c) => (t += c)); res.on("end", () => resolve({ status: res.statusCode, text: t })); },
+    );
+    req.on("error", reject);
+    req.end(body);
+  });
+  assert.equal(r.status, 200, r.text);
+  const after = JSON.parse((await callRaw("GET", `/api/sites/${pool.siteId}/draft`, true)).text);
+  assert.equal(after.doc.design.presetId, "tech");
+  assert.equal(after.doc.theme.colors.ground, "#0e1117");
+  assert.equal(after.rev > before.rev, true, "la revision avanza");
+  // El documento guardado sigue pasando el esquema.
+  assert.equal(Array.isArray(after.doc.pages[0].sections), true);
+  assert.equal(after.doc.pages[0].sections.length >= 4, true);
+});
