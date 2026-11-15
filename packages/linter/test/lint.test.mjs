@@ -101,3 +101,14 @@ test("an agent-written testimonial is TESTIMONIAL_UNVERIFIED, not a schema error
   assert.ok(!codes(f).includes("SCHEMA_INVALID"));
   assert.equal(blocksPublication(f), true);
 });
+
+test("una imagen propia del dueno no bloquea la publicacion", () => {
+  // Regresion: el linter recibia la lista de assets sin licencia, asi que toda
+  // imagen marcaba IMAGE_LICENSE_MISSING, incluida la que subio el dueno.
+  const d = structuredClone(base);
+  d.assets = [{ id: "asset_1", alt: "foto" }];
+  d.pages[0].sections = [{ id: "s_i", type: "image", props: { assetId: "asset_1" } }];
+  const f = lintSite(d, { licensedAssetIds: ["asset_1"] });
+  assert.equal(codes(f).includes("IMAGE_LICENSE_MISSING"), false);
+  assert.equal(blocksPublication(f), false);
+});

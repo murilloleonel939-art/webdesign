@@ -550,6 +550,7 @@ async function handleApi(pool: import("pg").Pool, sitesRoot: string, req: Incomi
     const r = await publish(pool, {
       sitesRoot, userId: session.userId, siteId, doc: withSeoFallback(draft.doc),
       resolveAssetPath: assets.resolveAssetPath, assetFiles: assets.assetFiles,
+      licensedAssetIds: assets.licensedAssetIds,
       ...(body?.confirmWarnings ? { confirmWarnings: true } : {}),
     });
     if (!r.ok) {

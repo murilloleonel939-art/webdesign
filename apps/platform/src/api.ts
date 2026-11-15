@@ -122,10 +122,14 @@ export async function activeAssets(pool: Pool, userId: string, siteId: string, s
   resolveAssetPath: (assetId: string) => string | undefined;
   assetFiles: Record<string, string>;
   assetFilesById: Map<string, Buffer>;
+  // Assets que no necesitan licencia de terceros: una imagen que subio el
+  // dueno es suya. Sin esto el linter marcaba IMAGE_LICENSE_MISSING en todas
+  // y la publicacion quedaba bloqueada por las fotos propias.
+  licensedAssetIds: string[];
 }> {
   const rows = await withUser(pool, userId, async (tx) =>
-    (await tx.query<{ id: string; path: string }>(
-      "SELECT id, path FROM assets WHERE site_id = $1 AND takedown_status = 'active'",
+    (await tx.query<{ id: string; path: string; source: string }>(
+      "SELECT id, path, source FROM assets WHERE site_id = $1 AND takedown_status = 'active'",
       [siteId],
     )).rows,
   );
@@ -138,7 +142,10 @@ export async function activeAssets(pool: Pool, userId: string, siteId: string, s
   for (const r of rows) {
     try { assetFilesById.set(r.id, await readFile(join(sitesRoot, siteId, "assets", r.path))); } catch { /* asset sin archivo */ }
   }
-  return { resolveAssetPath: (id) => byId.get(id), assetFiles, assetFilesById };
+  // `own` es material del propio dueno; `generated` se produjo para el sitio.
+  // Solo `open-collection` exige licencia explicita.
+  const licensedAssetIds = rows.filter((r) => r.source === "own" || r.source === "generated").map((r) => r.id);
+  return { resolveAssetPath: (id) => byId.get(id), assetFiles, assetFilesById, licensedAssetIds };
 }
 
 export { saveDraft, loadDraft, publish, rollbackTo, SESSION_COOKIE };
