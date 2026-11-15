@@ -85,6 +85,25 @@ function withSeoFallback(doc: unknown): unknown {
   };
 }
 
+// Subir una imagen no la anade a doc.assets: la seccion la referenciaba y el
+// linter la daba por inexistente (SCHEMA_INVALID), bloqueando la publicacion
+// de la seccion. Antes de validar se declaran los assets que las secciones
+// usan y que el sitio tiene de verdad.
+function declareAssets(doc: unknown, known: Map<string, { id: string }>): unknown {
+  const d = doc as { assets?: Array<{ id: string }>; pages?: Array<{ sections?: Array<{ props?: Record<string, unknown> }> }> };
+  if (!Array.isArray(d.pages)) return doc;
+  const declared = new Set((d.assets ?? []).map((a) => a.id));
+  const used = new Set<string>();
+  for (const page of d.pages) for (const section of page.sections ?? []) {
+    const p = section.props ?? {};
+    if (typeof p["assetId"] === "string") used.add(p["assetId"]);
+    if (Array.isArray(p["assetIds"])) for (const id of p["assetIds"]) if (typeof id === "string") used.add(id);
+  }
+  const missing = [...used].filter((id) => !declared.has(id) && known.has(id)).map((id) => ({ id }));
+  if (missing.length === 0) return doc;
+  return { ...d, assets: [...(d.assets ?? []), ...missing] };
+}
+
 export function createApp(opts: AppOptions = {}) {
   const usedLinks = opts.usedLinks ?? memoryStore();
 
@@ -548,7 +567,7 @@ async function handleApi(pool: import("pg").Pool, sitesRoot: string, req: Incomi
     const body = (await readJson(req)) as { confirmWarnings?: boolean } | undefined;
     const assets = await activeAssets(pool, session.userId, siteId, sitesRoot);
     const r = await publish(pool, {
-      sitesRoot, userId: session.userId, siteId, doc: withSeoFallback(draft.doc),
+      sitesRoot, userId: session.userId, siteId, doc: withSeoFallback(declareAssets(draft.doc, assets.known)),
       resolveAssetPath: assets.resolveAssetPath, assetFiles: assets.assetFiles,
       licensedAssetIds: assets.licensedAssetIds,
       ...(body?.confirmWarnings ? { confirmWarnings: true } : {}),

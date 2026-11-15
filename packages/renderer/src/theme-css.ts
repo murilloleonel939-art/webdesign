@@ -12,7 +12,15 @@ const FAMILY_FALLBACK: Record<string, string> = {
   // Solo pilas del sistema: la CSP del sitio no permite fuentes externas y
   // cargar Google Fonts revelaria el sitio del cliente a un tercero.
   Inter: 'system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
+  "Instrument Sans": 'system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
+  "Libre Franklin": 'system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
+  Archivo: 'system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
+  "Space Grotesk": '"Segoe UI", Roboto, Helvetica, Arial, sans-serif',
+  Nunito: '"Segoe UI", Roboto, Helvetica, Arial, sans-serif',
   Serif: 'Georgia, "Times New Roman", Times, serif',
+  "Source Serif 4": 'Georgia, "Times New Roman", Times, serif',
+  Fraunces: 'Georgia, "Times New Roman", Times, serif',
+  Merriweather: 'Georgia, "Times New Roman", Times, serif',
   Mono: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
 };
 

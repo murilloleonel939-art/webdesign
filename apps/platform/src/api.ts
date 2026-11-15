@@ -126,10 +126,14 @@ export async function activeAssets(pool: Pool, userId: string, siteId: string, s
   // dueno es suya. Sin esto el linter marcaba IMAGE_LICENSE_MISSING en todas
   // y la publicacion quedaba bloqueada por las fotos propias.
   licensedAssetIds: string[];
+  // Metadatos para declarar en el documento los assets que usa. Subir una
+  // imagen no la anadia a doc.assets, asi que el linter la daba por
+  // inexistente (SCHEMA_INVALID) y la seccion quedaba impublicable.
+  known: Map<string, { id: string; kind: string; path: string }>;
 }> {
   const rows = await withUser(pool, userId, async (tx) =>
-    (await tx.query<{ id: string; path: string; source: string }>(
-      "SELECT id, path, source FROM assets WHERE site_id = $1 AND takedown_status = 'active'",
+    (await tx.query<{ id: string; path: string; source: string; kind: string; alt: string | null }>(
+      "SELECT id, path, source, kind FROM assets WHERE site_id = $1 AND takedown_status = 'active'",
       [siteId],
     )).rows,
   );
@@ -145,7 +149,8 @@ export async function activeAssets(pool: Pool, userId: string, siteId: string, s
   // `own` es material del propio dueno; `generated` se produjo para el sitio.
   // Solo `open-collection` exige licencia explicita.
   const licensedAssetIds = rows.filter((r) => r.source === "own" || r.source === "generated").map((r) => r.id);
-  return { resolveAssetPath: (id) => byId.get(id), assetFiles, assetFilesById, licensedAssetIds };
+  const known = new Map(rows.map((r) => [r.id, { id: r.id, kind: r.kind, path: r.path }]));
+  return { resolveAssetPath: (id) => byId.get(id), assetFiles, assetFilesById, licensedAssetIds, known };
 }
 
 export { saveDraft, loadDraft, publish, rollbackTo, SESSION_COOKIE };

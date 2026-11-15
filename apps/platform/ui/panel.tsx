@@ -56,6 +56,13 @@ function findingLabel(code: string): string {
     FONT_NOT_HOSTED: "La tipografia no esta alojada en el sitio",
     SCHEMA_INVALID: "El contenido no tiene el formato esperado",
     RAW_HTML: "Hay HTML crudo en el contenido",
+    MISSING_ALT: "Una imagen no tiene texto alternativo",
+    CTA_MISSING: "La pagina no invita a hacer nada",
+    BROKEN_INTERNAL_LINK: "Un enlace apunta a una pagina que no existe",
+    LONG_TEXT: "Un texto es demasiado largo",
+    DUPLICATE_SLUG: "Dos paginas usan la misma ruta",
+    PAGE_TOO_HEAVY: "La pagina pesa demasiado",
+    TOO_MANY_IMAGES: "Hay demasiadas imagenes en una seccion",
   };
   return map[code] ?? code;
 }
@@ -97,8 +104,11 @@ function Editor({ siteId }: { siteId: string }) {
     if (pending.current) await save(pending.current);
     const r = await api(`/api/sites/${siteId}/publish`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
     if (!r.ok) {
-      const d = await r.json().catch(() => ({})) as { findings?: { code: string }[] };
-      const codes = [...new Set((d.findings ?? []).map((f) => f.code))];
+      const d = await r.json().catch(() => ({})) as { findings?: { code: string; severity?: string }[] };
+      // Solo los `error` bloquean la publicacion. Antes se listaban tambien
+      // avisos e informativos (MISSING_ALT, CTA_MISSING), asi que el dueno veia
+      // una lista de fallos que en realidad no le impedian publicar.
+      const codes = [...new Set((d.findings ?? []).filter((f) => f.severity === "error").map((f) => f.code))];
       setBlockers(codes.length ? codes.map(findingLabel) : ["No se pudo publicar"]);
       setStatus("Falta algo para publicar");
       return;

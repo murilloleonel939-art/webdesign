@@ -16,7 +16,14 @@ export interface LintFinding {
   autofixable: boolean;
 }
 
-const HOSTED_FONTS = ["Source Serif 4", "Inter", "Fraunces", "Instrument Sans", "Libre Franklin"];
+// Debe coincidir con lo que el renderer sabe pintar sin fuentes externas
+// (packages/renderer/src/theme-css.ts). Estaban solo cinco familias, mientras
+// los presets de la biblioteca usan otras cuatro: aplicar un preset dejaba el
+// sitio impublicable con FONT_NOT_HOSTED.
+const HOSTED_FONTS = [
+  "Inter", "Instrument Sans", "Libre Franklin", "Archivo", "Space Grotesk", "Nunito",
+  "Source Serif 4", "Fraunces", "Merriweather", "Serif", "Mono",
+];
 const MAX_PAGE_BYTES = 20 * 1024 * 1024;
 const LONG_TEXT = 2500;
 
