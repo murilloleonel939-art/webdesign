@@ -50,7 +50,7 @@ function Editor({ siteId }: { siteId: string }) {
     </header>
     <div className="editor-body">
       <Puck config={buildEditorConfig({ assets: assets.map(a => ({ id: a.id, path: a.publicUrl })) })} data={documentToPuck(doc, PAGE)} onChange={save} onPublish={save}/>
-      {showAssets && <aside className="asset-drawer" aria-label="Biblioteca de imágenes">
+      {showAssets && <aside className="asset-popover" aria-label="Biblioteca de imágenes">
         <header>
           <div><h3>Biblioteca de imágenes</h3><p>Arrastra una miniatura al campo Imagen.</p></div>
           <button className="close" onClick={() => setShowAssets(false)} aria-label="Cerrar biblioteca">✕</button>

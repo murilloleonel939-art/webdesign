@@ -1,4 +1,4 @@
-import type { ReactElement } from "react";
+import type { DragEvent, ReactElement } from "react";
 import type { Config } from "@measured/puck";
 import type { Section } from "@webdesign/site-schema";
 import { SECTION_COMPONENTS } from "@webdesign/ui-components";
@@ -13,6 +13,59 @@ type Props = Record<string, unknown>;
 // componente puro compartido con el renderer para que no haya dos disenos.
 export function resolveEditorAssetPath(path: string): string {
   return path.startsWith("/") ? path : `/assets/${path}`;
+}
+
+// Selector de imagen: miniaturas en cuadricula, con el elegido marcado.
+// Arrastrar desde la biblioteca y pulsar aqui hacen lo mismo: fijar el assetId.
+function AssetPicker({ assets, value, onChange }: {
+  assets: readonly { id: string; label?: string; path?: string }[];
+  value: unknown;
+  onChange: (id: string) => void;
+}) {
+  const current = typeof value === "string" ? value : "";
+  const onDrop = (e: DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    const id = e.dataTransfer.getData("text/asset-id");
+    if (id) onChange(id);
+  };
+  if (!assets.length) {
+    return <p style={{ margin: 0, fontSize: 12, color: "#6b7590" }}>Sube una imagen para poder elegirla.</p>;
+  }
+  return (
+    <div
+      onDragOver={(e) => e.preventDefault()}
+      onDrop={onDrop}
+      style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(64px,1fr))", gap: 7 }}
+    >
+      {assets.map((a) => {
+        const selected = current === a.id;
+        return (
+          <button
+            key={a.id}
+            type="button"
+            draggable
+            onDragStart={(e) => e.dataTransfer.setData("text/asset-id", a.id)}
+            onClick={() => onChange(a.id)}
+            title={a.label ?? a.id}
+            aria-pressed={selected}
+            style={{
+              position: "relative", padding: 0, overflow: "hidden", cursor: "pointer",
+              aspectRatio: "4 / 3", borderRadius: 9,
+              border: selected ? "2px solid #6c5ce7" : "1px solid #e6e9f2",
+              background: "#f4f6fb",
+              boxShadow: selected ? "0 0 0 3px #6c5ce71f" : "none",
+            }}
+          >
+            {a.path ? (
+              <img src={resolveEditorAssetPath(a.path)} alt="" style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
+            ) : (
+              <span style={{ display: "grid", placeItems: "center", height: "100%", fontSize: 11, color: "#6b7590" }}>—</span>
+            )}
+          </button>
+        );
+      })}
+    </div>
+  );
 }
 
 function makeRender(type: Section["type"], assets: readonly { id: string; path?: string }[]) {
@@ -53,7 +106,14 @@ export function buildEditorConfig(opts: EditorConfigOptions): Config {
       },
       image: {
         label: "Imagen",
-        fields: { assetId: { type: "custom", label: "Imagen", render: ({ value, onChange }) => <div style={{ display: "grid", gap: 8 }} onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); const id = e.dataTransfer.getData("text/asset-id"); if (id) onChange(id); }}>{opts.assets?.length ? opts.assets.map(a => <button type="button" key={a.id} draggable onDragStart={e => e.dataTransfer.setData("text/asset-id", a.id)} onClick={() => onChange(a.id)} style={{ textAlign: "left", border: value === a.id ? "2px solid #2563eb" : "1px solid #d1d5db", borderRadius: 8, padding: 8, cursor: "grab", background: "white" }}>{a.label ?? a.id}</button>) : <small>Sube una imagen para seleccionarla</small>}<small>Arrastra una imagen aquí o haz clic para seleccionarla.</small></div> }, alt: text("Texto alternativo") },
+        fields: {
+          assetId: {
+            type: "custom",
+            label: "Imagen",
+            render: ({ value, onChange }) => <AssetPicker assets={opts.assets ?? []} value={value} onChange={onChange} />,
+          },
+          alt: text("Texto alternativo"),
+        },
         defaultProps: { assetId: "" },
         render: makeRender("image", opts.assets ?? []),
       },
