@@ -108,7 +108,9 @@ section{max-width:1140px;margin-inline:auto}
 .gallery--wide img{aspect-ratio:21/9}
 
 /* Imagen suelta: centrada y acotada, nunca a tamaño natural. */
-.image img{border-radius:var(--radius);display:block;margin-inline:auto;max-height:70vh;object-fit:cover}
+/* object-fit no hace nada sin dimensiones: la imagen salia a tamano natural
+(1280 px) y desbordaba el ancho de lectura. */
+.image img{width:100%;height:auto;max-width:100%;border-radius:var(--radius);display:block;margin-inline:auto;max-height:70vh;object-fit:cover}
 
 /* Texto largo: columna legible, no renglones de 200 caracteres. */
 .text{max-width:70ch}

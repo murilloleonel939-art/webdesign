@@ -38,3 +38,12 @@ test("cada seccion tiene maquetacion, no solo el tema", () => {
   }
   assert.equal((css.match(/{/g) ?? []).length, (css.match(/}/g) ?? []).length, "CSS desbalanceado");
 });
+
+test("la imagen suelta se acota al ancho de lectura", () => {
+  // object-fit no hace nada sin dimensiones: la imagen salia a su tamano
+  // natural (1280 px) y desbordaba la columna.
+  const css = themeCss(theme);
+  const regla = css.match(/\.image img\{([^}]*)\}/)?.[1] ?? "";
+  assert.match(regla, /width:100%/);
+  assert.match(regla, /height:auto/);
+});
