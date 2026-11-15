@@ -1,7 +1,7 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
-import { mkdtempSync, readFileSync, rmSync, existsSync, readlinkSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, existsSync, readlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import pg from "pg";
@@ -212,6 +212,39 @@ test("an uploaded asset is linked into the release, not copied", async () => {
   // La release contiene el asset enlazado.
   const relAssets = join(sitesRoot, pool.siteId, "releases", `v${pub.json.version}`, "assets", "image");
   assert.equal(existsSync(relAssets), true);
+});
+
+test("deleting an asset removes its file from disk", async () => {
+  const up = await new Promise((resolve, reject) => {
+    const req = http.request(
+      { host: "127.0.0.1", port, path: `/api/sites/${pool.siteId}/assets?kind=image`, method: "POST",
+        headers: { host: "panel.example.com", cookie, "content-type": "image/png", "content-length": PNG.length } },
+      (res) => {
+        let text = "";
+        res.setEncoding("utf8");
+        res.on("data", (c) => (text += c));
+        res.on("end", () => resolve({ status: res.statusCode, json: text ? JSON.parse(text) : undefined }));
+      },
+    );
+    req.on("error", reject);
+    req.write(Buffer.from(PNG));
+    req.end();
+  });
+  assert.equal(up.status, 201);
+
+  // El archivo existe antes de borrar.
+  const dir = join(sitesRoot, pool.siteId, "assets", "image");
+  const before = readdirSync(dir).filter((n) => n.startsWith(up.json.id));
+  assert.equal(before.length, 1, "el asset subido debe estar en disco");
+
+  const del = await call("DELETE", `/api/sites/${pool.siteId}/assets?id=${up.json.id}`);
+  assert.equal(del.status, 204);
+
+  // Sin huerfanos: ni fila ni archivo.
+  const after = readdirSync(dir).filter((n) => n.startsWith(up.json.id));
+  assert.equal(after.length, 0, "el archivo debe desaparecer del disco");
+  const list = await call("GET", `/api/sites/${pool.siteId}/assets`);
+  assert.equal(list.json.assets.some((a) => a.id === up.json.id), false);
 });
 
 test("a file whose content is not an image is refused", async () => {

@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { randomUUID } from "node:crypto";
 import { hashPassword } from "@webdesign/auth";
 import pg from "pg";
-import { readFile } from "node:fs/promises";
+import { readFile, rm, unlink } from "node:fs/promises";
 import { extname, join } from "node:path";
 import { migrate, withUser } from "@webdesign/db";
 import {
@@ -185,7 +185,10 @@ async function handleApi(pool: import("pg").Pool, sitesRoot: string, req: Incomi
       json(res, 401, { error: "unauthorized" });
       return true;
     }
-    const deleted = await deleteSite(pool, session.userId, deleteSiteMatch[1]!);
+    const siteId = deleteSiteMatch[1]!;
+    const deleted = await deleteSite(pool, session.userId, siteId);
+    // Las filas ya no existen: se borra tambien la carpeta del sitio y sus assets.
+    if (deleted) await rm(join(sitesRoot, siteId), { recursive: true, force: true });
     json(res, deleted ? 200 : 404, deleted ? { ok: true } : { error: "not_found" });
     return true;
   }
@@ -243,7 +246,21 @@ async function handleApi(pool: import("pg").Pool, sitesRoot: string, req: Incomi
     if (req.method === "DELETE") {
       const assetId = url.searchParams.get("id");
       if (!assetId) { json(res, 422, { error: "missing_id" }); return true; }
-      await withUser(pool, session.userId, async (tx) => { await tx.query("DELETE FROM assets WHERE id = $1 AND site_id = $2", [assetId, siteId]); });
+      // El RETURNING da la ruta relativa: sin ella el archivo quedaria huerfano en disco.
+      const removed = await withUser(pool, session.userId, async (tx) =>
+        (await tx.query<{ path: string }>(
+          "DELETE FROM assets WHERE id = $1 AND site_id = $2 RETURNING path",
+          [assetId, siteId],
+        )).rows[0],
+      );
+      if (!removed) { json(res, 404, { error: "not_found" }); return true; }
+      // La fila ya no existe: si falla el borrado del archivo se avisa, pero no se
+      // deja el asset publicado. Las releases ya copiaron sus propios bytes.
+      try {
+        await unlink(join(sitesRoot, siteId, "assets", removed.path));
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+      }
       json(res, 204, {});
       return true;
     }
