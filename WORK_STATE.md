@@ -97,3 +97,9 @@ ausente, base caída). **No verificado contra Postgres real**: 5432 cerrado en e
 
 `packages/db/migrations/0008_domains_leads.sql` existe sin probar: no hay Postgres accesible.
 Corre sola al arrancar. **No mezclarla con un redeploy hasta validarla.**
+
+## Pendiente urgente de seguridad
+
+`DIAGNOSTIC_OPEN=1` habilita `/app/diagnose` **sin autenticación**. Es provisional, para
+depurar sin poder generar token. Retirar: borrar la variable en Coolify y redeploy.
+Registrado en claude-mem #217.

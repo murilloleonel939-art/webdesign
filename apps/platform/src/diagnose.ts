@@ -12,6 +12,8 @@ import type { Pool } from "pg";
 
 export interface DiagnosticReport {
   ok: boolean;
+  // Presente solo en modo abierto: recuerda que hay que retirarlo.
+  warning?: string | undefined;
   database: { reachable: boolean; version?: string | undefined; role?: string | undefined; error?: string | undefined };
   migrations: { applied: number; files: string[]; missing: string[] };
   tables: { name: string; rows: number | null }[];
@@ -30,10 +32,19 @@ const EXPECTED_MIGRATIONS = [
 const COUNTED = ["users", "sites", "site_drafts", "site_versions", "assets", "domains", "leads"];
 
 export function diagnosticsEnabled(): boolean {
+  // Dos modos: `open` (provisional, sin cabecera) o token (permanente).
+  // `open` existe solo para una ventana de depuracion y debe retirarse.
+  if (process.env.DIAGNOSTIC_OPEN === "1") return true;
   return Boolean(process.env.DIAGNOSTIC_TOKEN);
 }
 
+export function isOpenMode(): boolean {
+  return process.env.DIAGNOSTIC_OPEN === "1";
+}
+
 export function tokenMatches(presented: string | null): boolean {
+  // Modo abierto: no se exige cabecera. Marcado para retirar.
+  if (isOpenMode()) return true;
   const expected = process.env.DIAGNOSTIC_TOKEN;
   // Sin token configurado no hay comparacion posible: se cierra, no se abre.
   if (!expected || !presented) return false;
@@ -54,6 +65,9 @@ export async function runDiagnostics(pool: Pool, sitesRoot: string): Promise<Dia
     storage: { sitesRoot, sitesOnDisk: null },
     time: new Date().toISOString(),
   };
+  if (isOpenMode()) {
+    report.warning = "DIAGNOSTIC_OPEN activo: endpoint sin autenticacion. Retirar cuanto antes.";
+  }
 
   try {
     const v = await pool.query<{ version: string; role: string }>(

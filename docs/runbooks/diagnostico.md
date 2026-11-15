@@ -82,3 +82,16 @@ que limpiar en base de datos ni en disco.
 
 **No comprobado:** contra un Postgres real. En el entorno de construcción no hay ninguno
 accesible (5432 cerrado en loopback, puerta de enlace y `host.docker.internal`).
+
+## Modo abierto (solo depuración, retirar)
+
+`DIAGNOSTIC_OPEN=1` habilita el endpoint **sin autenticación**. Existe únicamente para una
+ventana de depuración en la que no se puede generar un token. Cuando está activo, la respuesta
+incluye `warning` recordándolo.
+
+Riesgo mientras esté puesto: cualquiera que conozca la URL ve nombres de tabla, recuentos,
+versión de Postgres y rutas de `/data/sites`. No hay datos personales ni secretos, pero es
+información interna.
+
+**Retirar:** borrar `DIAGNOSTIC_OPEN` del entorno y redeploy. La condición de "cerrado" es la
+ausencia de las dos variables; no hay valor que dejar por descuido.
