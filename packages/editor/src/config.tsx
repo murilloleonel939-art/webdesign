@@ -12,7 +12,13 @@ type Props = Record<string, unknown>;
 // Puck exige que cada componente declare sus campos; el render delega en el
 // componente puro compartido con el renderer para que no haya dos disenos.
 export function resolveEditorAssetPath(path: string): string {
-  return path.startsWith("/") ? path : `/assets/${path}`;
+  // El lienzo de Puck es un iframe con srcDoc, asi que su origen es
+  // about:blank y una ruta relativa no resuelve: la imagen no se veia en el
+  // editor aunque el sitio publicado la sirviera bien. Se absolutiza contra el
+  // origen del panel.
+  const rel = path.startsWith("/") ? path : `/assets/${path}`;
+  const origin = typeof location === "undefined" ? "" : location.origin;
+  return origin ? `${origin}${rel}` : rel;
 }
 
 // Selector de imagen: miniaturas en cuadricula, con el elegido marcado.
