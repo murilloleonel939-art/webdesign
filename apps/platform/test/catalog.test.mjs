@@ -90,3 +90,19 @@ test("los presets aplicados conservan las paginas adicionales", () => {
   assert.equal(doc.pages.length, 2, "no se pierde la pagina secundaria");
   assert.equal(doc.pages[1].sections[0].props.body, "Historia real del negocio.");
 });
+
+test("aplicar un estilo deja la pagina publicable", () => {
+  // Regresion: el documento nacia con seo.title vacio y el linter lo bloquea,
+  // asi que todo sitio nuevo era impublicable con un aviso que no decia nada.
+  const doc = { ...baseDoc(), pages: [] };
+  const example = {
+    id: "tech", name: "Tech", colors: { ground: "#0e1117", ink: "#e8eef7", accent: "#7dd3fc" },
+    typography: { family: "Inter", scale: "normal" }, spacing: { margin: 48, sectionGap: 64 },
+    radius: "rounded", dials: { variance: 3, motion: 2, density: 5 },
+    sections: [{ type: "hero" }, { type: "text" }],
+  };
+  const { doc: next } = applyStyleToDocument(doc, example);
+  const home = next.pages[0];
+  assert.ok(home.seo.title.trim().length > 0, "el titulo no puede ir vacio");
+  assert.ok(home.seo.description.trim().length > 0, "la descripcion no puede ir vacia");
+});

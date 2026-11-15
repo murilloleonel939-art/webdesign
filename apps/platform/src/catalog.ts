@@ -132,7 +132,14 @@ export function applyStyleToDocument(
         spacing: { ...style.spacing },
         radius: style.radius,
       },
-      pages: pages.length > 0 ? pages : [{ id: pageId, slug: "/", seo: { title: "", description: "", noindex: true }, sections }],
+      // El titulo cae al nombre del sitio: nacer con "" hacia que el linter
+      // bloqueara la publicacion de todo sitio nuevo con MISSING_TITLE, y el
+      // aviso del editor no decia por que.
+      pages: pages.length > 0 ? pages : [{
+        id: pageId, slug: "/",
+        seo: { title: doc.meta.name.slice(0, 70), description: doc.meta.name.slice(0, 160), noindex: false },
+        sections,
+      }],
     },
     sectionsChanged: true,
   };
