@@ -133,3 +133,33 @@ consentimiento obligatorio. `theme-css.ts` genera la hoja desde el documento.
 
 **Riesgo vivo:** `0008` no se ha ejecutado contra Postgres real y corre al
 arrancar. Si falla, `plataforma` no levanta.
+
+## Fase 2b — imagen del sitio e integridad al publicar (8ca0385)
+
+Cadena completa del fallo del bloque Imagen, en orden de causa:
+
+1. `assetFiles` usaba la clave sin `siteId`, asi que el release guardaba el
+   fichero en `assets/image/...` y la URL publica daba 404 (2241eab).
+2. El CSP de Caddy se **interseccionaba** con el `<meta>` del renderer y no
+   permitia `data:` ni `'unsafe-inline'`: bloqueaba imagenes y el `<style>` del
+   tema (6b95e06).
+3. `.image img` pedia `object-fit:cover` sin dimensiones, y sin `width` esa
+   regla no hace nada (0c49b8e).
+4. `publish()` pintaba la seccion vacia y publicaba el release sin el fichero,
+   sin avisar. Ahora corta con `MISSING_ASSET` (8ca0385).
+
+**Leccion de diagnostico:** `curl` recibia una copia buena de Cloudflare
+mientras el navegador veia el 404 real. Una captura de la pestana Network
+(404, `text/plain`, 19 bytes, `cf-cache-status: MISS`) fue el unico dato que
+lo resolvio. No dar por verificado un fallo de navegador con `curl`.
+
+**Nota:** los 8 presets no siembran `image`; esa seccion solo aparece si se
+anade a mano. El 404 cacheado que vio el dueno caduca solo en 4 h.
+
+## Cambiar de estilo sin perder el trabajo (fb16a25)
+
+`applyStyleToDocument` sustituia **todas** las secciones de la portada por las
+del preset: quien tenia su texto escrito lo perdia por probar otro aire.
+Ahora `mode` es `inherit` por defecto y `reset` hay que pedirlo; el dialogo de
+`StyleStart` explica que se pierde antes de tocar nada. La API rechaza un modo
+inventado con `400 unknown_mode` y devuelve `sectionsChanged`.
