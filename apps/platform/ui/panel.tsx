@@ -47,7 +47,7 @@ function Editor({ siteId }: { siteId: string }) {
   async function removeAsset(id: string) { if (!confirm("¿Eliminar esta imagen?")) return; const r = await api(`/api/sites/${siteId}/assets?id=${encodeURIComponent(id)}`, { method: "DELETE" }); if (r.ok) { await refreshAssets(); setStatus("Imagen eliminada"); } }
   async function upload(file: File) { setUploading(true); const r = await api(`/api/sites/${siteId}/assets?kind=image`, { method: "POST", headers: { "content-type": file.type }, body: file }); setUploading(false); if (r.ok) { await refreshAssets(); setStatus("Imagen subida. Copia su ID en el bloque Imagen."); } else setStatus("No se pudo subir la imagen"); }
   useEffect(() => { void refreshAssets(); }, [siteId]);
-  const saving = useRef(false); const pending = useRef<any>(null); const docRef = useRef<any>(null); const revRef = useRef(0); const [showPreview, setShowPreview] = useState(false); const [showAssets, setShowAssets] = useState(true);
+  const saving = useRef(false); const pending = useRef<any>(null); const docRef = useRef<any>(null); const revRef = useRef(0); const [showPreview, setShowPreview] = useState(false); const [showAssets, setShowAssets] = useState(true); const [showStyles, setShowStyles] = useState(false);
   useEffect(() => { api(`/api/sites/${siteId}/draft`).then(async r => { if (r.status === 401) return go("/app"); if (!r.ok) throw new Error("No se pudo cargar"); const d = await r.json() as Draft; docRef.current = d.doc; revRef.current = d.rev; setDoc(d.doc); setRev(d.rev); setStatus("Listo para crear"); }).catch(() => setStatus("No se pudo cargar el editor")); }, [siteId]);
   if (!doc) return <div className="loading"><Brand/><p>{status}</p></div>;
   // Pantalla de inicio: solo si el sitio no tiene contenido propio todavia.
@@ -67,6 +67,14 @@ function Editor({ siteId }: { siteId: string }) {
     />;
   } const save = async (data: any) => { pending.current = data; if (saving.current) return; saving.current = true; while (pending.current) { const current = pending.current; pending.current = null; const next = mergeEditedPage(docRef.current ?? doc, puckToDocument({ content: current.content, root: current.root }, PAGE)); setStatus("Guardando…"); const r = await api(`/api/sites/${siteId}/draft`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ doc: next, expectedRev: revRef.current }) }); if (r.status === 409) { setStatus("Otro cambio fue guardado. Recargando…"); const d = await (await api(`/api/sites/${siteId}/draft`)).json() as Draft; docRef.current = d.doc; revRef.current = d.rev; setDoc(d.doc); setRev(d.rev); continue; } if (!r.ok) { setStatus("No se pudo guardar"); continue; } const d = await r.json() as { rev: number }; docRef.current = next; revRef.current = d.rev; setDoc(next); setRev(d.rev); setStatus("Guardado"); } saving.current = false; };
   async function publish() { setStatus("Publicando…"); const r = await api(`/api/sites/${siteId}/publish`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }); setStatus(r.ok ? "Publicado correctamente" : "Revisa el contenido antes de publicar"); }
+  if (showStyles) {
+    return <StyleStart
+      siteId={siteId}
+      expectedRev={rev}
+      onApplied={() => { setShowStyles(false); void reloadDraft(); }}
+      onSkip={() => setShowStyles(false)}
+    />;
+  }
   return <div className="editor-shell">
     <header className="editorbar">
       <button className="back" onClick={() => go("/app")} aria-label="Volver al panel">←</button>
@@ -77,6 +85,7 @@ function Editor({ siteId }: { siteId: string }) {
         <button className="asset-trigger" aria-expanded={showAssets} onClick={() => setShowAssets(v => !v)}>
           Imágenes {assets.length > 0 && <span className="asset-count">{assets.length}</span>}
         </button>
+        <button className="ghost" onClick={() => setShowStyles(true)}>Estilos</button>
         <button className="ghost" onClick={() => setShowPreview(true)}>Vista previa</button>
         <button className="primary publish" onClick={publish}>Publicar sitio</button>
       </div>
