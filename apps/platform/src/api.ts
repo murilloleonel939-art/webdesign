@@ -140,7 +140,10 @@ export async function activeAssets(pool: Pool, userId: string, siteId: string, s
   // Ruta absoluta: una relativa rompe en paginas anidadas ("/precios/" buscaria /precios/assets).
   const byId = new Map(rows.map((r) => [r.id, `/assets/${siteId}/${r.path}`]));
   const assetFiles: Record<string, string> = {};
-  for (const r of rows) assetFiles[`assets/${r.path}`] = join(sitesRoot, siteId, "assets", r.path);
+  // La clave debe coincidir con la URL publica, que lleva el siteId
+  // (/assets/<siteId>/image/...). Sin el, el fichero acababa en
+  // assets/image/... dentro del release y la imagen daba 404 en el sitio.
+  for (const r of rows) assetFiles[`assets/${siteId}/${r.path}`] = join(sitesRoot, siteId, "assets", r.path);
   // Bytes en memoria: la vista previa los incrusta como data URI y asi no depende de rutas.
   const assetFilesById = new Map<string, Buffer>();
   for (const r of rows) {

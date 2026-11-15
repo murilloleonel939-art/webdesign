@@ -27,3 +27,14 @@ test("las familias serif conservan su caracter y las sans no lo pierden", () => 
     assert.ok(fam.includes("Georgia"), `${f} deberia ser serif`);
   }
 });
+
+test("cada seccion tiene maquetacion, no solo el tema", () => {
+  // El sitio publicado salia como un documento corrido porque el CSS solo
+  // definia colores y tipografia: ninguna seccion tenia rejilla ni tarjetas.
+  const css = themeCss(theme);
+  for (const sel of [".hero h1", ".features ul", ".pricing__plan", ".gallery img",
+    ".image img", ".text", ".testimonial blockquote", ".faq summary", ".cta-block"]) {
+    assert.ok(css.includes(sel), `falta maquetacion para ${sel}`);
+  }
+  assert.equal((css.match(/{/g) ?? []).length, (css.match(/}/g) ?? []).length, "CSS desbalanceado");
+});
