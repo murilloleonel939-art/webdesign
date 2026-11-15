@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { hashPassword } from "@webdesign/auth";
 import pg from "pg";
 import { readFile, rm, unlink } from "node:fs/promises";
@@ -139,7 +139,23 @@ export function createApp(opts: AppOptions = {}) {
         : "text/html; charset=utf-8";
       try {
         const body = await readFile(join(UI_DIR, file));
-        res.writeHead(200, { "content-type": type, "content-security-policy": PANEL_CSP, "x-robots-tag": "noindex" });
+        // Sin cabecera de cache el navegador aplica cache heuristica y puede
+        // seguir mostrando el bundle viejo tras un despliegue. El HTML nunca se
+        // cachea; el JS y el CSS se revalidan con ETag, que es barato y correcto.
+        const etag = `"${createHash("sha256").update(body).digest("base64url").slice(0, 27)}"`;
+        const headers = {
+          "content-type": type,
+          "content-security-policy": PANEL_CSP,
+          "x-robots-tag": "noindex",
+          etag,
+          "cache-control": file.endsWith(".html") ? "no-store" : "no-cache",
+        };
+        if (req.headers["if-none-match"] === etag) {
+          res.writeHead(304, headers);
+          res.end();
+          return;
+        }
+        res.writeHead(200, headers);
         res.end(body);
       } catch {
         json(res, 404, { error: "not_found" });

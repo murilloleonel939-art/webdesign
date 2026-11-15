@@ -426,3 +426,29 @@ test("applying a real preset changes the theme and keeps the draft valid", async
   assert.equal(Array.isArray(after.doc.pages[0].sections), true);
   assert.equal(after.doc.pages[0].sections.length >= 4, true);
 });
+
+test("the panel bundle is revalidated, never heuristically cached", async () => {
+  // Regresion: sin cache-control el navegador puede seguir usando el bundle
+  // viejo tras un despliegue y el dueno no ve los cambios.
+  const js = await callRaw("GET", "/app/panel.js", false);
+  assert.equal(js.status, 200);
+  assert.equal(js.headers["cache-control"], "no-cache");
+  assert.match(js.headers.etag ?? "", /^"[A-Za-z0-9_-]{20,}"$/);
+
+  // El HTML nunca se guarda: puede cambiar en cada despliegue.
+  const html = await callRaw("GET", "/app/", false);
+  assert.equal(html.headers["cache-control"], "no-store");
+
+  // Revalidacion: con el ETag al dia responde 304 y no reenvia el cuerpo.
+  const again = await new Promise((resolve, reject) => {
+    const req = http.request(
+      { host: "127.0.0.1", port, path: "/app/panel.js", method: "GET",
+        headers: { host: "panel.example.com", "if-none-match": js.headers.etag } },
+      (res) => { let t = ""; res.setEncoding("utf8"); res.on("data", (c) => (t += c)); res.on("end", () => resolve({ status: res.statusCode, text: t })); },
+    );
+    req.on("error", reject);
+    req.end();
+  });
+  assert.equal(again.status, 304);
+  assert.equal(again.text, "");
+});
