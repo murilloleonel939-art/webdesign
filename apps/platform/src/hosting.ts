@@ -5,6 +5,7 @@
 import { mkdirSync, symlinkSync, renameSync, existsSync, rmSync, readlinkSync } from "node:fs";
 import { join } from "node:path";
 import type pg from "pg";
+import { withUser } from "@webdesign/db";
 
 // Terminos que nunca se asignan como subdominio (spec 5.3). La tabla
 // reserved_subdomains es la fuente, pero se comprueba tambien aqui para no
@@ -81,32 +82,37 @@ export interface HostRow {
 // pero el sitio no se sirve, y quien llama debe decirlo.
 export async function ensureHostname(
   pool: pg.Pool,
-  opts: { siteId: string; siteName: string; hostnameFor?: (label: string, domain: string) => string },
+  opts: { siteId: string; userId: string; siteName: string; hostnameFor?: (label: string, domain: string) => string },
 ): Promise<HostRow | undefined> {
-  const existing = await pool.query<{ hostname: string }>(
-    `SELECT hostname FROM domains WHERE site_id = $1 AND kind = 'pool' AND status = 'active' LIMIT 1`,
-    [opts.siteId],
-  );
-  const current = existing.rows[0]?.hostname;
-  if (current) return { hostname: current, poolDomain: current.split(".").slice(1).join(".") };
+  // Todo dentro de la transaccion del dueno: `domains` tiene RLS forzada y sin
+  // `app.user_id` ni el SELECT ni el INSERT ven nada, asi que el alta se
+  // perdia en silencio y el sitio publicaba sin direccion.
+  return withUser(pool, opts.userId, async (tx) => {
+    const existing = await tx.query<{ hostname: string }>(
+      `SELECT hostname FROM domains WHERE site_id = $1 AND kind = 'pool' AND status = 'active' LIMIT 1`,
+      [opts.siteId],
+    );
+    const current = existing.rows[0]?.hostname;
+    if (current) return { hostname: current, poolDomain: current.split(".").slice(1).join(".") };
 
-  // Zona con hueco, la mas vacia primero para repartir.
-  const zone = await pool.query<{ id: string; domain: string }>(
-    `SELECT id, domain FROM site_domain_pool
-     WHERE status = 'active' AND used < capacity
-     ORDER BY used ASC LIMIT 1`,
-  );
-  const row = zone.rows[0];
-  if (!row) return undefined;
+    // Zona con hueco, la mas vacia primero para repartir.
+    const zone = await tx.query<{ id: string; domain: string }>(
+      `SELECT id, domain FROM site_domain_pool
+       WHERE status = 'active' AND used < capacity
+       ORDER BY used ASC LIMIT 1`,
+    );
+    const row = zone.rows[0];
+    if (!row) return undefined;
 
-  const label = labelFor(opts.siteName, opts.siteId);
-  const hostname = opts.hostnameFor ? opts.hostnameFor(label, row.domain) : `${label}.${row.domain}`;
+    const label = labelFor(opts.siteName, opts.siteId);
+    const hostname = opts.hostnameFor ? opts.hostnameFor(label, row.domain) : `${label}.${row.domain}`;
 
-  await pool.query(
-    `INSERT INTO domains (id, site_id, hostname, kind, status, verified_at)
-     VALUES (gen_random_uuid(), $1, $2, 'pool', 'active', now())`,
-    [opts.siteId, hostname],
-  );
-  await pool.query(`UPDATE site_domain_pool SET used = used + 1 WHERE id = $1`, [row.id]);
-  return { hostname, poolDomain: row.domain };
+    await tx.query(
+      `INSERT INTO domains (id, site_id, hostname, kind, status, verified_at)
+       VALUES (gen_random_uuid(), $1, $2, 'pool', 'active', now())`,
+      [opts.siteId, hostname],
+    );
+    await tx.query(`UPDATE site_domain_pool SET used = used + 1 WHERE id = $1`, [row.id]);
+    return { hostname, poolDomain: row.domain };
+  });
 }

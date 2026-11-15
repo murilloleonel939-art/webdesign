@@ -582,13 +582,16 @@ async function handleApi(pool: import("pg").Pool, sitesRoot: string, req: Incomi
     let hostname: string | undefined;
     try {
       const site = await pool.query<{ name: string }>("SELECT name FROM sites WHERE id = $1", [siteId]);
-      const assigned = await ensureHostname(pool, { siteId, siteName: site.rows[0]?.name ?? "sitio" });
+      const assigned = await ensureHostname(pool, { siteId, userId: session.userId, siteName: site.rows[0]?.name ?? "sitio" });
       if (assigned) {
         linkHost(process.env.HOSTS_ROOT ?? "/data/hosts", assigned.hostname, sitesRoot, siteId);
         hostname = assigned.hostname;
       }
-    } catch {
-      // El sitio ya esta publicado; un fallo de enlace no debe deshacerlo.
+    } catch (e) {
+      // El sitio ya esta publicado; un fallo de enlace no debe deshacerlo. Pero
+      // se registra: este catch mudo oculto durante toda la fase un GRANT que
+      // faltaba, y el sintoma era "no queda sitio en el pool" con el pool vacio.
+      console.error("hostname_failed", { siteId, error: (e as Error).message });
     }
     json(res, 200, { version: r.version, findings: r.findings, ...(hostname ? { hostname } : {}) });
     return true;

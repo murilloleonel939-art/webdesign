@@ -127,6 +127,10 @@ test("publishing writes real files and a version", async () => {
   // El sitio publicado es apuntado por el symlink public.
   // El symlink es relativo a proposito: mover /data no lo rompe.
   assert.equal(readlinkSync(join(sitesRoot, pool.siteId, "public")), join("releases", "v1"));
+  // Publicar tiene que dar direccion. Antes el alta fallaba en silencio por un
+  // GRANT que faltaba sobre el pool y el sitio quedaba sin hostname.
+  assert.ok(r.json.hostname, "publicar debe devolver un hostname");
+  assert.match(r.json.hostname, /^[a-z0-9-]+\./);
 });
 
 test("a second publish creates v2 and moving back to v1 works", async () => {
