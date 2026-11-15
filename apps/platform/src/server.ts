@@ -97,30 +97,8 @@ export function createApp(opts: AppOptions = {}) {
       return;
     }
 
-    // --- Panel del editor (Fase 1) ---
-    // Se sirve en su propio origen con una CSP estricta: el panel maneja la sesion,
-    // asi que no admite scripts ni estilos de terceros.
-    if (req.method === "GET" && (url.pathname === "/app" || url.pathname === "/app/" || url.pathname.startsWith("/app/"))) {
-      const file = url.pathname === "/app" || url.pathname === "/app/" ? "panel.html" : url.pathname.slice("/app/".length);
-      if (!/^[a-z0-9.-]+\.(html|js|css)$/.test(file)) {
-        json(res, 404, { error: "not_found" });
-        return;
-      }
-      const type = file.endsWith(".js") ? "text/javascript; charset=utf-8"
-        : file.endsWith(".css") ? "text/css; charset=utf-8"
-        : "text/html; charset=utf-8";
-      try {
-        const body = await readFile(join(UI_DIR, file));
-        res.writeHead(200, { "content-type": type, "content-security-policy": PANEL_CSP, "x-robots-tag": "noindex" });
-        res.end(body);
-      } catch {
-        json(res, 404, { error: "not_found" });
-      }
-      return;
-    }
-
     // --- Diagnostico de base de datos (solo lectura, opt-in por token) ---
-    // Sin DIAGNOSTIC_TOKEN configurado esta ruta no existe.
+    // Va ANTES del panel: si no, el comodin GET /app/* lo captura y devuelve 404.
     if (url.pathname === "/app/diagnose" && diagnosticsEnabled()) {
       if (req.method !== "GET" && req.method !== "HEAD") {
         json(res, 405, { error: "method_not_allowed" });
@@ -143,6 +121,28 @@ export function createApp(opts: AppOptions = {}) {
         "cache-control": "no-store",
       });
       res.end(JSON.stringify(report, null, 2));
+      return;
+    }
+
+    // --- Panel del editor (Fase 1) ---
+    // Se sirve en su propio origen con una CSP estricta: el panel maneja la sesion,
+    // asi que no admite scripts ni estilos de terceros.
+    if (req.method === "GET" && (url.pathname === "/app" || url.pathname === "/app/" || url.pathname.startsWith("/app/"))) {
+      const file = url.pathname === "/app" || url.pathname === "/app/" ? "panel.html" : url.pathname.slice("/app/".length);
+      if (!/^[a-z0-9.-]+\.(html|js|css)$/.test(file)) {
+        json(res, 404, { error: "not_found" });
+        return;
+      }
+      const type = file.endsWith(".js") ? "text/javascript; charset=utf-8"
+        : file.endsWith(".css") ? "text/css; charset=utf-8"
+        : "text/html; charset=utf-8";
+      try {
+        const body = await readFile(join(UI_DIR, file));
+        res.writeHead(200, { "content-type": type, "content-security-policy": PANEL_CSP, "x-robots-tag": "noindex" });
+        res.end(body);
+      } catch {
+        json(res, 404, { error: "not_found" });
+      }
       return;
     }
 
