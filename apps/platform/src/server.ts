@@ -58,6 +58,33 @@ function memoryStore(): UsedLinkStore {
   return { has: async (j) => seen.has(j), mark: async (j) => void seen.add(j) };
 }
 
+// Un sitio creado antes de este arreglo tiene el titulo SEO vacio y el linter
+// lo bloquea como error, asi que quedaba impublicable para siempre. Al
+// publicar se rellena con el nombre del sitio: no es un bypass, porque solo se
+// toca el titulo vacio y el resto de hallazgos sigue bloqueando. El dueno
+// puede escribir el suyo desde el panel del editor.
+function withSeoFallback(doc: unknown): unknown {
+  const d = doc as { meta?: { name?: string }; pages?: Array<{ seo?: { title?: string; description?: string } }> };
+  const name = d.meta?.name?.trim();
+  if (!name || !Array.isArray(d.pages)) return doc;
+  return {
+    ...d,
+    pages: d.pages.map((p) => {
+      const title = p.seo?.title?.trim();
+      const description = p.seo?.description?.trim();
+      if (title && description) return p;
+      return {
+        ...p,
+        seo: {
+          ...p.seo,
+          title: title || name.slice(0, 70),
+          description: description || name.slice(0, 160),
+        },
+      };
+    }),
+  };
+}
+
 export function createApp(opts: AppOptions = {}) {
   const usedLinks = opts.usedLinks ?? memoryStore();
 
@@ -140,7 +167,29 @@ export function createApp(opts: AppOptions = {}) {
         : file.endsWith(".css") ? "text/css; charset=utf-8"
         : "text/html; charset=utf-8";
       try {
-        const body = await readFile(join(UI_DIR, file));
+        const raw = await readFile(join(UI_DIR, file));
+        // El HTML referencia el JS y el CSS con un hash de su contenido. Sirve
+        // para dos cosas: el navegador nunca mezcla el HTML nuevo con el bundle
+        // viejo, y la CDN que haya delante no puede servir uno antiguo aunque
+        // imponga su propio TTL sobre `.js` (Cloudflare lo hace: devolvia
+        // max-age=14400 ignorando nuestro no-cache, y el editor seguia
+        // mostrando el codigo anterior tras desplegar).
+        let body = raw;
+        if (file.endsWith(".html")) {
+          const stamp = async (name: string): Promise<string> => {
+            try {
+              return createHash("sha256").update(await readFile(join(UI_DIR, name))).digest("base64url").slice(0, 8);
+            } catch {
+              return "0";
+            }
+          };
+          const [js, css] = await Promise.all([stamp("panel.js"), stamp("panel.css")]);
+          body = Buffer.from(
+            raw.toString()
+              .replace('/app/panel.js"', `/app/panel.js?v=${js}"`)
+              .replace('/app/panel.css"', `/app/panel.css?v=${css}"`),
+          );
+        }
         // Sin cabecera de cache el navegador aplica cache heuristica y puede
         // seguir mostrando el bundle viejo tras un despliegue. El HTML nunca se
         // cachea; el JS y el CSS se revalidan con ETag, que es barato y correcto.
@@ -499,7 +548,7 @@ async function handleApi(pool: import("pg").Pool, sitesRoot: string, req: Incomi
     const body = (await readJson(req)) as { confirmWarnings?: boolean } | undefined;
     const assets = await activeAssets(pool, session.userId, siteId, sitesRoot);
     const r = await publish(pool, {
-      sitesRoot, userId: session.userId, siteId, doc: draft.doc,
+      sitesRoot, userId: session.userId, siteId, doc: withSeoFallback(draft.doc),
       resolveAssetPath: assets.resolveAssetPath, assetFiles: assets.assetFiles,
       ...(body?.confirmWarnings ? { confirmWarnings: true } : {}),
     });

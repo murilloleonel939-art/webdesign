@@ -164,6 +164,18 @@ export function buildEditorConfig(opts: EditorConfigOptions): Config {
     root: {
       fields: {
         slug: { type: "text", label: "Ruta" },
+        // El linter bloquea la publicacion si falta el titulo y no habia donde
+        // escribirlo: el dueno veia "falta algo" sin poder arreglarlo.
+        // Va como objeto y no como campos "seo.title": asi se mapea entero a
+        // root.seo, sin depender de como interprete Puck los nombres con punto.
+        seo: {
+          type: "object",
+          label: "Titulo y descripcion",
+          objectFields: {
+            title: { type: "text", label: "Titulo de la pagina" },
+            description: { type: "textarea", label: "Descripcion para buscadores" },
+          },
+        },
       },
     },
   };
