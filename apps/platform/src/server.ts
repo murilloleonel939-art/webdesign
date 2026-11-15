@@ -164,8 +164,10 @@ export function createApp(opts: AppOptions = {}) {
       return;
     }
 
-    // --- Ciclo del editor (Fase 1): crear, editar, publicar, revertir ---
-    if (opts.pool && (url.pathname.startsWith("/api/") || url.pathname.startsWith("/assets/"))) {
+    // --- Ciclo del editor (Fase 1) y formularios publicos (Fase 2) ---
+    // `/_f/` falta aqui y el formulario nunca llegaba a handleApi: respondia
+    // 404 antes de entrar. Va en la misma condicion que /api/.
+    if (opts.pool && (url.pathname.startsWith("/api/") || url.pathname.startsWith("/assets/") || url.pathname.startsWith("/_f/"))) {
       const handled = await handleApi(opts.pool, opts.sitesRoot ?? "/data/sites", req, res, url);
       if (handled) return;
     }

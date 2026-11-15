@@ -452,3 +452,30 @@ test("the panel bundle is revalidated, never heuristically cached", async () => 
   assert.equal(again.status, 304);
   assert.equal(again.text, "");
 });
+
+test("el formulario publico llega a handleApi en vez de 404", async () => {
+  // Regresion: /_f/ no estaba en la condicion que llama a handleApi, asi que
+  // el endpoint respondia 404 sin ejecutarse nunca.
+  const post = (path, body) =>
+    new Promise((resolve, reject) => {
+      const req = http.request(
+        { host: "127.0.0.1", port, path, method: "POST",
+          headers: { host: "panel.example.com", "content-type": "application/x-www-form-urlencoded", "content-length": Buffer.byteLength(body) } },
+        (res) => { let t = ""; res.setEncoding("utf8"); res.on("data", (c) => (t += c)); res.on("end", () => resolve({ status: res.statusCode, text: t })); },
+      );
+      req.on("error", reject);
+      req.end(body);
+    });
+
+  // Un envio invalido recibe 400: eso prueba que la ruta se ejecuto, porque el
+  // 404 anterior venia de fuera de handleApi.
+  const bad = await post("/_f/lead", "message=hola");
+  assert.equal(bad.status, 400);
+
+  // Host desconocido y envio correcto responden igual: no se revela si el
+  // sitio existe. No se comprueba el guardado porque habria que crear un
+  // hostname activo, y eso es lo que hace la Fase 3 con dominios reales.
+  const unknown = await post("/_f/lead", "email=a@b.com&message=hola&consent=on");
+  assert.equal(unknown.status, 200);
+  assert.equal(unknown.text, "ok");
+});
