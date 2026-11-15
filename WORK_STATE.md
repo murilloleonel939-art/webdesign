@@ -118,3 +118,18 @@ aplico sin romper el arranque, la pantalla de estilos funciona y el boton
 **Corregido de paso:** `panel.js` y `panel.css` se servian sin `cache-control`,
 asi que un despliegue no se veia sin forzar recarga. Ahora HTML `no-store`,
 JS/CSS `no-cache` + ETag (76288c0).
+
+## Fase 2 — formularios y CSS del sitio (7c21a59)
+
+`/_f/lead` resuelve el sitio por `Host`. Formulario en `ContactSection`, sin JS,
+consentimiento obligatorio. `theme-css.ts` genera la hoja desde el documento.
+
+**Dos fallos de fondo corregidos:**
+1. `0008` usaba funciones `SECURITY DEFINER` que **no** habrían funcionado:
+   las tablas llevan `FORCE ROW LEVEL SECURITY` (se aplica al dueño) y
+   `app_platform` es `NOBYPASSRLS`. Reemplazadas por `SET LOCAL` transaccional.
+2. El renderer **no emitía CSS**: ningún sitio publicado tenía tema ni el
+   formulario tenía forma.
+
+**Riesgo vivo:** `0008` no se ha ejecutado contra Postgres real y corre al
+arrancar. Si falla, `plataforma` no levanta.
