@@ -42,7 +42,7 @@ function Dashboard({ sites, refresh }: { sites: Site[]; refresh: () => void }) {
   return <div className="app-shell"><header className="topbar"><Brand/><div className="user-pill"><span className="avatar">A</span><span>Mi espacio</span></div></header><main className="dashboard"><div className="hero"><div><p className="eyebrow">PANEL DE CONTROL</p><h1>Tu próxima gran web empieza aquí.</h1><p className="muted">Gestiona tus sitios y convierte tus ideas en experiencias memorables.</p></div><span className="spark">✦</span></div><section className="section-head"><div><h2>Mis sitios</h2><p className="muted">{sites.length ? "Tus proyectos, siempre a mano." : "Crea tu primer proyecto en unos segundos."}</p></div></section><div className="create-card"><div className="create-icon">＋</div><div><h3>Crear un nuevo sitio</h3><p className="muted">Empieza con una página pensada para tu marca.</p></div><form onSubmit={create}><input value={name} onChange={e => setName(e.target.value)} placeholder="Nombre del sitio" aria-label="Nombre del sitio"/><button className="primary" disabled={creating}>{creating ? "Creando…" : "Crear sitio"}</button></form></div>{error && <div className="alert">{error}</div>}<div className="site-grid">{sites.map(site => <article className="site-card" key={site.id}><div className="site-preview"><span>ZW</span></div><div className="site-info"><div><h3>{site.name}</h3><p className="muted">{site.status === "active" ? "Publicado" : "Borrador"}</p></div><div className="site-actions"><button className="secondary" onClick={() => go(`/app?site=${site.id}`)}>Editar sitio <span>→</span></button><button className="text-danger" onClick={() => remove(site.id)}>Eliminar</button></div></div></article>)}</div></main></div>;
 }
 function Editor({ siteId }: { siteId: string }) {
-  const PAGE = new URLSearchParams(location.search).get("page") ?? "p_home"; const [doc, setDoc] = useState<any>(null); const [rev, setRev] = useState(0); const [status, setStatus] = useState("Cargando tu editor…"); const [assets, setAssets] = useState<EditorAsset[]>([]); const [uploading, setUploading] = useState(false);
+  const PAGE = new URLSearchParams(location.search).get("page") ?? "p_home"; const [doc, setDoc] = useState<any>(null); const [rev, setRev] = useState(0); const [status, setStatus] = useState("Cargando tu editor…"); const [assets, setAssets] = useState<EditorAsset[]>([]); const [uploading, setUploading] = useState(false); const [publishedUrl, setPublishedUrl] = useState<string|null>(null);
   async function refreshAssets() { try { const r = await api(`/api/sites/${siteId}/assets`); if (!r.ok) return; const body = await r.json() as { assets?: EditorAsset[] }; setAssets(Array.isArray(body.assets) ? body.assets : []); } catch { setAssets([]); } }
   async function removeAsset(id: string) { if (!confirm("¿Eliminar esta imagen?")) return; const r = await api(`/api/sites/${siteId}/assets?id=${encodeURIComponent(id)}`, { method: "DELETE" }); if (r.ok) { await refreshAssets(); setStatus("Imagen eliminada"); } }
   async function upload(file: File) { setUploading(true); const r = await api(`/api/sites/${siteId}/assets?kind=image`, { method: "POST", headers: { "content-type": file.type }, body: file }); setUploading(false); if (r.ok) { await refreshAssets(); setStatus("Imagen subida. Copia su ID en el bloque Imagen."); } else setStatus("No se pudo subir la imagen"); }
@@ -66,7 +66,14 @@ function Editor({ siteId }: { siteId: string }) {
       onSkip={() => go(`/app?site=${siteId}&start=0`)}
     />;
   } const save = async (data: any) => { pending.current = data; if (saving.current) return; saving.current = true; while (pending.current) { const current = pending.current; pending.current = null; const next = mergeEditedPage(docRef.current ?? doc, puckToDocument({ content: current.content, root: current.root }, PAGE)); setStatus("Guardando…"); const r = await api(`/api/sites/${siteId}/draft`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ doc: next, expectedRev: revRef.current }) }); if (r.status === 409) { setStatus("Otro cambio fue guardado. Recargando…"); const d = await (await api(`/api/sites/${siteId}/draft`)).json() as Draft; docRef.current = d.doc; revRef.current = d.rev; setDoc(d.doc); setRev(d.rev); continue; } if (!r.ok) { setStatus("No se pudo guardar"); continue; } const d = await r.json() as { rev: number }; docRef.current = next; revRef.current = d.rev; setDoc(next); setRev(d.rev); setStatus("Guardado"); } saving.current = false; };
-  async function publish() { setStatus("Publicando…"); const r = await api(`/api/sites/${siteId}/publish`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }); setStatus(r.ok ? "Publicado correctamente" : "Revisa el contenido antes de publicar"); }
+  // Publicar devuelve el hostname asignado. Sin el, el dueno no sabe donde
+  // esta su sitio: se le muestra en un aviso y queda en el estado.
+  async function publish() { setStatus("Publicando…"); const r = await api(`/api/sites/${siteId}/publish`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+    if (!r.ok) { setStatus("Revisa el contenido antes de publicar"); return; }
+    const d = await r.json() as { version: number; hostname?: string };
+    if (d.hostname) { setPublishedUrl(`https://${d.hostname}`); setStatus("Publicado correctamente"); }
+    else setStatus("Publicado, pero sin direccion: no queda sitio en el pool de dominios");
+  }
   if (showStyles) {
     return <StyleStart
       siteId={siteId}
@@ -81,6 +88,7 @@ function Editor({ siteId }: { siteId: string }) {
       <Brand/>
       <span className="divider"/>
       <span className="editor-status">{status}</span>
+      {publishedUrl && <a className="published-url" href={publishedUrl} target="_blank" rel="noreferrer">Tu sitio: {publishedUrl.replace("https://", "")}</a>}
       <div className="editor-actions">
         <button className="asset-trigger" aria-expanded={showAssets} onClick={() => setShowAssets(v => !v)}>
           Imágenes {assets.length > 0 && <span className="asset-count">{assets.length}</span>}
@@ -91,7 +99,7 @@ function Editor({ siteId }: { siteId: string }) {
       </div>
     </header>
     <div className="editor-body">
-      <Puck config={buildEditorConfig({ assets: assets.map(a => ({ id: a.id, path: a.publicUrl })) })} data={documentToPuck(doc, PAGE)} onChange={save} onPublish={save}/>
+      <Puck config={buildEditorConfig({ assets: assets.map(a => ({ id: a.id, path: a.publicUrl })) })} data={documentToPuck(doc, PAGE)} onChange={save} onPublish={publish}/>
       {showAssets && <aside className="asset-popover" aria-label="Biblioteca de imágenes">
         <header>
           <div><h3>Biblioteca de imágenes</h3><p>Arrastra una miniatura al campo Imagen.</p></div>
