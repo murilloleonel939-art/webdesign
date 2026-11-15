@@ -41,16 +41,45 @@ export function slugToFile(slug: string): string {
 
 export async function publish(pool: Pool, opts: PublishOptions): Promise<PublishResult> {
   const validated = validateSiteDocument(opts.doc);
-  const findings = lintSite(opts.doc, opts.licensedAssetIds ? { licensedAssetIds: opts.licensedAssetIds } : {});
   // Un documento invalido no se puede publicar nunca: no hay nada que renderizar.
-  if (!validated.ok) return { ok: false, blocked: true, findings };
+  if (!validated.ok) {
+    return { ok: false, blocked: true, findings: lintSite(opts.doc, opts.licensedAssetIds ? { licensedAssetIds: opts.licensedAssetIds } : {}) };
+  }
+
+  const doc: SiteDocument = validated.doc;
+  const resolve = opts.resolveAssetPath ?? (() => undefined);
+
+  // Publicar sin el fichero deja el hueco de la seccion en el sitio, sin ruido
+  // y solo visible a ojo: paso con una imagen que el release no traia. Se
+  // informa junto al resto de hallazgos, no en vez de ellos.
+  const missing: LintFinding[] = [];
+  for (const page of doc.pages) {
+    for (const section of page.sections) {
+      const props = section.props as Record<string, unknown>;
+      const used: string[] = [];
+      if (typeof props["assetId"] === "string" && props["assetId"]) used.push(props["assetId"]);
+      if (Array.isArray(props["assetIds"])) used.push(...(props["assetIds"] as string[]).filter((x) => typeof x === "string" && x));
+      for (const aid of new Set(used)) {
+        if (!resolve(aid)) {
+          missing.push({
+            code: "MISSING_ASSET", severity: "error",
+            pageId: page.id, sectionId: section.id, field: "assetId",
+            message: "lint.missingAsset", fixHint: aid, autofixable: false,
+          });
+        }
+      }
+    }
+  }
+
+  const findings = [
+    ...lintSite(opts.doc, opts.licensedAssetIds ? { licensedAssetIds: opts.licensedAssetIds } : {}),
+    ...missing,
+  ];
   // Con hallazgos `error` solo publica si el dueno lo confirma expresamente.
   if (blocksPublication(findings) && !opts.confirmWarnings) {
     return { ok: false, blocked: true, findings };
   }
 
-  const doc: SiteDocument = validated.doc;
-  const resolve = opts.resolveAssetPath ?? (() => undefined);
   const files: Record<string, string> = {};
   for (const page of doc.pages) {
     files[slugToFile(page.slug)] = renderPage(doc, page.id, (assetId) => {

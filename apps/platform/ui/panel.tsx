@@ -53,6 +53,7 @@ function findingLabel(code: string): string {
     EMPTY_PAGE: "La pagina no tiene ninguna seccion",
     TESTIMONIAL_UNVERIFIED: "Un testimonio no esta verificado",
     IMAGE_LICENSE_MISSING: "Una imagen no tiene licencia registrada",
+    MISSING_ASSET: "El bloque Imagen apunta a una imagen que ya no existe: elige otra",
     THEME_CONTRAST: "El contraste del tema es bajo",
     FONT_NOT_HOSTED: "La tipografia no esta alojada en el sitio",
     SCHEMA_INVALID: "El contenido no tiene el formato esperado",
