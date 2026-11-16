@@ -15,6 +15,8 @@ import {
   type UsedLinkStore,
 } from "@webdesign/preview";
 import { listStyles, getStyle, applyStyleToDocument, isStyleApplyMode } from "./catalog.js";
+import { listLeads, countNewLeads, setLeadStatus, isLeadStatus } from "./inbox.js";
+import { isOperator, listAllSites, summary } from "./operator.js";
 import { handleLead, clientIp, parseLeadForm } from "./lead.js";
 import { ensureHostname, linkHost } from "./hosting.js";
 import { parseCookies, resolveSession, login, createUser, createSite, deleteSite, listSites, saveDraft, loadDraft, publish, rollbackTo, activeAssets, SESSION_COOKIE } from "./api.js";
@@ -423,6 +425,80 @@ async function handleApi(pool: import("pg").Pool, sitesRoot: string, req: Incomi
       json(res, 200, { assets: rows.map((a) => ({ ...a, publicUrl: `/assets/${siteId}/${a.path}` })) });
       return true;
     }
+  }
+
+  // Panel de operador (Fase 2). Solo lectura. Sin rol `operator` responde 403
+  // y no 404: el dueno debe saber que existe, aunque no pueda entrar.
+  if (url.pathname === "/api/operator/sites" && req.method === "GET") {
+    if (!session) {
+      json(res, 401, { error: "unauthorized" });
+      return true;
+    }
+    if (!pool) {
+      json(res, 503, { error: "database_not_configured" });
+      return true;
+    }
+    if (!(await isOperator(pool, session.userId))) {
+      json(res, 403, { error: "forbidden" });
+      return true;
+    }
+    const [sites, totals] = await Promise.all([
+      listAllSites(pool, session.userId),
+      summary(pool, session.userId),
+    ]);
+    json(res, 200, { sites, summary: totals });
+    return true;
+  }
+
+  // Bandeja de mensajes del dueno (Fase 2). La tabla tenia politica RLS desde
+  // `0008` pero ninguna consulta la usaba: los mensajes del formulario se
+  // guardaban y nadie podia leerlos.
+  // Bandeja de mensajes del dueno (Fase 2). La tabla tenia politica RLS desde
+  // `0008` pero ninguna consulta la usaba: los mensajes del formulario se
+  // guardaban y nadie podia leerlos.
+  const leadOneMatch = /^\/api\/sites\/([0-9a-f-]{36})\/leads\/([0-9a-f-]{36})$/.exec(url.pathname);
+  const inboxMatch = leadOneMatch ? null : /^\/api\/sites\/([0-9a-f-]{36})\/leads$/.exec(url.pathname);
+  if (inboxMatch ?? leadOneMatch) {
+    if (!session) {
+      json(res, 401, { error: "unauthorized" });
+      return true;
+    }
+    if (!pool) {
+      json(res, 503, { error: "database_not_configured" });
+      return true;
+    }
+    if (leadOneMatch) {
+      const siteId = leadOneMatch[1] as string;
+      const leadId = leadOneMatch[2] as string;
+      if (req.method !== "PATCH") {
+        json(res, 405, { error: "method_not_allowed" });
+        return true;
+      }
+      const body = (await readJson(req)) as { status?: unknown } | undefined;
+      if (!isLeadStatus(body?.status)) {
+        json(res, 400, { error: "unknown_status", status: body?.status });
+        return true;
+      }
+      const changed = await setLeadStatus(pool, session.userId, siteId, leadId, body.status);
+      // Un id de otra cuenta no existe para esta: mismo 404 que uno inventado.
+      if (!changed) {
+        json(res, 404, { error: "not_found" });
+        return true;
+      }
+      json(res, 200, { ok: true, status: body.status });
+      return true;
+    }
+    const siteId = inboxMatch![1] as string;
+    if (req.method !== "GET") {
+      json(res, 405, { error: "method_not_allowed" });
+      return true;
+    }
+    const [leads, newCount] = await Promise.all([
+      listLeads(pool, session.userId, siteId),
+      countNewLeads(pool, session.userId, siteId),
+    ]);
+    json(res, 200, { leads, newCount });
+    return true;
   }
 
   // Catalogo de diseno (Fase 1b). Datos globales: la lista no exige sesion solo

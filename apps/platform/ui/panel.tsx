@@ -38,9 +38,13 @@ function Login({ onDone }: { onDone: () => void }) {
 }
 function Dashboard({ sites, refresh }: { sites: Site[]; refresh: () => void }) {
   const [name, setName] = useState(""); const [creating, setCreating] = useState(false); const [error, setError] = useState("");
+  // Solo se prueba una vez: si no es operador, el boton no aparece y no se
+  // vuelve a preguntar.
+  const [isOp, setIsOp] = useState(false); const [showOp, setShowOp] = useState(false);
+  useEffect(() => { api("/api/operator/sites").then(r => setIsOp(r.ok)).catch(() => {}); }, []);
   async function remove(id: string) { if (!confirm("¿Eliminar este sitio? Esta acción no se puede deshacer.")) return; const r = await api(`/api/sites/${id}`, { method: "DELETE" }); if (r.ok) refresh(); else setError("No se pudo eliminar el sitio."); }
   async function create(e: React.FormEvent) { e.preventDefault(); if (!name.trim()) return; setCreating(true); const r = await api("/api/sites", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: name.trim() }) }); setCreating(false); if (!r.ok) { setError("No se pudo crear el sitio."); return; } const d = await r.json() as { id: string }; go(`/app?site=${d.id}`); }
-  return <div className="app-shell"><header className="topbar"><Brand/><div className="user-pill"><span className="avatar">A</span><span>Mi espacio</span></div></header><main className="dashboard"><div className="hero"><div><p className="eyebrow">PANEL DE CONTROL</p><h1>Tu próxima gran web empieza aquí.</h1><p className="muted">Gestiona tus sitios y convierte tus ideas en experiencias memorables.</p></div><span className="spark">✦</span></div><section className="section-head"><div><h2>Mis sitios</h2><p className="muted">{sites.length ? "Tus proyectos, siempre a mano." : "Crea tu primer proyecto en unos segundos."}</p></div></section><div className="create-card"><div className="create-icon">＋</div><div><h3>Crear un nuevo sitio</h3><p className="muted">Empieza con una página pensada para tu marca.</p></div><form onSubmit={create}><input value={name} onChange={e => setName(e.target.value)} placeholder="Nombre del sitio" aria-label="Nombre del sitio"/><button className="primary" disabled={creating}>{creating ? "Creando…" : "Crear sitio"}</button></form></div>{error && <div className="alert">{error}</div>}<div className="site-grid">{sites.map(site => <article className="site-card" key={site.id}><div className="site-preview"><span>ZW</span></div><div className="site-info"><div><h3>{site.name}</h3><p className="muted">{site.status === "active" ? "Publicado" : "Borrador"}</p></div><div className="site-actions"><button className="secondary" onClick={() => go(`/app?site=${site.id}`)}>Editar sitio <span>→</span></button><button className="text-danger" onClick={() => remove(site.id)}>Eliminar</button></div></div></article>)}</div></main></div>;
+  return <div className="app-shell"><header className="topbar"><Brand/><div className="user-pill">{isOp && <button className="ghost op-link" onClick={() => setShowOp(true)}>Operador</button>}<span className="avatar">A</span><span>Mi espacio</span></div></header><main className="dashboard"><div className="hero"><div><p className="eyebrow">PANEL DE CONTROL</p><h1>Tu próxima gran web empieza aquí.</h1><p className="muted">Gestiona tus sitios y convierte tus ideas en experiencias memorables.</p></div><span className="spark">✦</span></div><section className="section-head"><div><h2>Mis sitios</h2><p className="muted">{sites.length ? "Tus proyectos, siempre a mano." : "Crea tu primer proyecto en unos segundos."}</p></div></section><div className="create-card"><div className="create-icon">＋</div><div><h3>Crear un nuevo sitio</h3><p className="muted">Empieza con una página pensada para tu marca.</p></div><form onSubmit={create}><input value={name} onChange={e => setName(e.target.value)} placeholder="Nombre del sitio" aria-label="Nombre del sitio"/><button className="primary" disabled={creating}>{creating ? "Creando…" : "Crear sitio"}</button></form></div>{error && <div className="alert">{error}</div>}{showOp && <Operator onClose={() => setShowOp(false)}/>}<div className="site-grid">{sites.map(site => <article className="site-card" key={site.id}><div className="site-preview"><span>ZW</span></div><div className="site-info"><div><h3>{site.name}</h3><p className="muted">{site.status === "active" ? "Publicado" : "Borrador"}</p></div><div className="site-actions"><button className="secondary" onClick={() => go(`/app?site=${site.id}`)}>Editar sitio <span>→</span></button><button className="text-danger" onClick={() => remove(site.id)}>Eliminar</button></div></div></article>)}</div></main></div>;
 }
 
 // Los hallazgos del linter son codigos. Un dueno no sabe que es
@@ -87,13 +91,77 @@ function FrameTheme({ frame, css, children }: { frame?: Document | undefined; cs
   return children;
 }
 
+// Panel de operador (Fase 2): clientes y estado de los sitios. Solo aparece si
+// la cuenta tiene el rol; el servidor lo comprueba igualmente.
+interface OpSite { id: string; name: string; ownerEmail: string; status: string; hostname: string|null; updatedAt: string; pages: number; }
+interface OpSummary { accounts: number; sites: number; published: number; }
+
+function Operator({ onClose }: { onClose: () => void }) {
+  const [sites, setSites] = useState<OpSite[]|null>(null); const [totals, setTotals] = useState<OpSummary|null>(null); const [error, setError] = useState("");
+  useEffect(() => { api("/api/operator/sites").then(async r => { if (!r.ok) { setError("No se pudo cargar."); return; } const d = await r.json() as { sites: OpSite[]; summary: OpSummary }; setSites(d.sites); setTotals(d.summary); }).catch(() => setError("No se pudo cargar.")); }, []);
+  const estado = (s: string) => s === "active" ? "Publicado" : s === "dark" ? "Apagado" : s === "suspended" ? "Suspendido" : "Borrador";
+  return <div className="modal-veil" onClick={onClose}>
+    <div className="modal-card op-card" onClick={e => e.stopPropagation()} role="dialog" aria-label="Panel de operador">
+      <div className="modal-head"><div><h2>Operador</h2><p className="muted">Clientes y estado de los sitios.</p></div><button className="ghost" onClick={onClose} aria-label="Cerrar">×</button></div>
+      {error && <div className="alert">{error}</div>}
+      {totals && <div className="op-totals"><div><strong>{totals.accounts}</strong><span className="muted small">cuentas</span></div><div><strong>{totals.sites}</strong><span className="muted small">sitios</span></div><div><strong>{totals.published}</strong><span className="muted small">publicados</span></div></div>}
+      {sites === null && !error && <p className="muted">Cargando…</p>}
+      {sites?.length === 0 && <p className="muted">Todavía no hay sitios.</p>}
+      {sites && sites.length > 0 && <div className="op-scroll"><table className="op-table"><thead><tr><th>Sitio</th><th>Cliente</th><th>Estado</th><th>Dominio</th></tr></thead><tbody>
+        {sites.map(s => <tr key={s.id}><td>{s.name}</td><td className="muted small">{s.ownerEmail}</td><td><span className={`badge ${s.status}`}>{estado(s.status)}</span></td><td className="muted small">{s.hostname ?? "—"}</td></tr>)}
+      </tbody></table></div>}
+    </div>
+  </div>;
+}
+
+// Bandeja de mensajes (Fase 2). El formulario del sitio guardaba los mensajes
+// en `leads` y no habia forma de leerlos: llegaban y se quedaban ahi.
+interface Lead { id: string; name: string|null; email: string|null; phone: string|null; message: string|null; status: string; createdAt: string; }
+
+function Inbox({ siteId, onClose }: { siteId: string; onClose: () => void }) {
+  const [leads, setLeads] = useState<Lead[]|null>(null); const [error, setError] = useState("");
+  async function load() { try { const r = await api(`/api/sites/${siteId}/leads`); if (!r.ok) throw new Error(); const d = await r.json() as { leads: Lead[] }; setLeads(d.leads); } catch { setError("No se pudieron cargar los mensajes."); } }
+  useEffect(() => { void load(); }, [siteId]);
+  async function mark(id: string, status: string) { const r = await api(`/api/sites/${siteId}/leads/${id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ status }) }); if (r.ok) await load(); else setError("No se pudo actualizar el mensaje."); }
+  const stamp = (iso: string) => new Date(iso).toLocaleString("es-ES", { dateStyle: "medium", timeStyle: "short" });
+  return <div className="modal-veil" onClick={onClose}>
+    <div className="modal-card inbox-card" onClick={e => e.stopPropagation()} role="dialog" aria-label="Mensajes recibidos">
+      <div className="modal-head"><div><h2>Mensajes</h2><p className="muted">Lo que te escriben desde el formulario de tu web.</p></div><button className="ghost" onClick={onClose} aria-label="Cerrar">×</button></div>
+      {error && <div className="alert">{error}</div>}
+      {leads === null && <p className="muted">Cargando…</p>}
+      {leads?.length === 0 && <div className="empty-inbox"><p className="muted">Todavía no has recibido mensajes.</p><p className="muted small">Cuando alguien rellene el formulario de tu sitio aparecerá aquí.</p></div>}
+      <ul className="lead-list">{leads?.map(l => <li key={l.id} className={l.status === "new" ? "lead new" : "lead"}>
+        <div className="lead-head"><strong>{l.name || "Sin nombre"}</strong><time className="muted small">{stamp(l.createdAt)}</time></div>
+        {l.email && <a className="lead-contact" href={`mailto:${l.email}`}>{l.email}</a>}
+        {l.phone && <a className="lead-contact" href={`tel:${l.phone}`}>{l.phone}</a>}
+        {l.message && <p className="lead-msg">{l.message}</p>}
+        <div className="lead-actions">
+          {l.status !== "read" && l.status !== "replied" && <button className="ghost" onClick={() => mark(l.id, "read")}>Marcar leído</button>}
+          {l.status !== "replied" && <button className="ghost" onClick={() => mark(l.id, "replied")}>Respondido</button>}
+          {l.status !== "archived" && <button className="ghost" onClick={() => mark(l.id, "archived")}>Archivar</button>}
+        </div>
+      </li>)}</ul>
+    </div>
+  </div>;
+}
+
 function Editor({ siteId }: { siteId: string }) {
   const PAGE = new URLSearchParams(location.search).get("page") ?? "p_home"; const [doc, setDoc] = useState<any>(null); const [rev, setRev] = useState(0); const [status, setStatus] = useState("Cargando tu editor…"); const [assets, setAssets] = useState<EditorAsset[]>([]); const [uploading, setUploading] = useState(false); const lastData = useRef<any>(null); const [blockers, setBlockers] = useState<string[]>([]); const [publishedUrl, setPublishedUrl] = useState<string|null>(null);
   async function refreshAssets() { try { const r = await api(`/api/sites/${siteId}/assets`); if (!r.ok) return; const body = await r.json() as { assets?: EditorAsset[] }; setAssets(Array.isArray(body.assets) ? body.assets : []); } catch { setAssets([]); } }
   async function removeAsset(id: string) { if (!confirm("¿Eliminar esta imagen?")) return; const r = await api(`/api/sites/${siteId}/assets?id=${encodeURIComponent(id)}`, { method: "DELETE" }); if (r.ok) { await refreshAssets(); setStatus("Imagen eliminada"); } }
-  async function upload(file: File) { setUploading(true); const r = await api(`/api/sites/${siteId}/assets?kind=image`, { method: "POST", headers: { "content-type": file.type }, body: file }); setUploading(false); if (r.ok) { await refreshAssets(); setStatus("Imagen subida. Copia su ID en el bloque Imagen."); } else setStatus("No se pudo subir la imagen"); }
+  async function upload(file: File) { setUploading(true); const r = await api(`/api/sites/${siteId}/assets?kind=image`, { method: "POST", headers: { "content-type": file.type }, body: file }); setUploading(false); if (r.ok) { await refreshAssets(); setStatus("Imagen subida. Copia su ID en el bloque Imagen."); } else {
+    // Decir "no se pudo" ante una cuota llena deja al dueno subiendo la misma
+    // imagen una y otra vez sin entender por que.
+    const d = await r.json().catch(() => ({})) as { error?: string };
+    setStatus(d.error === "site_asset_count_exceeded" ? "Has llegado al límite de imágenes de este sitio. Borra alguna para subir otra."
+      : d.error === "site_quota_exceeded" ? "Tu sitio ha alcanzado el espacio total disponible. Borra archivos para liberar espacio."
+      : d.error === "too_large" ? "La imagen pesa demasiado. El máximo es 5 MB."
+      : "No se pudo subir la imagen. Comprueba que es JPG, PNG o WebP.");
+  } }
   useEffect(() => { void refreshAssets(); }, [siteId]);
-  const saving = useRef(false); const pending = useRef<any>(null); const docRef = useRef<any>(null); const revRef = useRef(0); const [showPreview, setShowPreview] = useState(false); const [showAssets, setShowAssets] = useState(true); const [showStyles, setShowStyles] = useState(false);
+  // Contador de mensajes sin leer: se refresca al entrar y al volver de la bandeja.
+  useEffect(() => { api(`/api/sites/${siteId}/leads`).then(async r => { if (!r.ok) return; const d = await r.json() as { newCount?: number }; setNewLeads(Number(d.newCount ?? 0)); }).catch(() => {}); }, [siteId, showInbox]);
+  const saving = useRef(false); const pending = useRef<any>(null); const docRef = useRef<any>(null); const revRef = useRef(0); const [showPreview, setShowPreview] = useState(false); const [showAssets, setShowAssets] = useState(true); const [showStyles, setShowStyles] = useState(false); const [showInbox, setShowInbox] = useState(false); const [newLeads, setNewLeads] = useState(0);
   useEffect(() => { api(`/api/sites/${siteId}/draft`).then(async r => { if (r.status === 401) return go("/app"); if (!r.ok) throw new Error("No se pudo cargar"); const d = await r.json() as Draft; docRef.current = d.doc; revRef.current = d.rev; setDoc(d.doc); setRev(d.rev); setStatus("Listo para crear"); }).catch(() => setStatus("No se pudo cargar el editor")); }, [siteId]);
   if (!doc) return <div className="loading"><Brand/><p>{status}</p></div>;
   // Pantalla de inicio: solo si el sitio no tiene contenido propio todavia.
@@ -149,6 +217,9 @@ function Editor({ siteId }: { siteId: string }) {
     />;
   }
   return <div className="editor-shell">
+    {/* Capa, no pantalla: cerrarla no debe desmontar el editor ni perder lo
+        que el dueno tenia sin guardar. */}
+    {showInbox && <Inbox siteId={siteId} onClose={() => setShowInbox(false)}/>}
     <header className="editorbar">
       <button className="back" onClick={() => go("/app")} aria-label="Volver al panel">←</button>
       <Brand/>
@@ -165,6 +236,7 @@ function Editor({ siteId }: { siteId: string }) {
           Imágenes {assets.length > 0 && <span className="asset-count">{assets.length}</span>}
         </button>
         <button className="ghost" onClick={() => setShowStyles(true)}>Estilos</button>
+        <button className="ghost" onClick={() => setShowInbox(true)}>Mensajes {newLeads > 0 && <span className="asset-count">{newLeads}</span>}</button>
         <button className="ghost" onClick={() => setShowPreview(true)}>Vista previa</button>
         <button className="primary publish" onClick={publish}>Publicar sitio</button>
       </div>

@@ -34,3 +34,25 @@ export async function ensureTestDatabase(pool: pg.Pool, baseUrl: string, label: 
   url.pathname = `/${name}`;
   return url.toString();
 }
+
+// Vista de operador (Fase 2). Abre la marca `app.operator_view` que las
+// politicas de 0012 exigen, y solo para un usuario con rol `operator`: si el
+// rol no esta, las consultas devuelven vacio en lugar de fallar con un error
+// de RLS que el panel no sabria explicar.
+export async function withOperator<T>(pool: pg.Pool, userId: string, fn: (tx: Tx) => Promise<T>): Promise<T> {
+  if (!/^[0-9a-f-]{36}$/i.test(userId)) throw new Error("invalid userId");
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("SELECT set_config('app.user_id', $1, true)", [userId]);
+    await client.query("SELECT set_config('app.operator_view', 'on', true)");
+    const out = await fn(client);
+    await client.query("COMMIT");
+    return out;
+  } catch (e) {
+    await client.query("ROLLBACK");
+    throw e;
+  } finally {
+    client.release();
+  }
+}

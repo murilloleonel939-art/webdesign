@@ -14,7 +14,17 @@ export const LIMITS = {
   videoBytes: 8 * 1024 * 1024,
   siteTotalBytes: 200 * 1024 * 1024,
   pageBytes: 20 * 1024 * 1024,
+  // Spec 14.1: 40 imagenes y 6 videos por sitio. Faltaban: el peso total se
+  // comprobaba, la cantidad no, asi que se podian subir cientos de imagenes
+  // pequenas hasta llenar los 200 MB.
+  imageCount: 40,
+  videoCount: 6,
 } as const;
+
+// Un poster acompana a un video y no cuenta como imagen suelta.
+export function countLimitFor(kind: AssetKind): number {
+  return kind === "video" ? LIMITS.videoCount : kind === "image" ? LIMITS.imageCount : Number.POSITIVE_INFINITY;
+}
 
 export type AssetKind = "image" | "video" | "poster";
 
@@ -40,6 +50,7 @@ export type UploadRejection =
   | "mime_not_allowed"
   | "too_large"
   | "site_quota_exceeded"
+  | "site_asset_count_exceeded"
   | "empty";
 
 export function checkUpload(kind: AssetKind, mime: string, bytes: number): UploadRejection | undefined {
@@ -120,10 +131,19 @@ export async function registerAsset(pool: Pool, opts: RegisterAssetOptions): Pro
 
   try {
     await withUser(pool, opts.userId, async (tx) => {
-      // Cuota por sitio calculada al subir (spec 7.4).
-      const used = await tx.query<{ total: string }>("SELECT COALESCE(SUM(bytes), 0) AS total FROM assets WHERE site_id = $1", [opts.siteId]);
+      // Cuota por sitio calculada al subir (spec 7.4 y 14.1).
+      // El peso se mide sobre el sitio entero y la cantidad por tipo: son dos
+      // cuotas distintas y mezclarlas dejaria pasar 40 imagenes de 5 MB.
+      const used = await tx.query<{ total: string; n: string }>(
+        `SELECT COALESCE(SUM(bytes), 0) AS total,
+                count(*) FILTER (WHERE kind = $2) AS n
+         FROM assets WHERE site_id = $1`,
+        [opts.siteId, opts.kind],
+      );
       const total = Number(used.rows[0]?.total ?? 0);
       if (total + bytes > LIMITS.siteTotalBytes) throw new AssetError("site_quota_exceeded");
+      const count = Number(used.rows[0]?.n ?? 0);
+      if (count + 1 > countLimitFor(opts.kind)) throw new AssetError("site_asset_count_exceeded");
       await tx.query(
         `INSERT INTO assets (id, site_id, path, kind, bytes, mime, source, license, author, source_url, credit_text)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,

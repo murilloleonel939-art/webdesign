@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { checkUpload, sniffMime, assetRelativePath, LIMITS } from "../dist/index.js";
+import { checkUpload, sniffMime, assetRelativePath, LIMITS, countLimitFor } from "../dist/index.js";
 
 // Cabeceras minimas de cada tipo aceptado.
 const JPEG = Uint8Array.from([0xff, 0xd8, 0xff, 0xe0, 0, 0]);
@@ -40,4 +40,15 @@ test("la ruta de asset es generada y estable: id + hash de contenido", () => {
   assert.equal(a, b);
   assert.notEqual(a, c);
   assert.match(a, /^image\/u1-[0-9a-f]{12}\.png$/);
+});
+
+test("las cuotas de cantidad de la spec 14.1 estan definidas", () => {
+  // 40 imagenes y 6 videos por sitio. Se comprobaba el peso pero no el numero,
+  // asi que 40 imagenes de 5 MB entraban sin que nadie dijera nada.
+  assert.equal(LIMITS.imageCount, 40);
+  assert.equal(LIMITS.videoCount, 6);
+  assert.equal(countLimitFor("image"), 40);
+  assert.equal(countLimitFor("video"), 6);
+  // Un poster acompana al video: no tiene tope propio.
+  assert.equal(countLimitFor("poster"), Number.POSITIVE_INFINITY);
 });

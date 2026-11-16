@@ -163,3 +163,32 @@ del preset: quien tenia su texto escrito lo perdia por probar otro aire.
 Ahora `mode` es `inherit` por defecto y `reset` hay que pedirlo; el dialogo de
 `StyleStart` explica que se pierde antes de tocar nada. La API rechaza un modo
 inventado con `400 unknown_mode` y devuelve `sectionsChanged`.
+
+## Fase 2 cerrada — bandeja, cuotas, operador y backup (fase 2 completa)
+
+Los cuatro criterios de aceptacion que faltaban (spec:1277):
+
+1. **Formulario llega al panel.** La tabla `leads` tenia politica RLS desde
+   `0008` y ninguna consulta la usaba: los mensajes se guardaban y nadie podia
+   leerlos. Ahora `apps/platform/src/inbox.ts` los lista, cuenta los no leidos y
+   cambia el estado; la vista es una capa sobre el editor, no una pantalla
+   aparte, para no perder lo que el dueno tenia sin guardar.
+2. **Cuota excedida se rechaza.** Solo se medía el peso total (200 MB). Faltaban
+   las 40 imagenes y 6 videos de 14.1: se podian subir cientos de imagenes
+   pequenas. Ahora se cuentan por tipo con `count(*) FILTER` y el mensaje del
+   panel dice que paso, en lugar de "no se pudo subir".
+3. **Dos paneles.** El de operador (`0012_operator_view.sql`) abre solo lectura
+   sobre `sites`, `site_versions`, `domains` y `users`. No toca `leads`: son
+   datos personales de terceros y el operador no tiene por que verlos.
+4. **Backup se restaura.** `docs/runbooks/backup-restauracion.md`. El criterio no
+   es tener copias, es haber restaurado una: comprueba `relrowsecurity` y
+   `rolbypassrls` despues de restaurar, porque un dump sin politicas funciona
+   igual y expone todo.
+
+**Tres trampas que costaron encontrar en `0012`:** el JOIN con `users` salia
+vacio por `users_self` (hacia falta politica propia); llamar a la funcion desde
+la politica de `users` mientras lee `users` es recursion infinita (SECURITY
+DEFINER); y una SECURITY DEFINER sin `REVOKE ... FROM PUBLIC` queda invocable
+por cualquiera. Las tres tienen prueba.
+
+**Siguiente: Fase 4, el agente de diseno.**
