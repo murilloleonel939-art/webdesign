@@ -159,9 +159,11 @@ function Editor({ siteId }: { siteId: string }) {
       : "No se pudo subir la imagen. Comprueba que es JPG, PNG o WebP.");
   } }
   useEffect(() => { void refreshAssets(); }, [siteId]);
-  // Contador de mensajes sin leer: se refresca al entrar y al volver de la bandeja.
-  useEffect(() => { api(`/api/sites/${siteId}/leads`).then(async r => { if (!r.ok) return; const d = await r.json() as { newCount?: number }; setNewLeads(Number(d.newCount ?? 0)); }).catch(() => {}); }, [siteId, showInbox]);
   const saving = useRef(false); const pending = useRef<any>(null); const docRef = useRef<any>(null); const revRef = useRef(0); const [showPreview, setShowPreview] = useState(false); const [showAssets, setShowAssets] = useState(true); const [showStyles, setShowStyles] = useState(false); const [showInbox, setShowInbox] = useState(false); const [newLeads, setNewLeads] = useState(0);
+  // Contador de mensajes sin leer: se refresca al entrar y al volver de la bandeja.
+  // Va despues de las declaraciones: el array de dependencias se evalua al
+  // renderizar, asi que leerlo antes de existir deja el editor en blanco.
+  useEffect(() => { api(`/api/sites/${siteId}/leads`).then(async r => { if (!r.ok) return; const d = await r.json() as { newCount?: number }; setNewLeads(Number(d.newCount ?? 0)); }).catch(() => {}); }, [siteId, showInbox]);
   useEffect(() => { api(`/api/sites/${siteId}/draft`).then(async r => { if (r.status === 401) return go("/app"); if (!r.ok) throw new Error("No se pudo cargar"); const d = await r.json() as Draft; docRef.current = d.doc; revRef.current = d.rev; setDoc(d.doc); setRev(d.rev); setStatus("Listo para crear"); }).catch(() => setStatus("No se pudo cargar el editor")); }, [siteId]);
   if (!doc) return <div className="loading"><Brand/><p>{status}</p></div>;
   // Pantalla de inicio: solo si el sitio no tiene contenido propio todavia.
@@ -243,7 +245,10 @@ function Editor({ siteId }: { siteId: string }) {
     </header>
     <div className="editor-body">
       <Puck
-        config={buildEditorConfig({ assets: assets.map(a => ({ id: a.id, path: a.publicUrl })) })}
+        // `publicUrl` es opcional en la respuesta: con exactOptionalPropertyTypes
+        // no se puede pasar `path: undefined`, y un asset sin URL en el selector
+        // solo daria una imagen rota. Se filtra.
+        config={buildEditorConfig({ assets: assets.filter(a => a.publicUrl).map(a => ({ id: a.id, path: a.publicUrl as string })) })}
         data={documentToPuck(doc, PAGE)}
         onChange={save}
         overrides={{
@@ -253,7 +258,9 @@ function Editor({ siteId }: { siteId: string }) {
           iframe: ({ children, document: frame }) => (
             <FrameTheme frame={frame} css={doc ? themeCss(doc.theme) : ""}>{children}</FrameTheme>
           ),
-          "headerActions": () => null,
+          // Sin acciones propias en la cabecera de Puck. Devolver `null` no es un
+          // elemento valido para su tipo de render, aunque en pantalla no se note.
+          "headerActions": () => <></>,
         }}
       />
       {showAssets && <aside className="asset-popover" aria-label="Biblioteca de imágenes">

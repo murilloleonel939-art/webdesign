@@ -87,7 +87,10 @@ function makeRender(type: Section["type"], assets: readonly { id: string; path?:
 const text = (label: string) => ({ type: "text" as const, label });
 
 export interface EditorConfigOptions {
-  hostedFonts: readonly string[];
+  // Se declaro para ofrecer solo fuentes hospedadas, pero el config no lo lee:
+  // ninguna seccion lo consume. Se deja opcional hasta que exista ese selector,
+  // en vez de obligar a cada llamada a pasar algo que nadie usa.
+  hostedFonts?: readonly string[];
   assets?: readonly { id: string; label?: string; path?: string }[];
 }
 

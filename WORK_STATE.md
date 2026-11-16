@@ -192,3 +192,27 @@ DEFINER); y una SECURITY DEFINER sin `REVOKE ... FROM PUBLIC` queda invocable
 por cualquiera. Las tres tienen prueba.
 
 **Siguiente: Fase 4, el agente de diseno.**
+
+## El editor en blanco y por que el build no lo vio (corregido)
+
+Al desplegar `9851c57`, el editor salio en blanco. Causa: en `panel.tsx` el
+`useEffect` del contador de mensajes usaba `showInbox` y `setNewLeads` **antes**
+de declararlos. El array de dependencias se evalua al renderizar, asi que
+lanzaba `ReferenceError` y React dejaba la pantalla vacia.
+
+Lo importante no es el error, es que nada lo paro:
+
+- `apps/platform/tsconfig.json` incluye solo `src`. **La UI nunca pasaba por
+  TypeScript**: `build-ui.mjs` usa esbuild, que transpila sin comprobar tipos.
+- `@types/react` estaba en el store de pnpm pero no enlazado, asi que un
+  `tsconfig` para `ui/` daba 14 errores falsos y habria tapado el real.
+
+Corregido: `apps/platform/tsconfig.ui.json`, `@types/react` y
+`@types/react-dom` como devDependencies, y `build-ui.mjs` ejecuta `tsc` antes
+de esbuild y aborta si falla. Probado reintroduciendo el error: el build corta
+con `TS2304 Cannot find name 'newLeads'`.
+
+Dos errores reales que aparecieron al activar la comprobacion: `path:
+undefined` en el selector de assets (con `exactOptionalPropertyTypes`) y
+`headerActions` devolviendo `null` en vez de un elemento. Y `hostedFonts` era
+obligatorio en `buildEditorConfig` sin que nadie lo leyera: ahora es opcional.
