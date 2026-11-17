@@ -5,7 +5,7 @@ import type { Pool } from "pg";
 import { withUser } from "@webdesign/db";
 import { hashPassword, verifyPassword, newSessionToken } from "@webdesign/auth";
 import { saveDraft, loadDraft } from "@webdesign/editor/save";
-import { publish, rollbackTo } from "@webdesign/publish";
+import { publish, rollbackTo, unpublish, isAnotherSiteActive } from "@webdesign/publish";
 
 // Superficie HTTP del ciclo de Fase 1: crear, editar, previsualizar, publicar y
 // revertir. Cada operacion se ejecuta con el usuario de la sesion, nunca con el rol
@@ -156,4 +156,4 @@ export async function activeAssets(pool: Pool, userId: string, siteId: string, s
   return { resolveAssetPath: (id) => byId.get(id), assetFiles, assetFilesById, licensedAssetIds, known };
 }
 
-export { saveDraft, loadDraft, publish, rollbackTo, SESSION_COOKIE };
+export { saveDraft, loadDraft, publish, rollbackTo, unpublish, isAnotherSiteActive, SESSION_COOKIE };

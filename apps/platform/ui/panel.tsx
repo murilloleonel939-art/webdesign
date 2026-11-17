@@ -149,6 +149,10 @@ function Editor({ siteId }: { siteId: string }) {
   const PAGE = new URLSearchParams(location.search).get("page") ?? "p_home"; const [doc, setDoc] = useState<any>(null); const [rev, setRev] = useState(0); const [status, setStatus] = useState("Cargando tu editor…"); const [assets, setAssets] = useState<EditorAsset[]>([]); const [uploading, setUploading] = useState(false); const lastData = useRef<any>(null); const [blockers, setBlockers] = useState<string[]>([]);
   // Avisos de estilo (6.5): informan, no bloquean. El dueno decide publicar.
   const [visualNotice, setVisualNotice] = useState<string[]>([]); const [publishedUrl, setPublishedUrl] = useState<string|null>(null);
+  // Otro sitio de la misma cuenta ya esta publicado (spec 1.15: solo uno). Se
+  // guarda id y nombre para ofrecer despublicarlo desde el mismo aviso, sin
+  // `confirm()` del navegador.
+  const [activeElsewhere, setActiveElsewhere] = useState<{ id: string; name: string }|null>(null);
   async function refreshAssets() { try { const r = await api(`/api/sites/${siteId}/assets`); if (!r.ok) return; const body = await r.json() as { assets?: EditorAsset[] }; setAssets(Array.isArray(body.assets) ? body.assets : []); } catch { setAssets([]); } }
   async function removeAsset(id: string) { if (!confirm("¿Eliminar esta imagen?")) return; const r = await api(`/api/sites/${siteId}/assets?id=${encodeURIComponent(id)}`, { method: "DELETE" }); if (r.ok) { await refreshAssets(); setStatus("Imagen eliminada"); } }
   async function upload(file: File) { setUploading(true); const r = await api(`/api/sites/${siteId}/assets?kind=image`, { method: "POST", headers: { "content-type": file.type }, body: file }); setUploading(false); if (r.ok) { await refreshAssets(); setStatus("Imagen subida. Copia su ID en el bloque Imagen."); } else {
@@ -203,7 +207,19 @@ function Editor({ siteId }: { siteId: string }) {
       const d = await r.json().catch(() => ({})) as {
         error?: string;
         findings?: { code: string; severity?: string }[];
+        activeSiteId?: string;
+        activeSiteName?: string;
       };
+      // Spec 1.15: solo un sitio publicado por cuenta. Ya hay otro `active`, y
+      // la base lo impide con un indice parcial. Antes esto reventaba el
+      // proceso y el panel recibia un 502 sin explicacion; ahora se nombra el
+      // sitio que ocupa el turno y se ofrece despublicarlo y reintentar.
+      if (d.error === "another_site_active") {
+        const name = (d.activeSiteName ?? "").trim() || "tu otro sitio";
+        setActiveElsewhere({ id: String(d.activeSiteId ?? ""), name });
+        setStatus("Ya tienes un sitio publicado");
+        return;
+      }
       // Spec 6.5: un aviso visual no impide publicar; solo se ensena y se pide
       // confirmacion. Un bloqueo de contenido (6.4) si obliga a corregir.
       if (d.error === "visual_confirm") {
@@ -224,6 +240,15 @@ function Editor({ siteId }: { siteId: string }) {
     const d = await r.json() as { version: number; hostname?: string };
     if (d.hostname) { setPublishedUrl(`https://${d.hostname}`); setStatus("Publicado correctamente"); }
     else setStatus("Publicado, pero sin direccion: no queda sitio en el pool de dominios");
+  }
+  // Despublica el sitio que ocupaba el turno y reintenta publicar este. Dos
+  // pasos en un boton: el dueno ya ha dicho que quiere publicar este sitio.
+  async function unpublishAndRetry(id: string) {
+    setStatus("Despublicando el otro sitio…");
+    const r = await api(`/api/sites/${id}/unpublish`, { method: "POST" });
+    if (!r.ok) { setStatus("No se pudo despublicar el otro sitio"); return; }
+    setActiveElsewhere(null);
+    await publish();
   }
   if (showStyles) {
     return <StyleStart
@@ -250,6 +275,14 @@ function Editor({ siteId }: { siteId: string }) {
         <strong>Para publicar falta:</strong>
         <ul>{blockers.map((b) => <li key={b}>{b}</li>)}</ul>
         <button className="ghost" onClick={() => setBlockers([])} aria-label="Cerrar">×</button>
+      </div>}
+      {activeElsewhere && <div className="publish-notice" role="status">
+        <strong>Ya tienes un sitio publicado:</strong>
+        <ul><li>«{activeElsewhere.name}» está publicado ahora mismo. Tu cuenta solo puede tener uno publicado a la vez.</li></ul>
+        {activeElsewhere.id
+          ? <button className="primary" onClick={() => void unpublishAndRetry(activeElsewhere.id)}>Despublicar «{activeElsewhere.name}» y publicar este</button>
+          : <span className="muted small">Abre el otro sitio y despublícalo desde ahí.</span>}
+        <button className="ghost" onClick={() => setActiveElsewhere(null)} aria-label="Descartar aviso">×</button>
       </div>}
       {visualNotice.length > 0 && <div className="publish-notice" role="status">
         <strong>Aviso de estilo (no impide publicar):</strong>

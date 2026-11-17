@@ -405,3 +405,31 @@ obligatorio en `buildEditorConfig` sin que nadie lo leyera: ahora es opcional.
 - **Descartado a proposito** (stack que no tenemos): Tailwind, `motion/react`, `cn`,
   `will-change`, `backdrop-filter`, `h-dvh`, `safe-area-inset`, y todo lo de dialogos, menus,
   pestañas y tablas, que el renderer no genera. No se anaden reglas que devolverian `[]` siempre.
+
+### 23505 al publicar un segundo sitio (502) — arreglado
+
+- Causa: el UPDATE de `publish()` chocaba con el indice parcial `sites_one_active_per_owner`
+  (0003:33, 0008:163) cuando el dueno ya tenia otro sitio `active`; el throw subia por
+  `handleApi` y mataba el proceso Node. La regla (spec 1.15, lineas 90/597/1481) es correcta y
+  no se toco: faltaba tratar el caso como resultado, no como excepcion.
+- `packages/publish/src/index.ts`: `PublishResult` gana `AnotherSiteActiveBlock`
+  (`ok:false, blocked:true, reason:"another_site_active", activeSiteId, activeSiteName`) y el
+  guard `isAnotherSiteActive()` (linea 57). El chequeo (`SELECT ... WHERE owner_id=$1 AND
+  status='active' AND id<>$2`, linea 173) va ANTES de `publishRelease()` (linea 189): esa
+  funcion ya escribe en disco y mueve el symlink `public`, y bloquear despues dejaria ficheros
+  de una release que no existe en la base. `pg_advisory_xact_lock(4711, hashtext(userId))`
+  (linea 171, igual en `unpublish`) cierra la carrera entre dos publicaciones simultaneas.
+- `unpublish()` (packages/publish/src/index.ts:230): solo `sites.status -> 'draft'` +
+  `audit_log` (`site.unpublish`); no borra release, `site_versions` ni assets. Idempotente en
+  `draft` (sin auditoria nueva). Sitio ajeno/inexistente: mismo `not_found`.
+- `apps/platform/src/server.ts`: 409 `another_site_active` (linea 669, antes del de
+  `visual_confirm`/`blocked`); ruta nueva `POST /api/sites/:id/unpublish` (733-760, quita
+  tambien el enlace de `/data/hosts` porque Caddy no mira la base); junto a `start()`
+  `process.on("unhandledRejection"|"uncaughtException", ...)` (830-839) que solo registra, nunca
+  mata el proceso. Defensa en profundidad: el arreglo de verdad es el 409.
+- `apps/platform/ui/panel.tsx`: aviso inline `activeElsewhere` (155, rama 217) con el patron de
+  `visual_confirm`, sin `confirm()`; el boton llama `unpublishAndRetry()` (246) y reintenta.
+- Pruebas: `packages/publish/test/another-active.test.mjs` (doble en memoria del pool, sin
+  Postgres) y `apps/platform/test/another-active.test.mjs` (con DB, gateada por `DB_TEST_URL`:
+  409 con nombre, `/healthz` vivo despues, unpublish idempotente, publicar tras despublicar).
+- Verificado: tsc plataforma 0, tsc UI 0, turbo `typecheck test --force` **67/67**, 0 fallos.

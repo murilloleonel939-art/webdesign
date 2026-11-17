@@ -18,8 +18,8 @@ import { listStyles, getStyle, applyStyleToDocument, isStyleApplyMode } from "./
 import { listLeads, countNewLeads, setLeadStatus, isLeadStatus } from "./inbox.js";
 import { isOperator, listAllSites, summary } from "./operator.js";
 import { handleLead, clientIp, parseLeadForm } from "./lead.js";
-import { ensureHostname, linkHost } from "./hosting.js";
-import { parseCookies, resolveSession, login, createUser, createSite, deleteSite, listSites, saveDraft, loadDraft, publish, rollbackTo, activeAssets, SESSION_COOKIE } from "./api.js";
+import { ensureHostname, linkHost, unlinkHost } from "./hosting.js";
+import { parseCookies, resolveSession, login, createUser, createSite, deleteSite, listSites, saveDraft, loadDraft, publish, rollbackTo, unpublish, isAnotherSiteActive, activeAssets, SESSION_COOKIE } from "./api.js";
 import { renderPage } from "@webdesign/renderer";
 import { registerAsset, type AssetKind } from "@webdesign/assets";
 import { diagnosticsEnabled, tokenMatches, runDiagnostics } from "./diagnose.js";
@@ -660,6 +660,15 @@ async function handleApi(pool: import("pg").Pool, sitesRoot: string, req: Incomi
       ...(body?.confirmVisual ? { confirmVisualFindings: true } : {}),
     });
     if (!r.ok) {
+      // Spec 1.15: un solo sitio publicado por cuenta. El dueno ya tenia otro
+      // `active`; antes esto lanzaba 23505 dentro de la transaccion, el throw
+      // subia por el handler async y MATABA el proceso (502 en el proxy). Se
+      // responde 409 con el nombre del sitio activo para que el panel pueda
+      // ofrecer despublicarlo y reintentar.
+      if (isAnotherSiteActive(r)) {
+        json(res, 409, { error: "another_site_active", activeSiteName: r.activeSiteName, activeSiteId: r.activeSiteId });
+        return true;
+      }
       // Spec 6.5: un hallazgo visual no es un bloqueo de contenido. Se responde
       // 409 igual, pero con `blocked: false` y el aviso, para que el panel
       // ofrezca «Publicar igual» en vez de obligar a corregir.
@@ -715,6 +724,38 @@ async function handleApi(pool: import("pg").Pool, sitesRoot: string, req: Incomi
     const version = await rollbackTo(pool, { sitesRoot, userId: session.userId, siteId },
       body?.version === undefined ? undefined : Number(body.version));
     json(res, 200, { version });
+    return true;
+  }
+
+  // Despublicar: pasar el sitio a `draft` sin borrar nada. Es la operacion que
+  // la spec 1.15 exige para poder publicar otro sitio de la misma cuenta, y
+  // hasta ahora no existia: el unico camino era fallar contra el indice.
+  const unpublishMatch = /^\/api\/sites\/([0-9a-f-]{36})\/unpublish$/.exec(url.pathname);
+  if (req.method === "POST" && unpublishMatch) {
+    if (!session) {
+      json(res, 401, { error: "unauthorized" });
+      return true;
+    }
+    const siteId = unpublishMatch[1] as string;
+    const r = await unpublish(pool, { userId: session.userId, siteId });
+    if (!r.ok) {
+      // Sitio ajeno e inexistente dan lo mismo: no se filtra quien tiene que.
+      json(res, 404, { error: "not_found" });
+      return true;
+    }
+    // Caddy no consulta la base: sin quitar el enlace, el sitio seguiria
+    // sirviendose por su hostname aunque la fila diga `draft`. El release en
+    // disco y sus `site_versions` se conservan enteros (spec: no se borra nada).
+    try {
+      const hosts = await withUser(pool, session.userId, async (tx) =>
+        (await tx.query<{ hostname: string }>("SELECT hostname FROM domains WHERE site_id = $1", [siteId])).rows);
+      for (const h of hosts) unlinkHost(process.env.HOSTS_ROOT ?? "/data/hosts", h.hostname);
+    } catch (e) {
+      // Despublicado en la base es el hecho principal; si el enlace no se pudo
+      // quitar se registra y no se convierte en un 500.
+      console.error("host_unlink_failed", { siteId, error: (e as Error).message });
+    }
+    json(res, 200, { ok: true });
     return true;
   }
 
@@ -779,6 +820,24 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     createApp({ preview, pool, sitesRoot: process.env.SITES_ROOT ?? "/data/sites" })
       .listen(port, () => console.log(`platform on :${port}`));
   };
+  // Red de seguridad del proceso. El arreglo de verdad es el 409 de arriba:
+  // esto solo evita que un fallo inesperado en un handler async tumbe el
+  // servidor entero y el proxy devuelva 502 a todos los clientes. Node mata el
+  // proceso cuando una promesa se rechaza sin `catch` o algo lanza fuera de un
+  // try; aqui se registra y se sigue, que es lo que un servidor debe hacer.
+  // `console.error("unhandled", {...})` es el formato que ya se busca en los
+  // registros de produccion para separar lo previsto de lo imprevisto.
+  process.on("unhandledRejection", (reason: unknown) => {
+    console.error("unhandled", {
+      kind: "unhandledRejection",
+      error: reason instanceof Error ? reason.message : String(reason),
+      stack: reason instanceof Error ? reason.stack : undefined,
+    });
+  });
+  process.on("uncaughtException", (error: Error) => {
+    console.error("unhandled", { kind: "uncaughtException", error: error.message, stack: error.stack });
+  });
+
   start().catch((e) => {
     console.error(e);
     process.exit(1);

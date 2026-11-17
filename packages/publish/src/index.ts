@@ -32,12 +32,35 @@ export interface PublishOptions {
   licensedAssetIds?: string[];
 }
 
+// Bloqueo por «ya tienes otro sitio publicado». No es un hallazgo del linter:
+// es el indice parcial sites_one_active_per_owner (0003:33 y 0008:163), que
+// solo admite un sitio `active` por cuenta. Sin `findings` a proposito: quien
+// lea `r.findings` sin pasar por el guard no compila, y el motivo queda como
+// discriminante explicito en vez de un booleano ambiguo.
+export interface AnotherSiteActiveBlock {
+  ok: false;
+  blocked: true;
+  reason: "another_site_active";
+  activeSiteId: string;
+  activeSiteName: string;
+}
+
 export type PublishResult =
   | { ok: true; version: number; findings: LintFinding[]; visual: LintFinding[] }
   // `blocked: true` es contenido invalido (6.4). `blocked: false` es que el
   // dueno debe confirmar un hallazgo visual (6.5): puede publicar igual.
   | { ok: false; blocked: true; findings: LintFinding[] }
-  | { ok: false; blocked: false; findings: LintFinding[]; visual: LintFinding[] };
+  | { ok: false; blocked: false; findings: LintFinding[]; visual: LintFinding[] }
+  | AnotherSiteActiveBlock;
+
+/** Estrecha el resultado al bloqueo por sitio activo, sin mirar `findings`. */
+export function isAnotherSiteActive(r: PublishResult): r is AnotherSiteActiveBlock {
+  return r.ok === false && "reason" in r && r.reason === "another_site_active";
+}
+
+// Clave del bloqueo consultivo por dueno: mismo par (namespace, hashtext) en
+// publicar y despublicar, para que ambas operaciones de una cuenta se serialicen.
+const ACTIVE_SITE_LOCK_NS = 4711;
 
 /**
  * Opciones del linter visual deducidas del documento.
@@ -130,11 +153,40 @@ export async function publish(pool: Pool, opts: PublishOptions): Promise<Publish
     return { ok: false, blocked: false, findings: [...findings, ...visual], visual };
   }
 
-  // Primero el sistema de ficheros: si falla, no se toca la base.
-  const version = publishRelease(opts.sitesRoot, opts.siteId, files, opts.assetFiles ?? {});
   const hash = docHash(opts.doc);
 
-  await withUser(pool, opts.userId, async (tx: Tx) => {
+  // ORDEN IMPORTANTE: `publishRelease` escribe en disco y mueve el symlink
+  // `public`. Por eso la comprobacion del sitio activo va ANTES, no despues:
+  // si bloquearamos despues, quedarian ficheros de una release que no existe
+  // en la base (v(N) en disco sin fila en `site_versions`, `public` apuntando
+  // a ella y `sites.published_version` intacto). Ademas, hacerlo despues del
+  // UPDATE es lo que reventaba: el indice parcial sites_one_active_per_owner
+  // (0003:33, 0008:163) lanzaba 23505 dentro de la transaccion y el throw
+  // subia hasta el handler HTTP, matando el proceso.
+  //
+  // El bloqueo consultivo por dueno serializa publicar y despublicar de la
+  // misma cuenta: sin el, dos publicaciones simultaneas pasan las dos la
+  // comprobacion (ninguna ve a la otra) y una choca contra el indice igual.
+  return await withUser(pool, opts.userId, async (tx: Tx): Promise<PublishResult> => {
+    await tx.query(`SELECT pg_advisory_xact_lock(${ACTIVE_SITE_LOCK_NS}, hashtext($1))`, [opts.userId]);
+
+    const other = await tx.query<{ id: string; name: string }>(
+      `SELECT id, name FROM sites WHERE owner_id = $1 AND status = 'active' AND id <> $2 LIMIT 1`,
+      [opts.userId, opts.siteId],
+    );
+    const active = other.rows[0];
+    if (active) {
+      // Spec 1.15 (lineas 90, 597 y 1481): un solo sitio publicado por cuenta.
+      // No se lanza: se devuelve, para que quien llama responda 409 y el
+      // dueno decida despublicar. Nada se ha escrito aun en disco ni en la base.
+      return {
+        ok: false, blocked: true, reason: "another_site_active",
+        activeSiteId: active.id, activeSiteName: active.name,
+      };
+    }
+
+    // Ya con la certeza de que no hay otro activo, se escribe el release.
+    const version = publishRelease(opts.sitesRoot, opts.siteId, files, opts.assetFiles ?? {});
     await tx.query(
       `INSERT INTO site_versions (id, site_id, version, schema_version, doc, doc_hash, created_by, note)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
@@ -157,9 +209,51 @@ export async function publish(pool: Pool, opts: PublishOptions): Promise<Publish
        WHERE id = $1 AND status <> 'active'`,
       [opts.siteId, version, doc.pages.length],
     );
+    return { ok: true, version, findings, visual };
   });
+}
 
-  return { ok: true, version, findings, visual };
+// Despublicar (spec 1.15: "publicar otro EXIGE despublicar el anterior").
+// No borra NADA: ni el release en disco ni las filas de `site_versions` ni los
+// assets. Solo devuelve el sitio a `draft`, que es lo unico que mira el indice
+// sites_one_active_per_owner para decidir quien esta publicado.
+export interface UnpublishOptions {
+  userId: string;
+  siteId: string;
+}
+
+export type UnpublishResult =
+  | { ok: true; alreadyDraft: boolean; previousVersion: number | null }
+  // Sitio ajeno o inexistente: la misma respuesta para no filtrar existencia.
+  | { ok: false; reason: "not_found" };
+
+export async function unpublish(pool: Pool, opts: UnpublishOptions): Promise<UnpublishResult> {
+  return await withUser(pool, opts.userId, async (tx: Tx): Promise<UnpublishResult> => {
+    // Mismo cerrojo por dueno que `publish`: despublicar mientras otra peticion
+    // publica el mismo sitio debe decidir en orden, no a la vez.
+    await tx.query(`SELECT pg_advisory_xact_lock(${ACTIVE_SITE_LOCK_NS}, hashtext($1))`, [opts.userId]);
+
+    const found = await tx.query<{ status: string; published_version: number | null }>(
+      `SELECT status, published_version FROM sites WHERE id = $1 AND owner_id = $2`,
+      [opts.siteId, opts.userId],
+    );
+    const row = found.rows[0];
+    if (!row) return { ok: false, reason: "not_found" };
+
+    const previousVersion = row.published_version === null ? null : Number(row.published_version);
+    // Ya en draft: idempotente y sin fila de auditoria nueva, porque no ha
+    // cambiado nada. Repetir el boton no debe llenar `audit_log` de ruido.
+    if (row.status === "draft") return { ok: true, alreadyDraft: true, previousVersion };
+
+    await tx.query(`UPDATE sites SET status = 'draft' WHERE id = $1 AND owner_id = $2`, [opts.siteId, opts.userId]);
+    await tx.query(
+      `INSERT INTO audit_log (id, actor_type, actor_id, site_id, action, target, meta)
+       VALUES ($1, 'user', $2, $3, 'site.unpublish', $4, $5)`,
+      [randomUUID(), opts.userId, opts.siteId, previousVersion === null ? "draft" : `v${previousVersion}`,
+       JSON.stringify({ from: row.status, to: "draft", publishedVersion: previousVersion })],
+    );
+    return { ok: true, alreadyDraft: false, previousVersion };
+  });
 }
 
 export interface RollbackOptions {
