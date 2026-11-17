@@ -24,9 +24,34 @@ test("el panel monta en el DOM sin errores de carga", { skip: !existsSync(join(U
   // jsdom tampoco implementa matchMedia (lo usa Puck para el modo responsive).
   dom.window.matchMedia = () => ({ matches: false, addListener() {}, removeListener() {}, addEventListener() {}, removeEventListener() {} });
   dom.window.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} };
+  // React 19 usa MessageChannel para programar tareas; jsdom no lo trae. Se toma
+  // el de Node, que cumple el mismo contrato.
+  const channels = [];
+  dom.window.MessageChannel = class extends MessageChannel {
+    constructor() {
+      super();
+      channels.push(this);
+      // Los puertos de Node mantienen vivo el event loop y el proceso no termina.
+      this.port1.unref?.();
+      this.port2.unref?.();
+    }
+  };
+  // React 19 / Puck también esperan TextEncoder y TextDecoder (scheduler y parseo).
+  dom.window.TextEncoder = TextEncoder;
+  dom.window.TextDecoder = TextDecoder;
   dom.window.fetch = async () => ({ status: 200, ok: true, json: async () => ({ rev: 1, doc }) });
-  assert.doesNotThrow(() => dom.window.eval(readFileSync(join(UI, "panel.js"), "utf8")));
-  await new Promise((r) => setTimeout(r, 400));
-  const root = dom.window.document.getElementById("root");
-  assert.ok(root.children.length > 0, `el panel no monto nada; errores: ${JSON.stringify(errors.slice(0,3))}`);
+  try {
+    assert.doesNotThrow(() => dom.window.eval(readFileSync(join(UI, "panel.js"), "utf8")));
+    await new Promise((r) => setTimeout(r, 400));
+    const root = dom.window.document.getElementById("root");
+    assert.ok(root.children.length > 0, `el panel no monto nada; errores: ${JSON.stringify(errors.slice(0,3))}`);
+  } finally {
+    // Cerrar el DOM y los puertos abiertos: unref() solo no basta, el puerto 1
+    // vuelve a quedar referenciado por el scheduler de React.
+    dom.window.close();
+    for (const ch of channels) {
+      try { ch.port1.close(); } catch {}
+      try { ch.port2.close(); } catch {}
+    }
+  }
 });

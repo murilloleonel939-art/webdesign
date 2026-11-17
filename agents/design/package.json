@@ -1,0 +1,25 @@
+{
+  "name": "@webdesign/agent-design",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test test/*.mjs"
+  },
+  "dependencies": {
+    "@webdesign/agent-sdk": "workspace:*",
+    "@webdesign/lint-visual": "workspace:*",
+    "@webdesign/linter": "workspace:*",
+    "@webdesign/llm": "workspace:*",
+    "@webdesign/renderer": "workspace:*",
+    "@webdesign/site-schema": "workspace:*",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@webdesign/quality": "workspace:*"
+  }
+}

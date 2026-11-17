@@ -73,9 +73,12 @@ function safeType(type: string): string {
 }
 
 export async function listStyles(pool: pg.Pool): Promise<DesignStyle[]> {
+  // `kind = 'preset'`: desde 0016 la tabla tambien guarda estilos de referencia
+  // importados, que tienen nombre pero no un tema propio. Ofrecerlos aqui como
+  // preset dejaria al dueno aplicar un estilo que no cambia nada.
   const r = await pool.query<Row>(
     `SELECT id, name, summary, colors, typography, spacing, radius, dials, sections
-     FROM design_styles WHERE status = 'active' ORDER BY name`,
+     FROM design_styles WHERE status = 'active' AND kind = 'preset' ORDER BY name`,
   );
   return r.rows.map((row) => ({
     id: row.id,

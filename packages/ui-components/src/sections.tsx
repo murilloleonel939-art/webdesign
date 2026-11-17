@@ -40,9 +40,12 @@ export function HeroSection({ section, editing }: SectionProps) {
 }
 
 export function TextSection({ section }: SectionProps) {
-  const body = typeof (section.props as { body?: unknown }).body === "string" ? ((section.props as { body: string }).body) : "";
+  const p = section.props as { heading?: unknown; body?: unknown };
+  const heading = typeof p.heading === "string" && p.heading.trim() ? p.heading : undefined;
+  const body = typeof p.body === "string" ? p.body : "";
   return (
     <section className="text" data-section-id={section.id}>
+      {heading ? <h2>{heading}</h2> : null}
       {body.split(/\n{2,}/).map((para, i) => (
         <p key={i}>{para}</p>
       ))}
@@ -79,11 +82,12 @@ export function GallerySection({ section, resolveAsset }: SectionProps & { resol
 }
 
 export function FeaturesSection({ section }: SectionProps) {
-  const items = Array.isArray((section.props as { items?: unknown }).items)
-    ? ((section.props as { items: { title: string; body: string }[] }).items)
-    : [];
+  const p = section.props as { heading?: unknown; items?: unknown };
+  const heading = typeof p.heading === "string" && p.heading.trim() ? p.heading : undefined;
+  const items = Array.isArray(p.items) ? (p.items as { title: string; body: string }[]) : [];
   return (
     <section className="features" data-section-id={section.id}>
+      {heading ? <h2>{heading}</h2> : null}
       <ul>
         {items.map((it, i) => (
           <li key={i}>
@@ -97,11 +101,12 @@ export function FeaturesSection({ section }: SectionProps) {
 }
 
 export function PricingSection({ section }: SectionProps) {
-  const plans = Array.isArray((section.props as { plans?: unknown }).plans)
-    ? ((section.props as { plans: { name: string; price: string; features: string[] }[] }).plans)
-    : [];
+  const p = section.props as { heading?: unknown; plans?: unknown };
+  const heading = typeof p.heading === "string" && p.heading.trim() ? p.heading : undefined;
+  const plans = Array.isArray(p.plans) ? (p.plans as { name: string; price: string; features: string[] }[]) : [];
   return (
     <section className="pricing" data-section-id={section.id}>
+      {heading ? <h2>{heading}</h2> : null}
       {plans.map((plan, i) => (
         <article key={i} className="pricing__plan">
           <h3>{plan.name}</h3>

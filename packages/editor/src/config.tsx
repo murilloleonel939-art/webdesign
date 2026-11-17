@@ -109,8 +109,8 @@ export function buildEditorConfig(opts: EditorConfigOptions): Config {
       },
       text: {
         label: "Texto",
-        fields: { body: { type: "textarea", label: "Cuerpo" } },
-        defaultProps: { body: "" },
+        fields: { heading: text("Título"), body: { type: "textarea", label: "Cuerpo" } },
+        defaultProps: { heading: "", body: "" },
         render: makeRender("text", opts.assets ?? []),
       },
       image: {
@@ -134,14 +134,20 @@ export function buildEditorConfig(opts: EditorConfigOptions): Config {
       },
       features: {
         label: "Ventajas",
-        fields: { items: { type: "array", label: "Elementos", arrayFields: { title: text("Título"), body: text("Texto") } } },
-        defaultProps: { items: [] },
+        fields: {
+          heading: text("Título"),
+          items: { type: "array", label: "Elementos", arrayFields: { title: text("Título"), body: text("Texto") } },
+        },
+        defaultProps: { heading: "", items: [] },
         render: makeRender("features", opts.assets ?? []),
       },
       pricing: {
         label: "Precios",
-        fields: { plans: { type: "array", label: "Planes", arrayFields: { name: text("Nombre"), price: text("Precio") } } },
-        defaultProps: { plans: [] },
+        fields: {
+          heading: text("Título"),
+          plans: { type: "array", label: "Planes", arrayFields: { name: text("Nombre"), price: text("Precio") } },
+        },
+        defaultProps: { heading: "", plans: [] },
         render: makeRender("pricing", opts.assets ?? []),
       },
       testimonial: {

@@ -21,3 +21,15 @@ services:
     depends_on:
       postgres: { condition: service_healthy }
     ports: ["127.0.0.1:3000:3000"]
+  # Consumidor de la cola del lint visual (Fase 4, spec 2 fila `workers`). Mismo
+  # patron que `platform`, sin puerto: no sirve HTTP, solo consume la cola.
+  workers:
+    build:
+      context: .
+      dockerfile: apps/workers/Dockerfile
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_started }
+    environment:
+      REDIS_URL: redis://:local-only@redis:6379
+      DATABASE_URL: postgres://postgres:local-only@postgres:5432/webdesign

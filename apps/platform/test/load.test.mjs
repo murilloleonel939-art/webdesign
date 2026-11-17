@@ -1,8 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { createApp } from "@webdesign/platform/dist/server.js";
-import { samplePage } from "./fixtures.mjs";
+import { createApp } from "../dist/server.js";
+import { renderPage } from "@webdesign/renderer";
+import { SAMPLE, resolveAsset } from "@webdesign/quality/test/fixtures.mjs";
+
+// La pagina de muestra se renderiza aqui: antes venia de `quality`, pero
+// `quality` depende de `platform` y esa arista cerraba un ciclo de build
+// (publish -> lint-visual -> quality -> platform -> publish).
+const samplePage = (pageId) => renderPage(SAMPLE, pageId, resolveAsset);
 
 // Prueba de carga basica (spec 12, aceptacion de Fase 1). No hay umbrales en la
 // especificacion: estos son un minimo verificable y holgado para no ser fragil en CI.

@@ -8,10 +8,11 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node --test test/publish.test.mjs test/publish-db.test.mjs"
+    "test": "node --test test/publish.test.mjs test/visual.test.mjs"
   },
   "dependencies": {
     "@webdesign/db": "workspace:*",
+    "@webdesign/lint-visual": "workspace:*",
     "@webdesign/linter": "workspace:*",
     "@webdesign/releases": "workspace:*",
     "@webdesign/renderer": "workspace:*",

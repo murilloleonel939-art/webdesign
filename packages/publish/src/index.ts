@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type { Pool } from "pg";
 import { withUser, type Tx } from "@webdesign/db";
 import { lintSite, blocksPublication, type LintFinding } from "@webdesign/linter";
+import { lintRelease, needsOwnerConfirmation } from "@webdesign/lint-visual";
 import { publishRelease, rollback as rollbackFs, switchRelease, currentVersion } from "@webdesign/releases";
 import { renderPage } from "@webdesign/renderer";
 import { validateSiteDocument, type SiteDocument } from "@webdesign/site-schema";
@@ -19,6 +20,12 @@ export interface PublishOptions {
   note?: string;
   // El dueno decide publicar aun con hallazgos: queda registrado.
   confirmWarnings?: boolean;
+  // El dueno ha visto un `error` de 6.5 y ha pulsado «Publicar igual».
+  // Sin esto, el flujo devuelve la pantalla de confirmacion.
+  confirmVisualFindings?: boolean;
+  // El catalogo declaro pareja tipografica para el preset aplicado. El
+  // documento no lo lleva: lo sabe quien conoce el preset, no el renderer.
+  pairingExpected?: boolean;
   resolveAssetPath?: (assetId: string) => string | undefined;
   // Ficheros a enlazar en la release: "assets/<ruta>" -> ruta absoluta del asset.
   assetFiles?: Record<string, string>;
@@ -26,8 +33,26 @@ export interface PublishOptions {
 }
 
 export type PublishResult =
-  | { ok: true; version: number; findings: LintFinding[] }
-  | { ok: false; blocked: true; findings: LintFinding[] };
+  | { ok: true; version: number; findings: LintFinding[]; visual: LintFinding[] }
+  // `blocked: true` es contenido invalido (6.4). `blocked: false` es que el
+  // dueno debe confirmar un hallazgo visual (6.5): puede publicar igual.
+  | { ok: false; blocked: true; findings: LintFinding[] }
+  | { ok: false; blocked: false; findings: LintFinding[]; visual: LintFinding[] };
+
+/**
+ * Opciones del linter visual deducidas del documento.
+ *
+ * `pairingExpected` sale del catalogo: si el preset declaro una pareja
+ * tipografica, una sola familia es un defecto. Si no la declaro, es una
+ * decision legitima y no se avisa.
+ */
+function visualOptions(doc: SiteDocument, pairingExpected: boolean): { pairingExpected: boolean; rhythmPx?: number } {
+  const rhythm = doc.theme.spacing.sectionGap;
+  return {
+    pairingExpected,
+    ...(typeof rhythm === "number" ? { rhythmPx: rhythm } : {}),
+  };
+}
 
 function docHash(doc: unknown): string {
   return createHash("sha256").update(JSON.stringify(doc)).digest("hex");
@@ -80,14 +105,29 @@ export async function publish(pool: Pool, opts: PublishOptions): Promise<Publish
     return { ok: false, blocked: true, findings };
   }
 
-  const files: Record<string, string> = {};
+  const rendered = new Map<string, string>();
   for (const page of doc.pages) {
-    files[slugToFile(page.slug)] = renderPage(doc, page.id, (assetId) => {
+    rendered.set(page.id, renderPage(doc, page.id, (assetId) => {
       const src = resolve(assetId);
       if (!src) return undefined;
       const alt = doc.assets.find((a) => a.id === assetId)?.alt ?? "";
       return { src, alt };
-    });
+    }));
+  }
+  const files: Record<string, string> = {};
+  for (const page of doc.pages) files[slugToFile(page.slug)] = rendered.get(page.id)!;
+
+  // Lint visual (spec 6.5): sobre el HTML ya renderizado, despues de renderizar
+  // y antes del swap atomico. Ningun hallazgo de aqui bloquea: como mucho el
+  // dueno confirma, y ya lo ha hecho al pulsar publicar. Un `error` de 6.5 se
+  // registra en `audit_log` con sus codigos para que quede rastro de que el
+  // sitio salio con ese defecto. El bloqueo duro es exclusivo de 6.4.
+  const visual = lintRelease(rendered, visualOptions(doc, opts.pairingExpected === true));
+  if (needsOwnerConfirmation(visual) && !opts.confirmVisualFindings) {
+    // El dueno no ha visto todavia el defecto: se le ensena y decide el.
+    // Devuelve `blocked: false` en el sentido de 6.5 — no es un bloqueo de
+    // contenido, es la pantalla de confirmacion con «Publicar igual».
+    return { ok: false, blocked: false, findings: [...findings, ...visual], visual };
   }
 
   // Primero el sistema de ficheros: si falla, no se toca la base.
@@ -103,7 +143,14 @@ export async function publish(pool: Pool, opts: PublishOptions): Promise<Publish
     await tx.query(
       `INSERT INTO audit_log (id, actor_type, actor_id, site_id, action, target, meta)
        VALUES ($1, 'user', $2, $3, 'site.publish', $4, $5)`,
-      [randomUUID(), opts.userId, opts.siteId, `v${version}`, JSON.stringify({ version, findings: findings.map((f) => f.code), confirmed: opts.confirmWarnings === true })],
+      [randomUUID(), opts.userId, opts.siteId, `v${version}`, JSON.stringify({
+         version,
+         findings: findings.map((f) => f.code),
+         confirmed: opts.confirmWarnings === true,
+         // Spec 6.5: queda registrado quien confirmo y que codigos habia.
+         visual: visual.map((f) => f.code),
+         visualConfirmed: opts.confirmVisualFindings === true,
+       })],
     );
     await tx.query(
       `UPDATE sites SET status = 'active', published_version = $2, published_page_count = $3
@@ -112,7 +159,7 @@ export async function publish(pool: Pool, opts: PublishOptions): Promise<Publish
     );
   });
 
-  return { ok: true, version, findings };
+  return { ok: true, version, findings, visual };
 }
 
 export interface RollbackOptions {

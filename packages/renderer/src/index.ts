@@ -9,6 +9,30 @@ import { themeCss } from "./theme-css.js";
 
 export { themeCss } from "./theme-css.js";
 
+// React 19 emite algunos atributos en camelCase (`maxLength`, `autoComplete`,
+// `readOnly`...) y los booleanos como `required=""`. El navegador los acepta,
+// pero html-validate los marca en CI. Se normaliza la salida una sola vez, en
+// lugar de repetir el apaño en cada componente.
+//
+// Se recorre etiqueta por etiqueta y se saltan los valores entre comillas: un
+// `alt="miVar=1"` no debe tocarse. React siempre entrecomilla con `"` y escapa
+// `<`, `>` y `"` dentro de los valores, asi que este recorrido es exacto.
+const TAG = /<[a-zA-Z][^>]*>/g;
+const ATTR = /"[^"]*"|(\s)([a-zA-Z][a-zA-Z0-9-]*)(="")?/g;
+// Booleanos de HTML que React serializa como `=""`.
+const BOOLEAN = new Set(["required", "disabled", "checked", "readonly", "multiple", "selected", "autofocus", "novalidate", "hidden", "open", "async", "defer", "nomodule", "playsinline", "muted", "loop", "controls", "autoplay", "reversed", "itemscope", "formnovalidate", "allowfullscreen", "inert"]);
+
+export function htmlAttributeCase(html: string): string {
+  return html.replace(TAG, (tag) =>
+    tag.replace(ATTR, (m: string, space: string | undefined, name: string | undefined, empty: string | undefined) => {
+      if (space === undefined || name === undefined) return m; // valor entrecomillado
+      const lower = name.toLowerCase();
+      if (empty !== undefined) return BOOLEAN.has(lower) ? `${space}${lower}` : `${space}${lower}=""`;
+      return `${space}${lower}`;
+    }),
+  );
+}
+
 export function escapeHtml(s: string): string {
   return s
     .replaceAll("&", "&amp;")
@@ -32,7 +56,7 @@ export function renderPage(input: unknown, pageId: string, resolveAsset: AssetRe
   if (!page) throw new Error(`page not found: ${pageId}`);
 
   const body = page.sections
-    .map((section) => renderToStaticMarkup(renderSection(section, { resolveAsset }) as ReactElement))
+    .map((section) => htmlAttributeCase(renderToStaticMarkup(renderSection(section, { resolveAsset }) as ReactElement)))
     .join("\n");
 
   const title = escapeHtml(page.seo.title || doc.meta.name);

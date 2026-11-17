@@ -1,0 +1,23 @@
+{
+  "name": "@webdesign/llm-gateway",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/server.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "start": "node dist/server.js",
+    "test": "node --test test/*.mjs"
+  },
+  "dependencies": {
+    "@webdesign/db": "workspace:*",
+    "@webdesign/llm": "workspace:*",
+    "pg": "^8.13.1",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^22",
+    "@types/pg": "^8.23.1"
+  }
+}

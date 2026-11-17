@@ -7,7 +7,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json && node build-ui.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node --test test/preview-isolation.test.mjs test/cycle.test.mjs"
+    "test": "node --test test/preview-isolation.test.mjs test/cycle.test.mjs test/load.test.mjs"
   },
   "dependencies": {
     "@measured/puck": "0.20.2",
@@ -20,6 +20,7 @@
     "@webdesign/puck-adapter": "workspace:^",
     "@webdesign/renderer": "workspace:*",
     "@webdesign/site-schema": "workspace:*",
+    "@webdesign/workers": "workspace:*",
     "pg": "^8.13.0"
   },
   "devDependencies": {
@@ -28,6 +29,7 @@
     "@types/react-dom": "^19.0.0",
     "esbuild": "^0.25.0",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react-dom": "^19.0.0",
+    "@webdesign/quality": "workspace:*"
   }
 }

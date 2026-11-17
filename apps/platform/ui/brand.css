@@ -256,6 +256,14 @@ button{cursor:pointer;border:0;background:none}
 .publish-blockers li+li{margin-top:.3rem}
 .publish-blockers button{position:absolute;top:.4rem;right:.5rem;background:none;border:0;font-size:1.1rem;cursor:pointer;color:inherit}
 
+/* Aviso de estilo (6.5): informa y ofrece publicar igual. No es un bloqueo, y
+   el color y el tono deben dejarlo claro: no se viste como error. */
+.publish-notice{position:absolute;top:64px;right:24px;z-index:40;max-width:400px;padding:1rem 1.2rem;border-radius:12px;background:var(--surface,#fff);border:1px solid color-mix(in srgb,var(--ink, #111) 16%,transparent);border-left:3px solid var(--accent);box-shadow:0 8px 28px rgb(0 0 0 / .16);font-size:.9rem}
+.publish-notice strong{display:block;margin-bottom:.4rem;font-weight:600}
+.publish-notice ul{margin:0 0 .8rem;padding-left:1.1rem;color:var(--muted, #555)}
+.publish-notice li+li{margin-top:.3rem}
+.publish-notice .primary{margin-right:.5rem}
+
 /* Cambiar de estilo con contenido ya escrito: se pregunta antes de tocar nada. */
 .modal-veil{position:fixed;inset:0;z-index:80;display:grid;place-items:center;padding:24px;background:#0b1020cc;backdrop-filter:blur(3px)}
 .modal-card{width:min(520px,100%);background:var(--surface);border:1px solid var(--line);border-radius:18px;padding:26px 26px 20px;box-shadow:0 30px 70px #0000003d}

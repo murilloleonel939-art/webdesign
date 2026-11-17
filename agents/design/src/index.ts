@@ -1,0 +1,51 @@
+// Agente de diseño en modo rápido (spec 9.1, Fase 4).
+//
+// Punto de entrada del paquete: brief, borrador, herramientas y ejecución.
+
+export {
+  BRIEF_FIELDS,
+  FIELD_LABEL,
+  PENDING_MARKER,
+  briefSentence,
+  normalizeBrief,
+  quickBriefSchema,
+  siteName,
+  type BriefField,
+  type QuickBrief,
+  type QuickBriefInput,
+} from "./brief.js";
+
+export { draftSite, type Preset } from "./draft.js";
+
+export {
+  inventory,
+  planSections,
+  plannedTypes,
+  type Inventory,
+  type Known,
+  type Missing,
+  type Plan,
+  type PlanAction,
+  type PlannedSection,
+} from "./plan.js";
+
+export {
+  createStore,
+  saveCheckpoint,
+  applyMutation,
+  findPage,
+  nextId,
+  type Checkpoint,
+  type DesignStore,
+  type MutationResult,
+} from "./store.js";
+
+export { makeDesignTools } from "./tools.js";
+
+export {
+  FAST_BUDGET,
+  designAgent,
+  runFastDesign,
+  type FastDesignDeps,
+  type FastDesignResult,
+} from "./agent.js";

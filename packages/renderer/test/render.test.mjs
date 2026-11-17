@@ -87,3 +87,19 @@ test("el sitio publicado lleva el CSS de su tema y el formulario", () => {
   // Sin fuentes externas: cargarlas revelaria el sitio del cliente a un tercero.
   assert.equal(/fonts\.googleapis|fonts\.gstatic/.test(html), false);
 });
+
+// Regresion: React 19 serializa `maxLength`/`autoComplete` en camelCase y los
+// booleanos como `required=""`. El navegador lo toleraba, pero el HTML dejaba de
+// ser valido y `@webdesign/quality` lo detecto en CI. Se normaliza en el
+// renderer para que ningun componente tenga que saberlo.
+test("los atributos salen en minusculas y los booleanos sin valor", () => {
+  const d = doc();
+  d.pages[0].sections = [{ id: "s_c", type: "contact", props: { email: "a@b.example", phone: "600000000" } }];
+  const html = renderPage(d, "p_home");
+  assert.ok(!/maxLength|autoComplete|readOnly/.test(html), html.slice(0, 400));
+  assert.ok(!/required=""/.test(html));
+  assert.match(html, /<input[^>]*maxlength="\d+"/);
+  // El valor de un atributo no se toca: solo el nombre.
+  const img = renderPage(doc(), "p_home", (id) => (id === "a1" ? { src: "/a1.png", alt: "Taza de Café XL" } : undefined));
+  assert.match(img, /alt="Taza de Café XL"/);
+});

@@ -1,0 +1,107 @@
+Este producto incluye una reimplementación de reglas de calidad visual
+adaptadas de **impeccable**, distribuido bajo licencia Apache 2.0.
+
+Las reglas de `packages/lint-visual` (spec 6.5) se escribieron de nuevo para
+esta plataforma: no se enlaza ni se redistribuye el paquete original, no se
+ejecuta su CLI, no se carga su runtime y no se envía telemetría. Del proyecto
+original se tomaron la nomenclatura de los códigos y la idea de comprobar
+defectos de plantilla de forma determinista, sin coste de modelo.
+
+Los nombres de las 24 direcciones de diseño de `impeccable` (`bolder`, `quieter`,
+`distill`, `colorize`, `typeset`, `layout`, …) se adoptan como nombres de
+variante del catálogo de diseño (spec 9.1).
+
+Texto de la licencia original:
+
+```
+                                 Apache License
+                           Version 2.0, January 2004
+                        http://www.apache.org/licenses/
+
+   Copyright [yyy] [name of copyright owner]
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+```
+
+El texto completo de la licencia Apache 2.0 está en
+<https://www.apache.org/licenses/LICENSE-2.0>.
+
+---
+
+## Catálogo de diseño: datos de terceros redistribuidos
+
+`packages/catalog-import/data/` contiene los CSV originales del proyecto
+**ui-ux-pro-max** (Copyright (c) 2024 Next Level Builder), bajo licencia MIT,
+fijados en el commit `e59ff376a41f7ca47b7541ad5c116495cbade3ee`. A diferencia de
+`impeccable`, estos datos **sí se redistribuyen**: por eso el texto íntegro de la
+licencia va abajo y debe conservarse.
+
+Lo que se importa de esos CSV no se usa tal cual. El importador lo normaliza al
+modelo de tema de la plataforma y lo filtra con `lint-visual`:
+
+- las webfonts se traducen a pilas del sistema, porque la CSP del sitio no admite
+  fuentes externas y cargar Google Fonts revelaría el sitio del cliente a un
+  tercero;
+- los colores se reducen a `ground`/`ink`/`accent` y se **mide** su contraste; lo
+  que no llega a 4.5:1 entra como `supplemental`, nunca como `active`;
+- las secciones se traducen a los 10 tipos reales de la plataforma; el resto se
+  descarta y queda anotado;
+- los 89 estilos entran como `reference` (descriptor), no como preset aplicable:
+  el origen da prosa en vez de tokens.
+
+El resto de fuentes consultadas **no** redistribuye datos ni código; sólo se
+tomaron ideas, reimplementadas y con atribución:
+
+- **vercel-labs/agent-skills** (`web-design-guidelines`, MIT) — categorías de
+  revisión que guiaron las reglas de `lint-visual`.
+- **alchaincyf/huashu-design** (MIT desde 2026-05-14) — la idea de "libro de
+  vistas" de lo ya entregado y el chequeo de datos que no se pueden inventar.
+- **emilkowalski/skills** (MIT) — estándares de movimiento: `prefers-reduced-motion`,
+  animar sólo `transform` y `opacity`, rangos de duración.
+
+Texto de la licencia MIT de ui-ux-pro-max:
+
+```
+MIT License
+
+Copyright (c) 2024 Next Level Builder
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+---
+
+## Dependencias de terceros
+
+Las dependencias de Node se declaran en cada `package.json` y conservan sus
+licencias originales. Las relevantes para el linter visual:
+
+- `jsdom` (MIT) — análisis del HTML renderizado sin navegador.
+- `zod` (MIT) — validación de esquemas.
+- `@measured/puck` (Apache 2.0) — editor de contenido.

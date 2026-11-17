@@ -4,6 +4,20 @@
 Construir la plataforma multi-sitio de agentes IA según `especificacion-construccion-v1.15.md`
 (documento único por versión; `archivo/` es histórico y no se modifica).
 
+## Forma de trabajo (decidida por el usuario, vale para todo el proyecto)
+- **Construye** `claude-sonnet-5`. **Prueba** `claude-haiku-5-5`. **Revisa** el agente principal
+  al terminar: typecheck, suite completa y lectura del diff antes de dar nada por hecho.
+- Nombres verificados con una llamada real: `claude-sonnet-5-5` y `claude-sonnet-4-5` NO
+  responden en este arnés; `claude-sonnet-5` y `claude-haiku-5-5` sí.
+- Se delega con el tool `workflow` (el unico que acepta `model` por agente).
+- **El agente principal NO corrige codigo.** Diagnostica y da al constructor ordenes explicitas
+  (archivo, causa, cambio esperado, criterio de hecho). Ciclo: construir -> probar -> si hay
+  fallos, el principal analiza y ordena -> el constructor corrige -> el probador reverifica.
+  Objetivo: ahorro de tokens. Usar graphify y claude-mem para dar contexto en vez de releer.
+- **Regla de los 3 intentos:** si el constructor falla 3 veces en lo mismo, se detiene y me pasa
+  el error. Yo analizo la causa raiz y devuelvo una orden nueva y distinta, no un "intentalo
+  otra vez". Al tercer fallo se cambia el enfoque o se para y se reporta: nunca bucle.
+
 ## Fases
 - **Fase 0 — Fundamentos: cerrada.** Monorepo pnpm+turbo, Postgres 18+pgvector en Coolify,
   rol `app_platform` con RLS forzada (`rolbypassrls = f`), migraciones forward-only,
@@ -191,7 +205,138 @@ la politica de `users` mientras lee `users` es recursion infinita (SECURITY
 DEFINER); y una SECURITY DEFINER sin `REVOKE ... FROM PUBLIC` queda invocable
 por cualquiera. Las tres tienen prueba.
 
-**Siguiente: Fase 4, el agente de diseno.**
+### Deuda asumida al cerrar la Fase 2
+
+Se cierra con estas piezas sin construir, conscientemente y por orden de producto:
+
+- **Redis y BullMQ.** No hay cola: los trabajos pesados van en linea. Entra en 2b/5b.
+- **Integracion con la API de Cloudflare.** El pool de dominios se llena a mano.
+- **Asignador del pool de dominios.** `ensureHostname` asigna, pero no reaprovecha ni libera.
+- **Caddy ejecutando la config de `hosting-edge.md` tras Traefik.** Hoy Caddy sirve `/data/hosts`.
+- **Vista del plan contratado** para el dueno: depende de 2b (planes y `ai_credit_ledger`).
+
+## Fase 4 — agente de diseno (en curso)
+
+**Siguiente: terminar la Fase 4.** Entregado hasta ahora:
+
+- **`packages/lint-visual`** (spec 6.5): las 15 reglas, deterministas y sin coste de modelo,
+  con 28 pruebas (una positiva y una negativa por regla, mas las de release sobre el HTML
+  real del renderer). `jsdom` no calcula maquetacion: las reglas razonan sobre las
+  declaraciones CSS que emite el renderer, nunca sobre pixeles medidos.
+- **Integracion en `publish`.** Corre sobre el HTML ya renderizado, antes del swap atomico.
+  Un `error` de 6.5 **no bloquea**: devuelve `blocked: false`, el panel ensena el aviso y
+  ofrece «Publicar igual», y la confirmacion queda en `audit_log` con sus codigos.
+- **`NOTICE`** con la atribucion a *impeccable* (Apache 2.0), como pide 6.5.
+- **Migraciones 0014 y 0015**: `agent_runs`, `agent_tool_calls`, `agent_tokens`,
+  `usage_events`, `draft_checkpoints` con RLS forzado, y el rol `app_llm_gateway` con el
+  minimo privilegio de la linea 591 (INSERT en consumo, lectura de presupuesto).
+
+**Tres defectos reales que encontro el linter al mirar el HTML del renderer**, corregidos
+en la fuente y no silenciando la regla:
+
+1. `.cta a` nunca casaba con `<a class="cta">`: todos los botones del sitio salian como
+   enlace subrayado. El selector llevaba ahi desde la Fase 1 y ninguna prueba lo miraba.
+2. `text`, `features` y `pricing` pintaban `<h3>` sin `<h2>`: tras el `h1` del hero la
+   jerarquia saltaba. Ahora los tres admiten titular opcional, tambien en el editor.
+3. `SLOP_TOUCH_TARGET_SMALL` aplicaba 44 px a cualquier enlace; pasar a 24 px el texto
+   (WCAG 2.5.8) y reservar 44 para controles evita el aviso inutil.
+
+- **`packages/llm`** (spec 8.3): catalogo cerrado de modelos con coste por token, presupuesto
+  con sus cinco limites, `BudgetTracker` y un cliente que aplica reintentos con backoff y
+  cortacircuitos. El coste se calcula con la tabla, nunca con lo que diga el proveedor. 10 pruebas.
+- **`apps/llm-gateway`**: el unico proceso con claves de proveedor. Valida token, scopes y
+  presupuesto persistido antes de gastar; una ejecucion cerrada no admite mas gasto. 4 pruebas.
+- **`packages/agent-sdk`** (spec 8.1, 8.2, 9.1): contrato de herramienta con validacion Zod
+  obligatoria, `RunContext` que lleva un token y no un pool, marcado de contenido no confiable
+  y bucle de agente con checkpoint antes de mutar. **No existe herramienta de publicar**: el
+  agente no puede publicar porque no hay con que. 17 pruebas.
+
+**Siguiente: el agente de diseno (`agents/design`) sobre este SDK.**
+
+### Plan aprobado: skills de diseno como DATO de produccion
+
+El objetivo no es que el agente lleve prompts de diseno en el contexto —el modo rapido
+tiene una ronda y se comeria el presupuesto— sino que la plataforma **sepa** disenar y lo
+**compruebe** sin gastar tokens. Cuatro fuentes externas, todas MIT (permitidas por
+`license_allowlist` de 7.7.1):
+
+| Fuente | Que aporta | Como entra |
+| --- | --- | --- |
+| `nextlevelbuilder/ui-ux-pro-max-skill` | 89 estilos (51 activos), 192 productos, 192 paletas, 74 parejas tipograficas, 120 reglas UX, 17 presets de movimiento, licencias de fuentes | Filas de las tablas de 7.5, normalizadas a nuestro shape |
+| `vercel-labs/agent-skills` (`web-design-guidelines`) | 100+ reglas de revision de UI | Reglas deterministas nuevas de `lint-visual` |
+| `alchaincyf/huashu-design` | Direccion visual: 3 logicas x 2 candidatos, ledger de "ya entregado", `design_lint.py`, protocolo de marca | Ideas para `critique_draft` y para el brief; **no** su runtime (Python, se anade aparte) |
+| `emilkowalski/skills` | Vocabulario y recetas de animacion, `prefers-reduced-motion`, auditoria de animacion | Reglas de movimiento para `lint-visual` y el catalogo |
+
+**Regla de adaptacion, no de copia:** todo entra como fila de catalogo o como regla
+determinista. Nada entra como prompt de sistema. Un estilo importado que no pase
+`lint-visual` entra como `supplemental`, nunca `active`: eso es "basado en lo nuestro".
+
+Pasos:
+
+1. Migracion `0016` con las tablas de 7.5 que faltan (`design_product_types`,
+   `design_palettes`, `design_font_pairings`, `design_ux_rules`, `design_antipatterns`),
+   con `source`, `license`, `verified_at`, `status`.
+2. Importador: lee sus CSV, **normaliza a nuestro token shape** (`ground/ink/accent`,
+   `margin/sectionGap`, `family/scale`, `radius`) y filtra por `lint-visual` antes de escribir.
+3. Minar las reglas deterministas de Vercel, huashu y Kowalski hacia `lint-visual`, con
+   atribucion en `NOTICE`.
+4. Herramientas `recommend_design_system` y `run_lint` en el SDK: el agente **consulta**,
+   no razona el diseno.
+5. Despues, el agente de diseno.
+
+Plan detallado, con los cuatro cortes y las restricciones descubiertas: `docs/plan-fase4-catalogo.md`.
+
+### Hecho: cortes 1 a 3
+
+- **0016** aplicada al esquema: 6 tablas de catalogo + `license_url`, `origin_ref`,
+  `imported_at` y `kind` en `design_styles`. `migrate.test.mjs` ya no lleva la lista de
+  migraciones escrita a mano (estaba obsoleta desde 0008 y no lo veia nadie porque el test se
+  salta sin `DB_TEST_URL`).
+- **`kind` (`preset` | `reference`)**: el catalogo importado NO puede entrar como preset. Los
+  89 estilos del origen dan prosa en vez de hex; rellenarlos seria inventar un tema. Entran
+  como `reference` y `listStyles` filtra `kind = 'preset'`, asi que el dueno sigue viendo solo
+  los 8 presets de 0009.
+- **`@webdesign/catalog-import`**: importador determinista con el origen fijado por commit
+  (`e59ff3...`) y licencia MIT. Sin dependencia de red en tiempo de ejecucion. Sobre los datos
+  reales: **140 de 192 paletas activas**, 80 supplementary por contraste, 8 parejas
+  tipograficas de 74 (las webfonts se traducen a pilas del sistema), 24 patrones de landing de
+  34. `--dry-run` es el defecto y escribe el SQL con `bin/import.mjs --sql`.
+- **4 reglas nuevas** en `lint-visual` (`a11y.ts`): foco visible, animacion de layout,
+  `prefers-reduced-motion` y rango de duracion. El sitio real del renderer da **0 hallazgos**:
+  el navegador pinta el anillo de foco por defecto, asi que no se fabrica un defecto donde no
+  lo hay.
+- Suite: **169 pasan, 0 fallan**; typecheck limpio. Atribuciones en `NOTICE`.
+
+- **Corte 4 hecho**: `agent-sdk/src/design-tools.ts` con `recommend_design_system`,
+  `run_lint`, `run_visual_lint` y `critique_draft`. Las cuatro `mutates: false`, sin scope de
+  escritura ni publicacion; los datos entran como argumento (sin red ni base). `critique` es
+  determinista de verdad: se encontro que con un codigo repetido el mensaje dependia del orden
+  del DOM y se corrigio. `recommend` devuelve `noConfidentMatch` en vez de inventar.
+  Suite: **183 pasan, 0 fallan**.
+- **Corte 5 hecho**: `agents/design` implementa la cadena de 9.1 (brief → inventario →
+  recomendación → plan → checkpoint → construcción → validación) en modo rápido, una ronda.
+  Nueve herramientas de edición, todas `mutates: true` salvo `get_site`; ninguna publica y no
+  existe herramienta de publicar. Cada mutación valida el `SiteDocument` completo antes de
+  confirmar (`store.applyMutation`): si no valida, el store no cambia y la herramienta devuelve
+  `MUTATION_REJECTED` como dato en vez de lanzar, para que el modelo pueda reintentar.
+  Inventario y plan son datos, no prosa: separan lo afirmado por el dueño de lo que falta y
+  explican por qué cada sección se escribe, se degrada a `text` o se omite. Se descubrió que
+  `draftSite` podía discrepar del plan y se unificó: el borrador consume `plannedTypes`.
+  Un `error` de 6.4 no aplica nada; uno de 6.5 **nunca bloquea** (9.1: el agente no se bloquea
+  por estilo): se entrega con aviso, distinto si lo pidió el dueño. La revisión corrigió una
+  versión que lanzaba sin `ownerRequested`. Suite del paquete: **24 pasan, 0 fallan**.
+- Revisión de CI al cerrar el corte 5: había un **ciclo de build** (publish → lint-visual →
+  quality → platform → publish); la prueba de carga pasó a `apps/platform/test/load.test.mjs`.
+  El renderer normaliza atributos de React 19 (`maxLength`, `required=""`) con
+  `htmlAttributeCase`; `panel.test.mjs` añade `TextEncoder`/`TextDecoder`/`MessageChannel`.
+- **Corte 6 hecho** (ver sección al final). **Fase 4 cerrada en código.**
+
+Medido y descartado: la regla de dimensiones de imagen no se justifica, el renderer ya reserva
+hueco con `aspect-ratio` en `.gallery img` y `.image img`.
+
+**Dos avisos que no se pueden saltar:** 7.7.9.C exige dictamen legal escrito antes de que el
+catalogo recomiende a clientes reales (se construye en staging); y 7.7.9.D recuerda que el
+catalogo se puede quitar sin tocar el MVP — sin el, el agente usa los 8 presets y nada cambia.
 
 ## El editor en blanco y por que el build no lo vio (corregido)
 
@@ -216,3 +361,25 @@ Dos errores reales que aparecieron al activar la comprobacion: `path:
 undefined` en el selector de assets (con `exactOptionalPropertyTypes`) y
 `headerActions` devolviendo `null` en vez de un elemento. Y `hostedFonts` era
 obligatorio en `buildEditorConfig` sin que nadie lo leyera: ahora es opcional.
+
+## CORTE 6 (Fase 4): cola del lint visual en `workers` — hecho
+- Migracion `0017_release_lint_findings.sql`: tabla por hallazgo, RLS forzada,
+  politica de dueno (forma de 0003) + marca `app.release_lint` para el worker,
+  grants a `app_platform` guardados con `IF EXISTS`.
+- `apps/workers`: `processLintJob` puro (sin Redis ni pg), `pgLintDeps` con
+  borrar+reinsertar en una transaccion, cola `lint-release` con `jobId`
+  `lint:<siteId>:<version>` (dedupe) y backoff exponencial, `main.ts` que sale
+  con codigo 1 sin `REDIS_URL`/`DATABASE_URL`. `Dockerfile` propio.
+- Productor en `apps/platform/src/server.ts`: solo tras `publish` con exito y
+  solo si hay `REDIS_URL`; el fallo se registra con `console.warn` y no toca la
+  publicacion (6.5 nunca bloquea).
+- Revision del principal, dos defectos corregidos por el constructor:
+  1. Publicar podia colgarse con Redis caido o mudo (`await` del encolado). Ahora no se
+     espera (`void import(...)`) y `enqueueReleaseLint` corta a 2000 ms
+     (`enableOfflineQueue:false`, `maxRetriesPerRequest:1`).
+  2. `ioredis` es peer **opcional** de bullmq 6 y no estaba instalado: el worker nunca habria
+     conectado. Añadido `ioredis@5.11.1`; la prueba ya no acepta "falta el driver" como valido.
+- Verificado: workers 14/14; `turbo typecheck test --force` **67/67**; UI tsc 0.
+- Pendiente (deuda): aplicar 0014–0017 contra Postgres real (CI o produccion), servicio
+  `workers` en Coolify. Seguridad a vigilar: la marca `app.release_lint` da SELECT a todos los
+  `site_versions`; mismo modelo de confianza que `app.user_id` (solo la pone el servidor).

@@ -1,0 +1,23 @@
+{
+  "name": "@webdesign/lint-visual",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test test/visual.test.mjs test/release.test.mjs test/a11y.test.mjs"
+  },
+  "dependencies": {
+    "@webdesign/linter": "workspace:*",
+    "jsdom": "^25.0.1"
+  },
+  "devDependencies": {
+    "@types/jsdom": "^21.1.7",
+    "@webdesign/quality": "workspace:*",
+    "@webdesign/renderer": "workspace:*",
+    "@webdesign/site-schema": "workspace:*"
+  }
+}

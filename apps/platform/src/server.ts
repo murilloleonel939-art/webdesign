@@ -650,17 +650,35 @@ async function handleApi(pool: import("pg").Pool, sitesRoot: string, req: Incomi
       json(res, 404, { error: "no_draft" });
       return true;
     }
-    const body = (await readJson(req)) as { confirmWarnings?: boolean } | undefined;
+    const body = (await readJson(req)) as { confirmWarnings?: boolean; confirmVisual?: boolean } | undefined;
     const assets = await activeAssets(pool, session.userId, siteId, sitesRoot);
     const r = await publish(pool, {
       sitesRoot, userId: session.userId, siteId, doc: withSeoFallback(declareAssets(draft.doc, assets.known)),
       resolveAssetPath: assets.resolveAssetPath, assetFiles: assets.assetFiles,
       licensedAssetIds: assets.licensedAssetIds,
       ...(body?.confirmWarnings ? { confirmWarnings: true } : {}),
+      ...(body?.confirmVisual ? { confirmVisualFindings: true } : {}),
     });
     if (!r.ok) {
-      json(res, 409, { error: "blocked", findings: r.findings });
+      // Spec 6.5: un hallazgo visual no es un bloqueo de contenido. Se responde
+      // 409 igual, pero con `blocked: false` y el aviso, para que el panel
+      // ofrezca «Publicar igual» en vez de obligar a corregir.
+      json(res, 409, { error: r.blocked ? "blocked" : "visual_confirm", findings: r.findings });
       return true;
+    }
+    // Lint visual en segundo plano (spec 2, fila `workers`): el release ya
+    // existe, aqui solo se encola. Sin Redis no se encola y no pasa nada; un
+    // fallo al encolar se registra y la publicacion vale igual, que es lo que
+    // exige 6.5 (nunca bloquea, solo informa). No se espera al encolado: la
+    // respuesta no puede quedar colgada por un Redis caido o mudo (el propio
+    // encolado se rinde solo pasado su corte de 2 s).
+    const redisUrl = process.env.REDIS_URL;
+    if (redisUrl) {
+      void import("@webdesign/workers")
+        .then((m) => m.enqueueReleaseLint({ url: redisUrl }, { siteId, version: r.version }))
+        .catch((e: unknown) => {
+          console.warn("lint_enqueue_failed", { siteId, version: r.version, error: (e as Error).message });
+        });
     }
     // Publicar sin enlace en /data/hosts no sirve el sitio: Caddy no consulta
     // la base. Si el pool esta lleno la publicacion vale, pero se avisa para

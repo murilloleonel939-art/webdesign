@@ -64,8 +64,11 @@ h2{font-size:calc(1.8rem * ${s})}
 p{margin:0 0 1em;max-width:68ch}
 a{color:var(--accent)}
 img{max-width:100%;height:auto}
-.btn,.cta a,button[type=submit]{display:inline-block;background:var(--accent);color:var(--ground);padding:.7em 1.3em;border:0;border-radius:var(--radius);font:inherit;font-weight:600;text-decoration:none;cursor:pointer}
-.btn:hover,.cta a:hover,button[type=submit]:hover{filter:brightness(1.08)}
+/* Cta pinta un <a class="cta">, no un enlace dentro de .cta: el selector
+   .cta a nunca casaba y los botones salian como enlace subrayado. Se conserva
+   la forma antigua por si algun preset envuelve el boton. */
+.btn,.cta a,.cta,button[type=submit]{display:inline-block;background:var(--accent);color:var(--ground);padding:.7em 1.3em;border:0;border-radius:var(--radius);font:inherit;font-weight:600;text-decoration:none;cursor:pointer}
+.btn:hover,.cta a:hover,.cta:hover,button[type=submit]:hover{filter:brightness(1.08)}
 /* Formulario de contacto: sin JS y en el mismo origen. */
 .lead-form{display:grid;gap:1rem;max-width:520px;margin-top:1.5rem}
 .lead-form .field{display:grid;gap:.35rem}

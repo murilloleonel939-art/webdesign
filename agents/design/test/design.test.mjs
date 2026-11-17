@@ -1,0 +1,187 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { BudgetTracker, LlmClient } from "@webdesign/llm";
+import { siteDocumentSchema, validateSiteDocument } from "@webdesign/site-schema";
+import { lintSite } from "@webdesign/linter";
+import { renderPage } from "@webdesign/renderer";
+import {
+  BRIEF_FIELDS,
+  PENDING_MARKER,
+  designAgent,
+  draftSite,
+  inventory,
+  normalizeBrief,
+  planSections,
+  runFastDesign,
+} from "../dist/index.js";
+
+// Preset de prueba con la forma exacta del catálogo (migración 0009). No se
+// importa `platform`: el preset entra como DATO.
+const PRESET = {
+  id: "editorial",
+  name: "Editorial",
+  summary: "Clásico con serif y mucho aire",
+  keywords: ["cafeteria", "restaurante"],
+  colors: { ground: "#f7f7f2", ink: "#172033", accent: "#1f4ed8" },
+  typography: { family: "Source Serif 4", scale: "large" },
+  spacing: { margin: 64, sectionGap: 72 },
+  radius: "rounded",
+  sections: [
+    { type: "hero" },
+    { type: "text" },
+    { type: "features" },
+    { type: "testimonial" },
+    { type: "cta" },
+  ],
+  dials: { variance: 5, motion: 4, density: 5 },
+};
+
+const BRIEF = {
+  businessType: "cafetería de especialidad",
+  name: "Café Aurora",
+  city: "Valencia",
+  service: "tueste propio y desayunos",
+  contact: "hola@cafeaurora.test",
+};
+
+const BUDGET = {
+  maxTokens: 100_000,
+  maxToolCalls: 5,
+  maxCostUsd: 1,
+  timeoutMs: 60_000,
+  maxContextTokens: 24_000,
+};
+
+const CTX = (runId) => ({ runId, userId: "u1", token: "t", locale: "es", apiBaseUrl: "http://x" });
+
+/** Transporte falso: ninguna prueba toca la red. */
+function fakeClient(text) {
+  const tracker = new BudgetTracker(BUDGET);
+  const transport = {
+    provider: "fake",
+    calls: 0,
+    async complete() {
+      this.calls += 1;
+      return {
+        text,
+        toolCalls: [],
+        finishReason: "stop",
+        usage: { tokensIn: 10, tokensOut: 5, costUsd: 0 },
+        model: "fake-small",
+        latencyMs: 1,
+      };
+    },
+  };
+  return { client: new LlmClient(transport, tracker), tracker, transport };
+}
+
+test("brief: los campos que faltan quedan como marcador y se listan en pending", () => {
+  const b = normalizeBrief({ name: "Café Aurora", contact: "600 111 222" });
+  assert.equal(b.businessType, PENDING_MARKER);
+  assert.equal(b.city, PENDING_MARKER);
+  assert.deepEqual(b.pending, ["businessType", "city", "service"]);
+  assert.deepEqual(normalizeBrief(BRIEF).pending, []);
+});
+
+test("brief: cubre los cinco campos mínimos de 9.1", () => {
+  assert.deepEqual([...BRIEF_FIELDS], ["businessType", "name", "city", "service", "contact"]);
+});
+
+test("draft: el borrador valida contra site-schema y no inventa contenido", () => {
+  const doc = draftSite(normalizeBrief(BRIEF), PRESET);
+  assert.equal(validateSiteDocument(doc).ok, true);
+
+  const sections = doc.pages[0].sections;
+  assert.equal(sections[0].type, "hero");
+  // Testimonio y ventajas degradan a texto: inventarlos sería fabricar datos.
+  assert.ok(sections.every((s) => s.type !== "testimonial"));
+  assert.ok(sections.every((s) => s.type !== "features"));
+  assert.equal(doc.theme.colors.accent, PRESET.colors.accent);
+
+  // Ningún precio del preset se hereda.
+  const priced = draftSite(normalizeBrief(BRIEF), { ...PRESET, sections: [{ type: "pricing" }] });
+  const plans = priced.pages[0].sections.find((s) => s.type === "pricing").props.plans;
+  assert.notEqual(plans[0].price, "19 €");
+  assert.deepEqual(plans[0].features, []);
+});
+
+test("draft: 6.4 no devuelve ningún error y el marcador llega al HTML", () => {
+  const doc = draftSite(normalizeBrief({ name: "Café Aurora" }), PRESET);
+  assert.deepEqual(lintSite(doc).filter((f) => f.severity === "error"), []);
+  assert.match(renderPage(doc, "p_home"), /pendiente de confirmar/i);
+});
+
+test("inventario: separa lo afirmado de lo que falta, sin interpretar", () => {
+  const inv = inventory(normalizeBrief({ name: "Café Aurora", city: "Valencia" }));
+  assert.deepEqual(inv.known.map((k) => k.field), ["name", "city"]);
+  assert.deepEqual(inv.missing.map((m) => m.field), ["businessType", "service", "contact"]);
+  // El inventario y el borrador no pueden discrepar: ambos leen del mismo brief.
+  assert.deepEqual(inv.missing.map((m) => m.field), normalizeBrief({ name: "Café Aurora", city: "Valencia" }).pending);
+});
+
+test("plan: degrada testimonios y ventajas, omite imágenes sin assets", () => {
+  const plan = planSections(normalizeBrief(BRIEF), PRESET);
+  assert.equal(plan.presetId, PRESET.id);
+  assert.deepEqual(plan.sections.map((s) => s.action), ["write", "write", "degrade", "degrade", "write"]);
+  // Ningún plan puede dejar el documento sin h1.
+  assert.equal(plan.sections[0].as, "hero");
+  const noHero = planSections(normalizeBrief(BRIEF), { ...PRESET, sections: [{ type: "gallery" }, { type: "text" }] });
+  assert.equal(noHero.sections[0].type, "hero");
+  assert.equal(noHero.sections[0].reason, "h1_obligatorio");
+  assert.ok(noHero.sections.some((s) => s.type === "gallery" && s.action === "omit"));
+});
+
+test("agente: definición de modo rápido, sin herramienta de publicar", () => {
+  assert.equal(designAgent.id, "design");
+  assert.equal(designAgent.model, "fast-small");
+  assert.ok(designAgent.budget.maxTokens > 0);
+  assert.ok(!designAgent.tools.some((t) => t.includes("publish")));
+});
+
+test("runFastDesign: una ronda, sin invenciones y con checkpoint", async () => {
+  const { client, tracker, transport } = fakeClient("He aplicado el preset Editorial. Falta confirmar la ciudad.");
+  const out = await runFastDesign({
+    brief: { name: "Café Aurora", businessType: "cafetería de especialidad", city: "Valencia" },
+    presets: [PRESET],
+    client,
+    tracker,
+    ctx: CTX("r1"),
+  });
+
+  assert.equal(transport.calls, 1, "el modo rápido gasta una sola ronda");
+  assert.equal(out.presetId, PRESET.id);
+  assert.deepEqual(out.pending, ["service", "contact"]);
+  assert.equal(siteDocumentSchema.safeParse(out.doc).success, true);
+  assert.ok(out.checkpointId);
+  assert.deepEqual(out.findings6_4.filter((f) => f.severity === "error"), []);
+  // Ni el modelo ni el agente sustituyen el marcador.
+  assert.match(JSON.stringify(out.doc), /pendiente de confirmar/);
+  // El panel recibe el motivo de cada decisión, no una caja negra.
+  assert.ok(out.plan.sections.every((s) => typeof s.reason === "string" && s.reason.length > 0));
+  assert.deepEqual(out.inventory.missing.map((m) => m.field), ["service", "contact"]);
+});
+
+test("runFastDesign: un 6.5 pedido por el dueño se aplica y solo avisa", async () => {
+  const { client, tracker } = fakeClient("Aplicado.");
+  const out = await runFastDesign({
+    brief: BRIEF,
+    presets: [PRESET],
+    client,
+    tracker,
+    ctx: CTX("r2"),
+    ownerRequested: true,
+  });
+  // Sin reversión: el documento sigue completo y válido.
+  assert.equal(validateSiteDocument(out.doc).ok, true);
+  assert.ok(Array.isArray(out.warnings));
+});
+
+test("runFastDesign: un brief sin ningún dato se rechaza en vez de inventarlo", async () => {
+  const { client, tracker } = fakeClient("x");
+  await assert.rejects(runFastDesign({ brief: {}, presets: [PRESET], client, tracker, ctx: CTX("r3") }), /brief vacio/);
+});
+
+test("runFastDesign: sin presets no se inventa una familia nueva", async () => {
+  const { client, tracker } = fakeClient("x");
+  await assert.rejects(runFastDesign({ brief: BRIEF, presets: [], client, tracker, ctx: CTX("r4") }), /no hay presets/);
+});

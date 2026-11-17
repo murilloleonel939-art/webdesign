@@ -146,7 +146,9 @@ function Inbox({ siteId, onClose }: { siteId: string; onClose: () => void }) {
 }
 
 function Editor({ siteId }: { siteId: string }) {
-  const PAGE = new URLSearchParams(location.search).get("page") ?? "p_home"; const [doc, setDoc] = useState<any>(null); const [rev, setRev] = useState(0); const [status, setStatus] = useState("Cargando tu editor…"); const [assets, setAssets] = useState<EditorAsset[]>([]); const [uploading, setUploading] = useState(false); const lastData = useRef<any>(null); const [blockers, setBlockers] = useState<string[]>([]); const [publishedUrl, setPublishedUrl] = useState<string|null>(null);
+  const PAGE = new URLSearchParams(location.search).get("page") ?? "p_home"; const [doc, setDoc] = useState<any>(null); const [rev, setRev] = useState(0); const [status, setStatus] = useState("Cargando tu editor…"); const [assets, setAssets] = useState<EditorAsset[]>([]); const [uploading, setUploading] = useState(false); const lastData = useRef<any>(null); const [blockers, setBlockers] = useState<string[]>([]);
+  // Avisos de estilo (6.5): informan, no bloquean. El dueno decide publicar.
+  const [visualNotice, setVisualNotice] = useState<string[]>([]); const [publishedUrl, setPublishedUrl] = useState<string|null>(null);
   async function refreshAssets() { try { const r = await api(`/api/sites/${siteId}/assets`); if (!r.ok) return; const body = await r.json() as { assets?: EditorAsset[] }; setAssets(Array.isArray(body.assets) ? body.assets : []); } catch { setAssets([]); } }
   async function removeAsset(id: string) { if (!confirm("¿Eliminar esta imagen?")) return; const r = await api(`/api/sites/${siteId}/assets?id=${encodeURIComponent(id)}`, { method: "DELETE" }); if (r.ok) { await refreshAssets(); setStatus("Imagen eliminada"); } }
   async function upload(file: File) { setUploading(true); const r = await api(`/api/sites/${siteId}/assets?kind=image`, { method: "POST", headers: { "content-type": file.type }, body: file }); setUploading(false); if (r.ok) { await refreshAssets(); setStatus("Imagen subida. Copia su ID en el bloque Imagen."); } else {
@@ -189,12 +191,27 @@ function Editor({ siteId }: { siteId: string }) {
   //
   // Cuando la publicacion se bloquea se dice QUE falta. El aviso generico
   // "revisa el contenido" no daba al dueno forma de saber que corregir.
-  async function publish() {
-    setStatus("Publicando…");
+  async function publish(confirmVisual = false) {
+    setStatus(confirmVisual ? "Publicando igual…" : "Publicando…");
     if (pending.current) await save(pending.current);
-    const r = await api(`/api/sites/${siteId}/publish`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+    const r = await api(`/api/sites/${siteId}/publish`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(confirmVisual ? { confirmVisual: true } : {}),
+    });
     if (!r.ok) {
-      const d = await r.json().catch(() => ({})) as { findings?: { code: string; severity?: string }[] };
+      const d = await r.json().catch(() => ({})) as {
+        error?: string;
+        findings?: { code: string; severity?: string }[];
+      };
+      // Spec 6.5: un aviso visual no impide publicar; solo se ensena y se pide
+      // confirmacion. Un bloqueo de contenido (6.4) si obliga a corregir.
+      if (d.error === "visual_confirm") {
+        const visual = (d.findings ?? []).filter((f) => f.severity === "error").map((f) => f.code);
+        setVisualNotice([...new Set(visual)].length ? [...new Set(visual)].map(findingLabel) : ["Hay avisos de estilo"]);
+        setStatus("Puedes publicar igual");
+        return;
+      }
       // Solo los `error` bloquean la publicacion. Antes se listaban tambien
       // avisos e informativos (MISSING_ALT, CTA_MISSING), asi que el dueno veia
       // una lista de fallos que en realidad no le impedian publicar.
@@ -203,6 +220,7 @@ function Editor({ siteId }: { siteId: string }) {
       setStatus("Falta algo para publicar");
       return;
     }
+    setVisualNotice([]);
     const d = await r.json() as { version: number; hostname?: string };
     if (d.hostname) { setPublishedUrl(`https://${d.hostname}`); setStatus("Publicado correctamente"); }
     else setStatus("Publicado, pero sin direccion: no queda sitio en el pool de dominios");
@@ -233,6 +251,12 @@ function Editor({ siteId }: { siteId: string }) {
         <ul>{blockers.map((b) => <li key={b}>{b}</li>)}</ul>
         <button className="ghost" onClick={() => setBlockers([])} aria-label="Cerrar">×</button>
       </div>}
+      {visualNotice.length > 0 && <div className="publish-notice" role="status">
+        <strong>Aviso de estilo (no impide publicar):</strong>
+        <ul>{visualNotice.map((n) => <li key={n}>{n}</li>)}</ul>
+        <button className="primary" onClick={() => void publish(true)}>Publicar igual</button>
+        <button className="ghost" onClick={() => setVisualNotice([])} aria-label="Descartar aviso">×</button>
+      </div>}
       <div className="editor-actions">
         <button className="asset-trigger" aria-expanded={showAssets} onClick={() => setShowAssets(v => !v)}>
           Imágenes {assets.length > 0 && <span className="asset-count">{assets.length}</span>}
@@ -240,7 +264,7 @@ function Editor({ siteId }: { siteId: string }) {
         <button className="ghost" onClick={() => setShowStyles(true)}>Estilos</button>
         <button className="ghost" onClick={() => setShowInbox(true)}>Mensajes {newLeads > 0 && <span className="asset-count">{newLeads}</span>}</button>
         <button className="ghost" onClick={() => setShowPreview(true)}>Vista previa</button>
-        <button className="primary publish" onClick={publish}>Publicar sitio</button>
+        <button className="primary publish" onClick={() => void publish()}>Publicar sitio</button>
       </div>
     </header>
     <div className="editor-body">
