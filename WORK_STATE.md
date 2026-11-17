@@ -451,3 +451,19 @@ obligatorio en `buildEditorConfig` sin que nadie lo leyera: ahora es opcional.
   `isSafeUrl` rechaza `javascript:`, `data:` y `//evil.com`, pero **acepta** una URL con
   comillas (`https://ok.com/"onerror="alert(1)`), que solo queda a salvo por el escape del
   atributo; y rechaza rutas relativas como `/ruta`.
+
+### Avisos de publicacion: codigos crudos y solape
+
+- Sintoma: al publicar, el dueno veia `SLOP_HEADING_SKIP` en ingles y tres avisos pintados uno
+  encima de otro, tapando la biblioteca de imagenes.
+- Causa 1: `findingLabel` (panel.tsx:52) traducia 17 de los **42** codigos; los 25 visuales de
+  `SEVERITY` caian al fallback `?? code`. Ahora estan los 42 (74-98) y el fallback (102) es una
+  frase en castellano, no el codigo.
+- Causa 2: `.publish-blockers` (brand.css:253) y `.publish-notice` (:261) compartian
+  `top:64px;right:24px;z-index:40`. Ahora hay un solo contenedor `.publish-alerts` (panel
+  :308, css:262) en columna bajo la barra, con orden bloqueo -> decision -> estilo; los hijos ya
+  no se posicionan solos.
+- Prueba `apps/platform/test/finding-label.test.mjs`: lee los codigos de `base.ts` y del linter
+  por regex (no los copia) y extrae `findingLabel` con esbuild; falla si algun codigo se queda
+  sin etiqueta o si la etiqueta es el propio codigo. 3/3.
+- Verificado: tsc plataforma 0, tsc UI 0, turbo `typecheck test` **67/67**.

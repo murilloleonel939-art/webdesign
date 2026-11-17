@@ -123,7 +123,7 @@ button{cursor:pointer;border:0;background:none}
 .site-actions{display:flex;align-items:center;gap:6px}
 
 /* Editor */
-.editor-shell{height:100vh;display:flex;flex-direction:column;background:var(--canvas);overflow:hidden}
+.editor-shell{position:relative;height:100vh;display:flex;flex-direction:column;background:var(--canvas);overflow:hidden}
 .editorbar{
   flex:none;height:64px;display:flex;align-items:center;gap:14px;
   padding:0 clamp(14px,2.4vw,26px);background:var(--surface);
@@ -249,16 +249,30 @@ button{cursor:pointer;border:0;background:none}
 .published-url:hover{background:color-mix(in srgb,var(--accent) 22%,transparent)}
 @media (max-width:820px){.published-url{max-width:22ch}}
 
-/* Motivos que impiden publicar: se dice que falta y se deja cerrar. */
-.publish-blockers{position:absolute;top:64px;right:24px;z-index:40;max-width:380px;padding:1rem 1.2rem;border-radius:12px;background:var(--surface,#fff);border:1px solid color-mix(in srgb,var(--ink, #111) 16%,transparent);box-shadow:0 8px 28px rgb(0 0 0 / .16);font-size:.9rem}
+/* Avisos de publicacion: antes "blockers" y "notice" compartian la misma
+   esquina absoluta (top:64px;right:24px) y se pintaban uno encima de otro,
+   tapando ademas la biblioteca de imagenes (.asset-popover). Ahora los tres
+   posibles (bloqueos, otro sitio activo, aviso de estilo) viven dentro de UN
+   contenedor en columna que crece hacia abajo (gap entre ellos, nunca
+   superpuestos). Se ancla bajo la barra (top:76px = 64px de alto + 12px de
+   aire) y a la izquierda (el .asset-popover vive a la derecha, anclado con
+   `right` sobre .editor-body): no tapa ni los botones de la barra ni la
+   biblioteca. El contexto de posicionamiento es .editor-shell (position:
+   relative), que es ancestro tanto de .editorbar como de .editor-body. */
+.publish-alerts{position:absolute;top:76px;left:16px;z-index:40;display:flex;flex-direction:column;gap:12px;max-width:380px}
+
+/* Motivos que impiden publicar: se dice que falta y se deja cerrar. Va
+   primero dentro de .publish-alerts: es lo que bloquea de verdad. */
+.publish-blockers{padding:1rem 1.2rem;border-radius:12px;background:var(--surface,#fff);border:1px solid color-mix(in srgb,var(--ink, #111) 16%,transparent);box-shadow:0 8px 28px rgb(0 0 0 / .16);font-size:.9rem}
 .publish-blockers strong{display:block;margin-bottom:.5rem}
 .publish-blockers ul{margin:0;padding-left:1.1rem}
 .publish-blockers li+li{margin-top:.3rem}
-.publish-blockers button{position:absolute;top:.4rem;right:.5rem;background:none;border:0;font-size:1.1rem;cursor:pointer;color:inherit}
+.publish-blockers button{float:right;margin-top:-.2rem;background:none;border:0;font-size:1.1rem;cursor:pointer;color:inherit}
 
 /* Aviso de estilo (6.5): informa y ofrece publicar igual. No es un bloqueo, y
-   el color y el tono deben dejarlo claro: no se viste como error. */
-.publish-notice{position:absolute;top:64px;right:24px;z-index:40;max-width:400px;padding:1rem 1.2rem;border-radius:12px;background:var(--surface,#fff);border:1px solid color-mix(in srgb,var(--ink, #111) 16%,transparent);border-left:3px solid var(--accent);box-shadow:0 8px 28px rgb(0 0 0 / .16);font-size:.9rem}
+   el color y el tono deben dejarlo claro: no se viste como error. Spec 6.5:
+   este aviso NUNCA bloquea la publicacion. */
+.publish-notice{padding:1rem 1.2rem;border-radius:12px;background:var(--surface,#fff);border:1px solid color-mix(in srgb,var(--ink, #111) 16%,transparent);border-left:3px solid var(--accent);box-shadow:0 8px 28px rgb(0 0 0 / .16);font-size:.9rem}
 .publish-notice strong{display:block;margin-bottom:.4rem;font-weight:600}
 .publish-notice ul{margin:0 0 .8rem;padding-left:1.1rem;color:var(--muted, #555)}
 .publish-notice li+li{margin-top:.3rem}

@@ -69,8 +69,37 @@ function findingLabel(code: string): string {
     DUPLICATE_SLUG: "Dos paginas usan la misma ruta",
     PAGE_TOO_HEAVY: "La pagina pesa demasiado",
     TOO_MANY_IMAGES: "Hay demasiadas imagenes en una seccion",
+    // Linter visual (6.5). Se nombra el efecto que ve el visitante, nunca la
+    // regla: el dueno no tiene por que saber que es un "slop" ni un a11y.
+    SLOP_FONT_MONOCULTURE: "Todo el sitio usa la misma tipografia: los titulos deberian verse distintos",
+    SLOP_GENERIC_GRADIENT: "Los degradados son de plantilla: usa los colores de tu marca",
+    SLOP_NESTED_CARDS: "Hay tarjetas dentro de otras tarjetas: sobra un recuadro",
+    SLOP_ICON_TILE_ABOVE_EVERY_HEADING: "Cada titulo lleva el mismo icono encima: no hace falta repetirlo",
+    SLOP_LOW_CONTRAST_TEXT_ON_COLOR: "Un texto se lee mal sobre su color de fondo",
+    SLOP_HEADING_SKIP: "Los titulos se saltan un nivel: no bajes de h1 a h3",
+    SLOP_PADDING_CRAMPED: "Los bloques estan demasiado apretados: falta aire entre ellos",
+    SLOP_CENTERED_EVERYTHING: "Todo esta centrado: alineado a la izquierda se lee mejor",
+    SLOP_SAME_CARD_RADIUS: "Todas las tarjetas tienen el mismo redondeo: varia unas y otras",
+    SLOP_SHADOW_ON_EVERYTHING: "Todo lleva sombra: dejala solo en lo que debe destacar",
+    SLOP_NO_VISUAL_HIERARCHY: "Nada destaca sobre lo demas: el titulo deberia ser lo mas grande",
+    SLOP_UNRESPONSIVE_GRID: "Una rejilla no se adapta al movil",
+    SLOP_FIXED_WIDTH_OVERFLOW: "Algo es mas ancho que la pantalla: se sale por el lado",
+    SLOP_TOUCH_TARGET_SMALL: "Algun boton es demasiado pequeno para el dedo",
+    SLOP_PLACEHOLDER_TEXT: "Queda texto de relleno en la pagina",
+    A11Y_NO_VISIBLE_FOCUS: "Al navegar con el teclado no se ve donde estas",
+    MOTION_LAYOUT_ANIMATION: "Una animacion mueve el contenido y descoloca la pagina",
+    MOTION_NO_REDUCED_MOTION: "Las animaciones no se apagan si el visitante lo pide",
+    MOTION_DURATION_OUT_OF_RANGE: "Una animacion es tan lenta o tan rapida que molesta",
+    A11Y_CONTROL_NO_ACCESSIBLE_NAME: "Un boton no dice que hace si no se ve la pantalla",
+    A11Y_FIELD_UNLABELED: "Un campo del formulario no tiene etiqueta",
+    A11Y_LINK_VAGUE_TEXT: "Un enlace dice solo «aqui»: mejor el nombre del destino",
+    A11Y_LIST_NOT_SEMANTIC: "Una lista esta hecha a mano: el lector de pantalla no la anuncia",
+    SLOP_Z_INDEX_ARBITRARY: "Hay capas colocadas a ojo: algo puede quedar tapado",
+    SLOP_MULTIPLE_ACCENTS: "Hay varios colores de acento: deja uno solo",
   };
-  return map[code] ?? code;
+  // Ningun codigo nuevo llega crudo al dueno: lo que no este en el mapa se dice
+  // como lo que es, algo a revisar, sin gritarle un SLOP_ALGO en ingles.
+  return map[code] ?? "Hay algo que revisar en esta pagina: revisa los bloques antes de publicar";
 }
 
 // Puck monta el lienzo en un iframe, asi que hereda el CSS del panel pero no el
@@ -271,24 +300,31 @@ function Editor({ siteId }: { siteId: string }) {
       <span className="divider"/>
       <span className="editor-status">{status}</span>
       {publishedUrl && <a className="published-url" href={publishedUrl} target="_blank" rel="noreferrer">Tu sitio: {publishedUrl.replace("https://", "")}</a>}
-      {blockers.length > 0 && <div className="publish-blockers" role="alert">
-        <strong>Para publicar falta:</strong>
-        <ul>{blockers.map((b) => <li key={b}>{b}</li>)}</ul>
-        <button className="ghost" onClick={() => setBlockers([])} aria-label="Cerrar">×</button>
-      </div>}
-      {activeElsewhere && <div className="publish-notice" role="status">
-        <strong>Ya tienes un sitio publicado:</strong>
-        <ul><li>«{activeElsewhere.name}» está publicado ahora mismo. Tu cuenta solo puede tener uno publicado a la vez.</li></ul>
-        {activeElsewhere.id
-          ? <button className="primary" onClick={() => void unpublishAndRetry(activeElsewhere.id)}>Despublicar «{activeElsewhere.name}» y publicar este</button>
-          : <span className="muted small">Abre el otro sitio y despublícalo desde ahí.</span>}
-        <button className="ghost" onClick={() => setActiveElsewhere(null)} aria-label="Descartar aviso">×</button>
-      </div>}
-      {visualNotice.length > 0 && <div className="publish-notice" role="status">
-        <strong>Aviso de estilo (no impide publicar):</strong>
-        <ul>{visualNotice.map((n) => <li key={n}>{n}</li>)}</ul>
-        <button className="primary" onClick={() => void publish(true)}>Publicar igual</button>
-        <button className="ghost" onClick={() => setVisualNotice([])} aria-label="Descartar aviso">×</button>
+      {/* Un unico contenedor en columna: antes "blockers" y "notice" compartian
+          la misma esquina absoluta y se pintaban encima uno de otro, tapando
+          ademas la biblioteca de imagenes. Orden de lectura: primero lo que
+          bloquea, luego lo que exige decision, al final el aviso de estilo
+          (spec 6.5: este ultimo nunca bloquea la publicacion). */}
+      {(blockers.length > 0 || activeElsewhere || visualNotice.length > 0) && <div className="publish-alerts">
+        {blockers.length > 0 && <div className="publish-blockers" role="alert">
+          <strong>Para publicar falta:</strong>
+          <ul>{blockers.map((b) => <li key={b}>{b}</li>)}</ul>
+          <button className="ghost" onClick={() => setBlockers([])} aria-label="Cerrar">×</button>
+        </div>}
+        {activeElsewhere && <div className="publish-notice" role="status">
+          <strong>Ya tienes un sitio publicado:</strong>
+          <ul><li>«{activeElsewhere.name}» está publicado ahora mismo. Tu cuenta solo puede tener uno publicado a la vez.</li></ul>
+          {activeElsewhere.id
+            ? <button className="primary" onClick={() => void unpublishAndRetry(activeElsewhere.id)}>Despublicar «{activeElsewhere.name}» y publicar este</button>
+            : <span className="muted small">Abre el otro sitio y despublícalo desde ahí.</span>}
+          <button className="ghost" onClick={() => setActiveElsewhere(null)} aria-label="Descartar aviso">×</button>
+        </div>}
+        {visualNotice.length > 0 && <div className="publish-notice" role="status">
+          <strong>Aviso de estilo (no impide publicar):</strong>
+          <ul>{visualNotice.map((n) => <li key={n}>{n}</li>)}</ul>
+          <button className="primary" onClick={() => void publish(true)}>Publicar igual</button>
+          <button className="ghost" onClick={() => setVisualNotice([])} aria-label="Descartar aviso">×</button>
+        </div>}
       </div>}
       <div className="editor-actions">
         <button className="asset-trigger" aria-expanded={showAssets} onClick={() => setShowAssets(v => !v)}>
