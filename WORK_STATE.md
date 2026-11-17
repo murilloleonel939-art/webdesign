@@ -380,6 +380,14 @@ obligatorio en `buildEditorConfig` sin que nadie lo leyera: ahora es opcional.
   2. `ioredis` es peer **opcional** de bullmq 6 y no estaba instalado: el worker nunca habria
      conectado. Añadido `ioredis@5.11.1`; la prueba ya no acepta "falta el driver" como valido.
 - Verificado: workers 14/14; `turbo typecheck test --force` **67/67**; UI tsc 0.
-- Pendiente (deuda): aplicar 0014–0017 contra Postgres real (CI o produccion), servicio
-  `workers` en Coolify. Seguridad a vigilar: la marca `app.release_lint` da SELECT a todos los
+- **Desplegado** (`3fc0b5c`, 16-nov-2026): solo plataforma; `deploy/caddy` no cambió, asi que
+  Caddy no se redespliega. `/healthz` da 200 y las migraciones **0014, 0015, 0016 y 0017 se
+  aplicaron** al arrancar (confirmado por el log del despliegue).
+- `workers` creado en Coolify (Redis 8, usuario `default`); log: `escuchando la cola lint-release`.
+- **502 al publicar (17-nov)**: plataforma moria al encolar. El cliente ioredis conectaba sin
+  oyente de `error`; con `WRONGPASS` eso es excepcion no capturada. Arreglo: cliente propio con
+  `lazyConnect` y oyente antes de `connect()`, y el encolado va en `setImmediate` DESPUES de
+  responder. Workers 16/16, turbo `--force` 67/67. Pendiente: verificar filas en
+  `release_lint_findings` tras publicar.
+  Seguridad a vigilar: la marca `app.release_lint` da SELECT a todos los
   `site_versions`; mismo modelo de confianza que `app.user_id` (solo la pone el servidor).

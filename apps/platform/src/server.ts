@@ -666,20 +666,6 @@ async function handleApi(pool: import("pg").Pool, sitesRoot: string, req: Incomi
       json(res, 409, { error: r.blocked ? "blocked" : "visual_confirm", findings: r.findings });
       return true;
     }
-    // Lint visual en segundo plano (spec 2, fila `workers`): el release ya
-    // existe, aqui solo se encola. Sin Redis no se encola y no pasa nada; un
-    // fallo al encolar se registra y la publicacion vale igual, que es lo que
-    // exige 6.5 (nunca bloquea, solo informa). No se espera al encolado: la
-    // respuesta no puede quedar colgada por un Redis caido o mudo (el propio
-    // encolado se rinde solo pasado su corte de 2 s).
-    const redisUrl = process.env.REDIS_URL;
-    if (redisUrl) {
-      void import("@webdesign/workers")
-        .then((m) => m.enqueueReleaseLint({ url: redisUrl }, { siteId, version: r.version }))
-        .catch((e: unknown) => {
-          console.warn("lint_enqueue_failed", { siteId, version: r.version, error: (e as Error).message });
-        });
-    }
     // Publicar sin enlace en /data/hosts no sirve el sitio: Caddy no consulta
     // la base. Si el pool esta lleno la publicacion vale, pero se avisa para
     // que no parezca que el sitio ya esta en la red.
@@ -698,6 +684,23 @@ async function handleApi(pool: import("pg").Pool, sitesRoot: string, req: Incomi
       console.error("hostname_failed", { siteId, error: (e as Error).message });
     }
     json(res, 200, { version: r.version, findings: r.findings, ...(hostname ? { hostname } : {}) });
+    // Lint visual en segundo plano (spec 2, fila `workers`): el release ya
+    // existe, aqui solo se encola, y DESPUES de responder. Encolar antes dejaba
+    // la respuesta a merced de Redis: si al conectar reventaba el proceso (error
+    // de socket sin oyente), el panel recibia un 502 y el release aparecia como
+    // fallido aunque estuviera publicado. Sin Redis no se encola y no pasa nada;
+    // un fallo al encolar se registra y la publicacion vale igual, que es lo que
+    // exige 6.5 (nunca bloquea, solo informa).
+    const redisUrl = process.env.REDIS_URL;
+    if (redisUrl) {
+      setImmediate(() => {
+        void import("@webdesign/workers")
+          .then((m) => m.enqueueReleaseLint({ url: redisUrl }, { siteId, version: r.version }))
+          .catch((e: unknown) => {
+            console.warn("lint_enqueue_failed", { siteId, version: r.version, error: String((e && (e as Error).message) || e) });
+          });
+      });
+    }
     return true;
   }
 

@@ -75,3 +75,70 @@ test("el proceso termina: ni el temporizador ni la conexion lo retienen", async 
   assert.match(salida, MOTIVO_RED, salida);
   assert.doesNotMatch(salida, FALTA_DRIVER, salida);
 });
+
+// Corre un hijo `node --input-type=module` que importa `@webdesign/workers` por
+// su nombre de paquete (igual que `platform` al publicar) y devuelve codigo +
+// salida. `cwd` es `apps/platform` porque es ahi donde el enlace del paquete
+// existe de verdad: es el consumidor real del encolado.
+function hijoQueEncola(script) {
+  const hijo = spawn(process.execPath, ["--input-type=module", "-e", script], {
+    cwd: new URL("../../platform", import.meta.url),
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let salida = "";
+  hijo.stdout.on("data", (b) => { salida += String(b); });
+  hijo.stderr.on("data", (b) => { salida += String(b); });
+  return new Promise((resolve, reject) => {
+    const corte = setTimeout(() => {
+      hijo.kill("SIGKILL");
+      reject(new Error(`el hijo no termino: ${salida}`));
+    }, 15_000);
+    corte.unref();
+    hijo.on("exit", (code) => { clearTimeout(corte); resolve({ codigo: code, salida }); });
+    hijo.on("error", reject);
+  });
+}
+
+test("un encolado fallido NO tumba el proceso (502 en produccion)", async () => {
+  // El defecto: el cliente de Redis se construia y conectaba antes de que
+  // existiera un oyente de `error`, asi que un error de conexion se emitia sin
+  // nadie escuchando y Node mataba el proceso en plena publicacion (502 del
+  // proxy). Aqui se exige que el rechazo se capture y el hijo salga con 0.
+  const { codigo, salida } = await hijoQueEncola(`
+    const m = await import("@webdesign/workers");
+    await m.enqueueReleaseLint({ url: ${JSON.stringify(CERRADO)} }, { siteId: ${JSON.stringify(SITE)}, version: 3 })
+      .then(() => { console.log("encolado"); })
+      .catch((e) => { console.log("rechazo:" + e.message); });
+  `);
+  assert.equal(codigo, 0, `el proceso murio con el encolado fallido: ${salida}`);
+  assert.match(salida, /rechazo:/, salida);
+  assert.match(salida, MOTIVO_RED, salida);
+  // `[ioredis] Unhandled error event` es la firma del defecto: error emitido sin
+  // oyente. Si aparece, el oyente no estaba registrado antes de conectar.
+  assert.doesNotMatch(salida, /Unhandled error event/, salida);
+  assert.doesNotMatch(salida, FALTA_DRIVER, salida);
+});
+
+test("un Redis que acepta y corta el socket tampoco mata el proceso", async () => {
+  // Peor caso que el puerto cerrado: el servidor acepta la conexion y la cierra
+  // al instante, asi que ioredis recibe el error *despues* de conectar y con el
+  // socket ya en marcha. Es la forma exacta que tuvo el fallo en produccion.
+  const net = await import("node:net");
+  const srv = net.createServer((s) => { s.destroy(); });
+  await new Promise((resolve) => { srv.listen(0, "127.0.0.1", resolve); });
+  srv.unref();
+  const { port } = srv.address();
+  try {
+    const { codigo, salida } = await hijoQueEncola(`
+      const m = await import("@webdesign/workers");
+      await m.enqueueReleaseLint({ url: "redis://127.0.0.1:${port}" }, { siteId: ${JSON.stringify(SITE)}, version: 4 })
+        .then(() => { console.log("encolado"); })
+        .catch((e) => { console.log("rechazo:" + e.message); });
+    `);
+    assert.equal(codigo, 0, `el proceso murio con el socket cortado: ${salida}`);
+    assert.match(salida, /rechazo:|encolado/, salida);
+    assert.doesNotMatch(salida, /Unhandled error event/, salida);
+  } finally {
+    srv.close();
+  }
+});

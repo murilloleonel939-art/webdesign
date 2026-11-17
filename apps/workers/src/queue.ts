@@ -1,4 +1,5 @@
-import { Queue, Worker, type Job } from "bullmq";
+import { Redis } from "ioredis";
+import { Queue, Worker, type Job, type ConnectionOptions } from "bullmq";
 import type { LintDeps, LintJob } from "./lint-job.js";
 import { processLintJob } from "./lint-job.js";
 
@@ -25,26 +26,38 @@ export function enqueueReleaseLint(
   opts?: { timeoutMs?: number },
 ): Promise<Job<LintJob>> {
   const timeoutMs = opts?.timeoutMs ?? ENQUEUE_TIMEOUT_MS;
-  // La cola se crea y se cierra por encargo: el productor es una peticion HTTP
-  // del panel y no puede dejar conexiones abiertas al terminar. La conexion
-  // falla rapido a proposito: sin cola offline, un reintento acotado y un
-  // `connectTimeout` igual al corte, Redis caido o mudo no cuelga la peticion.
-  const queue = new Queue<LintJob>(LINT_QUEUE, {
-    connection: {
-      url: connection.url,
-      enableOfflineQueue: false,
-      maxRetriesPerRequest: 1,
-      connectTimeout: timeoutMs,
-    },
-  });
-  // Un error de conexion sin oyente seria una excepcion no capturada.
-  queue.on("error", () => {});
+  // El cliente se crea aqui, fuera del `Queue`, para poder escuchar `error`
+  // ANTES de que exista el socket. Con `new Queue(..., { connection: { url } })`
+  // ioredis se construye y conecta en el acto, y un error de conexion emitido en
+  // esa ventana no lo veia ningun oyente: el proceso moria al pulsar publicar y
+  // el proxy devolvia 502. Con `lazyConnect` la conexion empieza en el
+  // `connect()` de abajo, cuando el oyente ya esta registrado.
+  //
+  // La conexion falla rapido a proposito: sin cola offline, `maxRetriesPerRequest`
+  // nulo (lo que BullMQ exige al recibir un cliente ya construido) y un
+  // `connectTimeout` igual al corte; Redis caido o mudo no cuelga la peticion.
+  // Una sola conexion para el `Queue`: al cortarla en el `.finally` no queda
+  // ningun socket que mantenga vivo el proceso.
+  let client: Redis | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error("lint_enqueue_timeout")), timeoutMs);
-  });
-  return Promise.race([
-    queue.add("lint-release", job, {
+  const encolado = (async () => {
+    const c = new Redis(connection.url, {
+      maxRetriesPerRequest: null,
+      enableOfflineQueue: false,
+      connectTimeout: timeoutMs,
+      lazyConnect: true,
+    });
+    client = c;
+    // Primero el oyente, despues la conexion. Un error de conexion sin oyente
+    // seria una excepcion no capturada.
+    c.on("error", () => {});
+    await c.connect();
+    const queue = new Queue<LintJob>(LINT_QUEUE, {
+      connection: c as unknown as ConnectionOptions,
+    });
+    // El `Queue` reemite los errores de su backend: mismo motivo que arriba.
+    queue.on("error", () => {});
+    return queue.add("lint-release", job, {
       // El mismo release no se analiza dos veces: si ya hay job, no entra otro.
       jobId: lintJobId(job),
       attempts: 3,
@@ -53,17 +66,20 @@ export function enqueueReleaseLint(
       backoff: { type: "exponential", delay: 1000 },
       removeOnComplete: { age: 24 * 3600 },
       removeOnFail: { age: 7 * 24 * 3600 },
-    }),
-    timeout,
-  ])
+    });
+  })();
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error("lint_enqueue_timeout")), timeoutMs);
+  });
+  return Promise.race([encolado, timeout])
     // El temporizador se limpia en todos los caminos: si gana `add`, no queda
     // un `setTimeout` pendiente manteniendo vivo el proceso.
     .finally(() => {
       clearTimeout(timer);
-      // Un `close` que no termina (socket mudo) no debe bloquear ni retener el
-      // proceso: se lanza sin espera; `disconnect` corta el socket de raiz si
-      // el cierre ordenado se queda a medias.
-      void queue.close().catch(() => queue.disconnect().catch(() => {}));
+      // `disconnect` corta el socket de raiz y no espera: un Redis mudo no debe
+      // bloquear ni retener el proceso. Como el `Queue` usa este mismo cliente,
+      // cerrarlo cierra tambien la conexion de la cola.
+      client?.disconnect();
     });
 }
 
