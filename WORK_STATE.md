@@ -433,3 +433,21 @@ obligatorio en `buildEditorConfig` sin que nadie lo leyera: ahora es opcional.
   Postgres) y `apps/platform/test/another-active.test.mjs` (con DB, gateada por `DB_TEST_URL`:
   409 con nombre, `/healthz` vivo despues, unpublish idempotente, publicar tras despublicar).
 - Verificado: tsc plataforma 0, tsc UI 0, turbo `typecheck test --force` **67/67**, 0 fallos.
+
+### Skill de seguridad (Cloudflare, MIT)
+
+- Instalada en `.dsh/skills/security-audit/` (el harness descubre skills de proyecto en
+  `.dsh/skills/<nombre>/SKILL.md` y `.agents/skills/...`; se eligio la primera). 22 archivos,
+  368K. `LICENSE` MIT conservada.
+- `PROJECT-SCOPE.md` es **nuestro**, no del upstream: fija las cinco clases que aplican
+  (DATA-ISOLATION, WEB-PROTOCOL-AND-AUTH, CLIENT-SIDE, RESOURCE-EXHAUSTION, SUPPLY-CHAIN),
+  excluye MEMORY-SAFETY y DESKTOP-MOBILE-AND-LOCAL-IPC, y prohibe auditar produccion.
+- `AGENTS.md` la referencia con esa misma prohibicion. Es la unica forma de que se sepa que
+  existe sin buscarla.
+- Sus validadores (`validate-findings.cjs`, `validate-coverage-ledger.cjs`) pasan 65/65 aqui.
+- **Uso previsto**: auditar el codigo del repositorio. NO es un escaner que corra dentro de la
+  app al publicar; eso son reglas deterministas de `lint-visual`/`linter`, aparte.
+- Comprobado a mano en esta sesion: `escapeHtml` escapa `& < > " '` (renderer:36-43) y
+  `isSafeUrl` rechaza `javascript:`, `data:` y `//evil.com`, pero **acepta** una URL con
+  comillas (`https://ok.com/"onerror="alert(1)`), que solo queda a salvo por el escape del
+  atributo; y rechaza rutas relativas como `/ruta`.
