@@ -6,14 +6,15 @@ import type { VisualLintOptions } from "./base.js";
 import type { Ctx } from "./typography.js";
 import {
   fontMonoculture, genericGradient, headingSkip, lowContrastOnColor,
-  noVisualHierarchy, paddingCramped, touchTargetSmall,
+  multipleAccents, noVisualHierarchy, paddingCramped, touchTargetSmall,
 } from "./typography.js";
 import {
+  controlNoAccessibleName, fieldUnlabeled, linkVagueText, listNotSemantic,
   motionDurationOutOfRange, motionLayoutAnimation, motionNoReducedMotion, noVisibleFocus,
 } from "./a11y.js";
 import {
   centeredEverything, fixedWidthOverflow, iconTileAboveHeadings, nestedCards,
-  placeholderText, sameCardRadius, shadowOnEverything, unresponsiveGrid,
+  placeholderText, sameCardRadius, shadowOnEverything, unresponsiveGrid, zIndexArbitrary,
 } from "./structure.js";
 
 // Linter de calidad visual (spec 6.5). Actua sobre el HTML del release, justo
@@ -48,6 +49,13 @@ const RULES = [
   motionLayoutAnimation,
   motionNoReducedMotion,
   motionDurationOutOfRange,
+  // Ampliacion ui-skills (ver NOTICE): semantica y nombres accesibles.
+  controlNoAccessibleName,
+  fieldUnlabeled,
+  linkVagueText,
+  listNotSemantic,
+  multipleAccents,
+  zIndexArbitrary,
 ];
 
 const RANK: Record<string, number> = { error: 0, warning: 1, info: 2 };

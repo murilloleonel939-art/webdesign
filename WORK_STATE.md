@@ -391,3 +391,17 @@ obligatorio en `buildEditorConfig` sin que nadie lo leyera: ahora es opcional.
   `release_lint_findings` tras publicar.
   Seguridad a vigilar: la marca `app.release_lint` da SELECT a todos los
   `site_versions`; mismo modelo de confianza que `app.user_id` (solo la pone el servidor).
+
+### ui-skills (MIT) — incorporado
+
+- Fuente: `ibelick/ui-skills`, skills `baseline-ui` y `fixing-accessibility`. Se reescribieron
+  las ideas: sin dependencia, sin runtime, sin copiar codigo. Atribucion MIT en `NOTICE`.
+- 6 reglas deterministas nuevas en `lint-visual`: `A11Y_CONTROL_NO_ACCESSIBLE_NAME` (error),
+  `A11Y_FIELD_UNLABELED` (error), `A11Y_LINK_VAGUE_TEXT` (warning), `A11Y_LIST_NOT_SEMANTIC`
+  (warning), `SLOP_Z_INDEX_ARBITRARY` (warning), `SLOP_MULTIPLE_ACCENTS` (info). 13 pruebas,
+  48/48 en el paquete.
+- `0018_design_ux_rules_ui_skills.sql`: 8 reglas en `design_ux_rules` y 3 antipatrones, con
+  `source`/`license`/`license_url`/`verified_at`. Los `lint_code` enlazan codigos que existen.
+- **Descartado a proposito** (stack que no tenemos): Tailwind, `motion/react`, `cn`,
+  `will-change`, `backdrop-filter`, `h-dvh`, `safe-area-inset`, y todo lo de dialogos, menus,
+  pestañas y tablas, que el renderer no genera. No se anaden reglas que devolverian `[]` siempre.

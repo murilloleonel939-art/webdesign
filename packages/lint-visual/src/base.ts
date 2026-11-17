@@ -45,6 +45,18 @@ const SEVERITY: Record<string, Severity> = {
   MOTION_LAYOUT_ANIMATION: "warning",
   MOTION_NO_REDUCED_MOTION: "warning",
   MOTION_DURATION_OUT_OF_RANGE: "info",
+  // Ampliacion ui-skills (ver NOTICE): nombre accesible, etiquetas de campo,
+  // texto de enlace y semantica de lista. Un control o un campo sin nombre
+  // quedan inutilizables para quien no ve la pantalla: son `error`. El texto
+  // de enlace y la lista sin semantica son calidad: `warning`.
+  A11Y_CONTROL_NO_ACCESSIBLE_NAME: "error",
+  A11Y_FIELD_UNLABELED: "error",
+  A11Y_LINK_VAGUE_TEXT: "warning",
+  A11Y_LIST_NOT_SEMANTIC: "warning",
+  // Acento unico y escala de `z-index`: son tics de plantilla, no defectos de
+  // uso. Avisan sin exigir confirmacion.
+  SLOP_Z_INDEX_ARBITRARY: "warning",
+  SLOP_MULTIPLE_ACCENTS: "info",
 };
 
 export function finding(code: string, message: string, extra: Partial<LintFinding> = {}): LintFinding {

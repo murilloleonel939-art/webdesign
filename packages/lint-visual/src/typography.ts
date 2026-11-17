@@ -1,4 +1,4 @@
-import { contrastRatio, finding, relativeSize, sectionOf, solidColor, toPx } from "./base.js";
+import { contrastRatio, finding, relativeSize, resolveVars, sectionOf, solidColor, toPx } from "./base.js";
 import type { VisualLintOptions } from "./base.js";
 import type { LintFinding } from "@webdesign/linter";
 
@@ -130,6 +130,63 @@ export function lowContrastOnColor(ctx: Ctx): LintFinding[] {
     out.push(finding("SLOP_LOW_CONTRAST_TEXT_ON_COLOR", "contrast_below_4_5", {
       fixHint: "raise_contrast",
       ...(section ? { sectionId: section } : {}),
+    }));
+  }
+  return out;
+}
+
+// Colores que no son una eleccion de paleta: no cuentan como acento.
+const NON_ACCENT = new Set(["transparent", "inherit", "currentcolor", "unset", "initial", "none"]);
+
+/**
+ * SLOP_MULTIPLE_ACCENTS: mas de un acento distinto en la misma pagina.
+ *
+ * Un acento pierde fuerza en cuanto hay dos: si el boton es azul, el enlace
+ * morado y el CTA verde, nada destaca y la pagina parece cosida de trozos.
+ *
+ * Solo cuenta lo que el dueno ve como acento: el fondo de un boton o CTA y el
+ * color del texto de un enlace. Con cero o uno no hay nada que reportar.
+ */
+export function multipleAccents(ctx: Ctx): LintFinding[] {
+  const found = new Map<string, string>(); // color normalizado -> primer elemento
+  const read = (el: Element, prop: string): string | undefined => {
+    const raw = styleOf(ctx, el)[prop];
+    if (!raw) return undefined;
+    const value = resolveVars(raw, ctx.vars).trim().toLowerCase();
+    if (!value || NON_ACCENT.has(value)) return undefined;
+    return solidColor(value);
+  };
+  const push = (el: Element, color: string | undefined): void => {
+    if (!color) return;
+    if (!found.has(color)) found.set(color, sectionOf(el) ?? "page");
+  };
+
+  for (const el of Array.from(ctx.doc.querySelectorAll("button, [role=button], input[type=submit]"))) {
+    push(el, read(el, "background-color") ?? read(el, "background"));
+  }
+  // Un enlace que se pinta como boton manda su fondo; uno normal, su tinta.
+  for (const el of Array.from(ctx.doc.querySelectorAll("a[href]"))) {
+    const bg = read(el, "background-color") ?? read(el, "background");
+    if (bg) {
+      push(el, bg);
+      continue;
+    }
+    push(el, read(el, "color"));
+  }
+  if (found.size < 2) return [];
+
+  // Un aviso por acento sobrante: el segundo color ya rompe la jerarquia, y el
+  // `sectionId` dice donde aparece para que el dueno lo encuentre.
+  const out: LintFinding[] = [];
+  let first = true;
+  for (const [, section] of found) {
+    if (first) {
+      first = false;
+      continue;
+    }
+    out.push(finding("SLOP_MULTIPLE_ACCENTS", "more_than_one_accent_color", {
+      fixHint: "use_single_accent",
+      ...(section !== "page" ? { sectionId: section } : {}),
     }));
   }
   return out;

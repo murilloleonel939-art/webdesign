@@ -187,6 +187,42 @@ export function fixedWidthOverflow(ctx: Ctx): LintFinding[] {
   return out;
 }
 
+// Escala de profundidad permitida. Un `z-index` fuera de ella no es una
+// decision de diseno: es un numero elegido para ganar una discusion.
+const Z_SCALE = new Set(["-50", "-40", "-30", "-20", "-10", "0", "10", "20", "30", "40", "50"]);
+
+/**
+ * SLOP_Z_INDEX_ARBITRARY: un `z-index` suelto fuera de la escala.
+ *
+ * Valores como `z-index: 9999` se acumulan hasta que nadie sabe quien tapa a
+ * quien y aparece un elemento por encima de una cabecera fija. Con una escala
+ * corta el orden es legible y se puede razonar sobre el.
+ *
+ * Se leen los estilos ya resueltos (`ctx.styles`), no el CSS crudo: asi cuenta
+ * tambien lo que llega por `style=`.
+ */
+export function zIndexArbitrary(ctx: Ctx): LintFinding[] {
+  const out: LintFinding[] = [];
+  const seen = new Set<string>();
+  for (const [el, decls] of ctx.styles) {
+    const raw = decls["z-index"];
+    if (raw === undefined) continue;
+    const value = raw.trim().toLowerCase();
+    // `auto` es el valor inicial: no hay profundidad que juzgar.
+    if (value === "auto" || value === "inherit" || value === "initial") continue;
+    if (Z_SCALE.has(value)) continue;
+    const section = sectionOf(el);
+    const key = section ?? "page";
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(finding("SLOP_Z_INDEX_ARBITRARY", "z_index_outside_scale", {
+      fixHint: "use_z_index_scale",
+      ...(section ? { sectionId: section } : {}),
+    }));
+  }
+  return out;
+}
+
 /** Textos de relleno que no deben llegar a la version publicada. */
 const PLACEHOLDERS = [/lorem ipsum/i, /pendiente de confirmar/i, /\bTODO\b/, /\bXXX\b/, /texto de ejemplo/i];
 

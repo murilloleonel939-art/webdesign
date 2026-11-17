@@ -8,7 +8,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node --test test/visual.test.mjs test/release.test.mjs test/a11y.test.mjs"
+    "test": "node --test test/visual.test.mjs test/release.test.mjs test/a11y.test.mjs test/ui-skills.test.mjs"
   },
   "dependencies": {
     "@webdesign/linter": "workspace:*",
