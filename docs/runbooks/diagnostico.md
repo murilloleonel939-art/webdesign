@@ -65,6 +65,47 @@ Salida esperada, resumida:
 Los `error`/`note` del informe son **códigos fijos**, nunca el mensaje del driver: este
 último puede arrastrar host, usuario o SQL. El detalle real se registra solo en el servidor.
 
+## Cambiar el modelo del agente de diseño sin tocar código
+
+El alias interno `design` (catálogo en `packages/llm/src/index.ts:90`, id
+`claude-sonnet-5`) no cambia: todo el sistema sigue pidiendo `design`. Lo que se cambia es a qué
+id real lo traduce **`llm-gateway`**, con variables de entorno del contenedor. No hace falta
+desplegar ni editar código; basta redeploy del recurso para que el contenedor tome el valor.
+
+| Variable | Efecto | Validación | Si no es válida |
+| --- | --- | --- | --- |
+| `LLM_DESIGN_MODEL` | Id real que se envía al proveedor en `body.model` para el alias `design` | Recortada, solo `[A-Za-z0-9._:/-]`, máximo 100 caracteres | Aviso en el log al arrancar y se usa `claude-sonnet-5` del catálogo |
+| `LLM_DESIGN_USD_IN_PER_M` | Precio de **entrada** por millón de tokens, para el coste de `design` | Número > 0 | Aviso y se usan los dos precios del catálogo |
+| `LLM_DESIGN_USD_OUT_PER_M` | Precio de **salida** por millón de tokens, para el coste de `design` | Número > 0 | Aviso y se usan los dos precios del catálogo |
+
+Notas que importan al operar:
+
+- Las dos variables de precio van **juntas**. Con una sola definida se avisa y se usan las del
+  catálogo: mezclar un precio del dueño con uno del catálogo daría un coste que no corresponde a
+  ningún modelo.
+- Sin ninguna de las tres variables, el comportamiento es el de siempre (catálogo). Ninguna
+  variable mal puesta tumba el proceso: siempre hay un valor efectivo.
+- El coste se cuenta **solo** en `llm-gateway` (es quien escribe el coste persistido en
+  `usage_events`) y `usage_events.model` guarda el **id real enviado**, no el alias.
+- Nunca se registra `LLM_PROVIDER_API_KEY` ni el valor crudo de estas variables: el aviso nombra
+  la variable, no su contenido.
+
+Al arrancar, una línea dice qué modelo se está usando y de dónde salió:
+
+```
+llm-gateway: modelo design = claude-sonnet-5 (catalogo)
+llm-gateway: modelo design = claude-opus-x (variable)
+```
+
+Comprobar que el cambio tomó efecto:
+
+```bash
+docker logs <contenedor-llm-gateway> 2>&1 | grep "modelo design"
+```
+
+Si aparece `(catalogo)` cuando esperabas `(variable)`, el valor no pasó la validación: busca en el
+mismo log la línea `llm-gateway: aviso: LLM_DESIGN_MODEL no es un id valido; ...`.
+
 ## Códigos de estado
 
 - **200** — conecta y no falta ninguna migración esperada.

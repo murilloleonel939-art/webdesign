@@ -557,3 +557,36 @@ Verificador dio rojo; corregido punto por punto:
   para que importarlo desde la prueba no abra puerto ni toque la base.
 - **Grep limpio**: cero apariciones de la variable de clave anterior y del host del proveedor
   anterior fuera de `node_modules`/`dist`. Documentado en `docs/runbooks/diagnostico.md`.
+
+## CORTE 9: el modelo del agente de diseno se cambia por entorno, sin codigo — hecho
+
+- **Orden**: el dueno cambia el modelo real del agente de diseno con una variable en el
+  contenedor `llm-gateway`. El alias interno `design` (`packages/llm/src/index.ts:90`, id
+  `claude-sonnet-5`) **se mantiene**: el resto del sistema sigue hablando en alias y el catalogo
+  de `packages/llm` no se toca (`sync-tools.sh.fixed` y migraciones intactos).
+- **Modelo por entorno** (`apps/llm-gateway/src/server.ts`): funcion pura exportada
+  `providerModelId(alias, env)`. Para `design`, si `LLM_DESIGN_MODEL` existe, no esta vacia,
+  recortada cumple `[A-Za-z0-9._:/-]` y mide <= 100, se envia ese id al proveedor; si no, el del
+  catalogo. `HttpTransport.complete` y el camino HTTP del servidor la usan en lugar de
+  `resolveModel(req.model).id`. Un valor invalido nunca cae el proceso: se ignora.
+- **Coste por entorno**: `designPricing(env)` / `gatewayCostOf(alias, in, out, env)`. Con
+  `LLM_DESIGN_USD_IN_PER_M` y `LLM_DESIGN_USD_OUT_PER_M` (numero > 0, **por millon** de tokens,
+  convertido a por token) el coste del gateway para `design` usa esos valores; si faltan, no son
+  numeros o esta solo una de las dos, se usan los dos del catalogo. Solo en `llm-gateway`, que es
+  quien cuenta el coste persistido; `LlmClient` sigue con `costOf`.
+- **Arranque**: una linea `llm-gateway: modelo design = <id> (variable|catalogo)` y, si algo no
+  valida, un `llm-gateway: aviso: ...` que nombra la variable, nunca su valor ni la clave
+  `LLM_PROVIDER_API_KEY`.
+- **`usage_events`**: `recordUsage` guarda el **id real enviado** (antes en error guardaba el del
+  catalogo y en exito el que devolvia el cliente); la respuesta 200 tambien devuelve ese id.
+- **Pruebas**: `apps/llm-gateway/test/provider.test.mjs` pasa de 5 a 11 casos, sin red y con
+  `fetch` doble: con `LLM_DESIGN_MODEL=claude-opus-x` el `body.model` es ese; sin la variable es
+  `claude-sonnet-5`; espacio, salto de linea, 101 caracteres y `;` caen al catalogo; la funcion es
+  pura (otro alias ignora la variable, `"  x  "` se recorta, alias desconocido lanza); precios por
+  variable cambian `gatewayCostOf` (10/40 USD por millon) y un precio invalido o a medias usa el
+  catalogo y avisa. Ya estaba registrado en el script `test` del paquete.
+- **Documentado**: `docs/runbooks/diagnostico.md`, seccion «Cambiar el modelo del agente de
+  diseno sin tocar codigo» (las tres variables, validacion, como comprobar la linea de arranque).
+- **Validado**: `tsc -p apps/llm-gateway/tsconfig.json --noEmit` 0 y
+  `turbo run typecheck test --force` verde (ver la salida en la sesion de construccion). Arranque
+  comprobado a mano: `(catalogo)` con valor invalido y `(variable)` con `claude-opus-x`.

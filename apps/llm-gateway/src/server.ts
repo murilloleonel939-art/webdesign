@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import pg from "pg";
 import { z } from "zod";
-import { BudgetTracker, LlmClient, LlmError, budgetSchema, resolveModel, type Transport } from "@webdesign/llm";
+import { BudgetTracker, LlmClient, LlmError, budgetSchema, costOf, resolveModel, type Transport } from "@webdesign/llm";
 
 // Servicio `llm-gateway` (spec 8.3 y linea 131): el UNICO que tiene las claves de
 // proveedor. Emite y valida tokens temporales con presupuesto.
@@ -18,10 +18,109 @@ const pool = new pg.Pool({ connectionString: process.env["DATABASE_URL"] });
 /** Base del proveedor compatible OpenAI. Sin barra final: las rutas la anaden. */
 const PROVIDER_BASE_URL = (process.env["LLM_PROVIDER_BASE_URL"] ?? "https://api.pateway.ai/v1").replace(/\/+$/, "");
 
+// Modelo real del agente de diseño por entorno.
+//
+// El catalogo (`packages/llm`) se queda como esta: el alias `design` sigue
+// siendo "design" para todo el sistema y solo este servicio decide a que id real
+// se traduce. Asi el dueno cambia de modelo con una variable en el contenedor,
+// sin tocar codigo ni desplegar, y el coste de la tabla sigue siendo explicable.
+const DESIGN_ALIAS = "design";
+
+/** Letras, digitos y los separadores que usan los id de modelo. Nada mas. */
+const MODEL_ID_PATTERN = /^[A-Za-z0-9._:/-]{1,100}$/;
+
+export type Env = Record<string, string | undefined>;
+
+/** De donde salio el valor efectivo: la variable de entorno o el catalogo. */
+export type ConfigSource = "variable" | "catalogo";
+
+/**
+ * Id real que se manda al proveedor para un alias.
+ *
+ * Funcion pura: recibe el entorno en vez de leerlo, para poder probarla sin
+ * proceso. Un valor invalido nunca revienta nada: se ignora, se devuelve el del
+ * catalogo y `invalid` trae el texto crudo para que el arranque pueda avisar una vez.
+ */
+export function providerModelId(alias: string, env: Env): { id: string; source: ConfigSource; invalid?: string } {
+  // Un alias desconocido sigue siendo error de configuracion (lanza LlmError).
+  const catalogId = resolveModel(alias).id;
+  if (alias !== DESIGN_ALIAS) return { id: catalogId, source: "catalogo" };
+
+  const raw = (env["LLM_DESIGN_MODEL"] ?? "").trim();
+  if (!raw) return { id: catalogId, source: "catalogo" };
+  if (!MODEL_ID_PATTERN.test(raw)) return { id: catalogId, source: "catalogo", invalid: raw };
+  return { id: raw, source: "variable" };
+}
+
+/** Precio por millon de tokens: numero finito y mayor que cero, o nada. */
+function positivePrice(raw: string | undefined): number | null {
+  const text = (raw ?? "").trim();
+  if (!text) return null;
+  const n = Number(text);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+const isSet = (raw: string | undefined) => (raw ?? "").trim() !== "";
+
+/**
+ * Precio del alias `design` para el calculo de coste de este servicio.
+ *
+ * Se pide por millon de tokens (la cifra que da el proveedor) y se devuelve por
+ * token, que es la unidad de `costOf`. Si falta una de las dos variables o
+ * alguna no es valida, manda el catalogo entero: mezclar una cifra del dueno con
+ * una del catalogo daria un coste que no corresponde a ningun modelo.
+ */
+export function designPricing(env: Env): { usdIn: number; usdOut: number; source: ConfigSource; problems: string[] } {
+  const catalog = resolveModel(DESIGN_ALIAS);
+  const inRaw = env["LLM_DESIGN_USD_IN_PER_M"];
+  const outRaw = env["LLM_DESIGN_USD_OUT_PER_M"];
+  const usdIn = positivePrice(inRaw);
+  const usdOut = positivePrice(outRaw);
+
+  const problems: string[] = [];
+  if (isSet(inRaw) && usdIn === null) problems.push("LLM_DESIGN_USD_IN_PER_M no es un numero > 0; el coste usa el del catalogo");
+  if (isSet(outRaw) && usdOut === null) problems.push("LLM_DESIGN_USD_OUT_PER_M no es un numero > 0; el coste usa el del catalogo");
+  // Media pareja de precios es un error de configuracion, no una intencion.
+  if (!problems.length && isSet(inRaw) !== isSet(outRaw)) {
+    problems.push("el precio del design necesita LLM_DESIGN_USD_IN_PER_M y LLM_DESIGN_USD_OUT_PER_M; el coste usa el del catalogo");
+  }
+
+  if (usdIn === null || usdOut === null || problems.length) {
+    return { usdIn: catalog.usdIn, usdOut: catalog.usdOut, source: "catalogo", problems };
+  }
+  // Por millon -> por token: `costOf` multiplica por tokens, no por millones.
+  return { usdIn: usdIn / 1_000_000, usdOut: usdOut / 1_000_000, source: "variable", problems };
+}
+
+/** Coste de una llamada como lo cuenta este servicio, con la variable aplicada. */
+export function gatewayCostOf(alias: string, tokensIn: number, tokensOut: number, env: Env): number {
+  if (alias !== DESIGN_ALIAS) return costOf(alias, tokensIn, tokensOut);
+  const p = designPricing(env);
+  return tokensIn * p.usdIn + tokensOut * p.usdOut;
+}
+
+/**
+ * Avisos de configuracion del modelo de diseño, una vez al arrancar.
+ *
+ * Nunca se registra la clave del proveedor: aqui solo se leen las variables del
+ * modelo y del precio, y de ellas se registra el nombre, no el valor.
+ */
+function logModelConfig(): void {
+  const design = providerModelId(DESIGN_ALIAS, process.env);
+  const pricing = designPricing(process.env);
+  const warn = (msg: string) => process.stderr.write(`llm-gateway: aviso: ${msg}\n`);
+
+  if (design.invalid !== undefined) warn("LLM_DESIGN_MODEL no es un id valido; el modelo design usa el del catalogo");
+  for (const msg of pricing.problems) warn(msg);
+
+  process.stdout.write(`llm-gateway: modelo design = ${design.id} (${design.source})\n`);
+}
+
 // Transporte del proveedor (compatible OpenAI, detras de un solo endpoint).
 //
-// Al proveedor se le manda SIEMPRE el id real del modelo (`resolveModel(alias).id`)
-// y nunca el alias del catalogo: el alias es vocabulario nuestro, y un proveedor
+// Al proveedor se le manda SIEMPRE el id real del modelo (`providerModelId`, que
+// por defecto es el del catalogo) y nunca el alias: el alias es vocabulario
+// nuestro, y un proveedor
 // que no lo conozca devolveria un 400 que se leeria como fallo del sistema. La
 // traduccion vive aqui y no en `LlmClient` porque es dialecto del proveedor: el
 // cliente sigue razonando en alias, que es lo que tiene coste en la tabla.
@@ -37,7 +136,8 @@ export class HttpTransport implements Transport {
     const key = process.env["LLM_PROVIDER_API_KEY"];
     if (!key) throw new LlmError("provider_error", "missing provider key");
 
-    const modelId = resolveModel(req.model).id;
+    // El id real puede venir de `LLM_DESIGN_MODEL`; lo decide `providerModelId`.
+    const { id: modelId } = providerModelId(req.model, process.env);
 
     const body = {
       model: modelId,
@@ -184,10 +284,11 @@ const server = createServer(async (req, res) => {
     maxToolCalls: 0, maxCostUsd: 1, timeoutMs: 60_000, maxContextTokens: 24000,
   });
   // Un alias desconocido es un error de configuracion: se contesta y no se gasta.
-  // Se resuelve aqui para poder registrar el id real tambien cuando la llamada falla.
+  // Se resuelve aqui para poder registrar el id real tambien cuando la llamada falla:
+  // `modelId` es lo que de verdad se manda al proveedor, no el alias del catalogo.
   let modelId: string;
   try {
-    modelId = resolveModel(body.model).id;
+    modelId = providerModelId(body.model, process.env).id;
   } catch {
     return send(400, { error: "invalid_request", detail: `unknown model alias: ${body.model}` });
   }
@@ -210,14 +311,17 @@ const server = createServer(async (req, res) => {
     `UPDATE agent_runs SET tokens_in = tokens_in + $2, tokens_out = tokens_out + $3 WHERE id = $1::uuid`,
     [body.runId, out.result.usage.tokensIn, out.result.usage.tokensOut],
   );
-  await recordUsage(body.runId, transport.provider, { tokens: 0, costUsd: out.result.usage.costUsd }, "ok", out.result.model);
+  // El coste se recalcula aqui con las variables del gateway: este servicio es el
+  // unico que escribe el coste persistido, y `LlmClient` no conoce el entorno.
+  const costUsd = gatewayCostOf(body.model, out.result.usage.tokensIn, out.result.usage.tokensOut, process.env);
+  await recordUsage(body.runId, transport.provider, { tokens: 0, costUsd }, "ok", modelId);
 
   return send(200, {
     text: out.result.text,
     toolCalls: out.result.toolCalls,
     finishReason: out.result.finishReason,
-    usage: out.result.usage,
-    model: out.result.model,
+    usage: { ...out.result.usage, costUsd },
+    model: modelId,
   });
 });
 
@@ -230,6 +334,9 @@ async function readBody(req: import("node:http").IncomingMessage): Promise<unkno
 // Solo escucha cuando se ejecuta como programa. Importarlo desde una prueba
 // (transporte y mapeo de errores) no debe abrir un puerto ni tocar la base.
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  // Una sola linea al arrancar con el modelo real que se va a usar y de donde
+  // salio: es lo que el dueno mira para saber si su variable tomo efecto.
+  logModelConfig();
   server.listen(PORT, () => {
     process.stdout.write(`llm-gateway escuchando en ${PORT}\n`);
   });
