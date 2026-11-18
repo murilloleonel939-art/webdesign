@@ -27,13 +27,23 @@ const COOKIE = "sid=token-de-prueba";
  * directo y el resto va por `withUser`. Se contestan las dos cosas y se anota
  * cada sentencia para poder afirmar sobre el INSERT.
  */
-function fakePool({ owns = true, run = undefined, session = true } = {}) {
+function fakePool({ owns = true, run = undefined, session = true, draftRev = 0, checkpoint = undefined, latest = undefined } = {}) {
   const seen = [];
   const client = {
     async query(sql, params) {
       seen.push({ sql, params });
       if (/FROM sites WHERE id = \$1/.test(sql)) return { rows: owns ? [{ "?column?": 1 }] : [] };
+      // `latest` va antes: su WHERE no lleva `id = $1`, pero se comprueba por
+      // el texto completo para no depender del orden de las reglas.
+      if (/FROM agent_runs\s+WHERE site_id = \$1 AND user_id = \$2/.test(sql)) return { rows: latest ? [latest] : [] };
       if (/FROM agent_runs WHERE id = \$1/.test(sql)) return { rows: run ? [run] : [] };
+      if (/FROM draft_checkpoints/.test(sql)) return { rows: checkpoint ? [checkpoint] : [] };
+      // `saveDraft` lee la revision actual con candado de fila.
+      if (/SELECT rev FROM site_drafts/.test(sql)) return { rows: draftRev > 0 ? [{ rev: draftRev }] : [] };
+      // `loadDraft` trae revision y documento.
+      if (/SELECT rev, doc FROM site_drafts/.test(sql)) {
+        return { rows: draftRev > 0 ? [{ rev: draftRev, doc: { schemaVersion: 1 } }] : [] };
+      }
       return { rows: [] };
     },
     release() {},
@@ -209,5 +219,41 @@ test("P10 el id del sitio se valida antes de tocar la base", async () => {
     const r = await call(port, "POST", "/api/sites/no-es-uuid/design-runs", { name: "x" });
     assert.equal(r.status, 404);
     assert.equal(/INSERT INTO agent_runs/.test(fake.sql()), false);
+  });
+});
+
+// --- Deshacer y reanudar (punto A del encargo) ------------------------------
+
+test("P11 deshacer sin sesion responde 401 y no escribe nada", async () => {
+  await withServer({ session: false }, async ({ port, fake }) => {
+    const r = await call(port, "POST", `/api/sites/${SITE}/design-runs/${RUN}/undo`, {});
+    assert.equal(r.status, 401);
+    assert.deepEqual(r.json, { error: "unauthorized" });
+    assert.equal(/INSERT INTO audit_log|UPDATE site_drafts|INSERT INTO site_drafts/.test(fake.sql()), false);
+  });
+});
+
+test("P12 deshacer sobre un sitio ajeno responde 404", async () => {
+  // Mismo criterio que el resto: un sitio que no es del dueno no se distingue
+  // de uno inexistente, y no se toca ni el borrador ni la auditoria.
+  await withServer({ owns: false }, async ({ port, fake }) => {
+    const r = await call(port, "POST", `/api/sites/${SITE}/design-runs/${RUN}/undo`, {});
+    assert.equal(r.status, 404);
+    assert.deepEqual(r.json, { error: "not_found" });
+    assert.equal(/INSERT INTO audit_log/.test(fake.sql()), false);
+  });
+});
+
+test("P13 pedir la ultima ejecucion sin ninguna responde 404", async () => {
+  // El panel usa esto para reanudar el chat; sin ejecuciones no hay nada que
+  // reanudar, y no se inventa una respuesta vacia.
+  await withServer({ latest: undefined }, async ({ port, fake }) => {
+    const r = await call(port, "GET", `/api/sites/${SITE}/design-runs/latest`);
+    assert.equal(r.status, 404);
+    assert.deepEqual(r.json, { error: "not_found" });
+    const q = fake.find(/FROM agent_runs\s+WHERE site_id = \$1 AND user_id = \$2/);
+    assert.ok(q, "la consulta de la ultima ejecucion no se hizo");
+    // Filtra por dueno en el SQL: RLS sola no basta.
+    assert.deepEqual(q.params, [SITE, USER]);
   });
 });

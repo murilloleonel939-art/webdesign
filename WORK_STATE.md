@@ -590,3 +590,51 @@ Verificador dio rojo; corregido punto por punto:
 - **Validado**: `tsc -p apps/llm-gateway/tsconfig.json --noEmit` 0 y
   `turbo run typecheck test --force` verde (ver la salida en la sesion de construccion). Arranque
   comprobado a mano: `(catalogo)` con valor invalido y `(variable)` con `claude-opus-x`.
+
+## Etapa C — el editor como constructor conversacional (completada)
+
+- **Layout**: `apps/platform/ui/panel.tsx` pasa de `.editor-shell` a `.builder-shell`: barra
+  superior nueva (volver, marca, estado, pestañas píldora «Sitio»/«Dominio», «Mensajes», «Vista
+  previa» y «Publicar» como acción primaria), cuerpo en dos columnas con el chat a la izquierda y
+  el lienzo de Puck dentro de `.builder-canvas` (marco redondeado, sombra suave). El chat se pliega
+  desde la barra del lienzo («Ocultar chat» → `collapsed` en `DesignChat`), y entonces el lienzo
+  ocupa todo el ancho para editar a mano.
+- **Lienzo**: mientras el agente trabaja (`onRunningChange`) se pinta `.builder-skeleton`
+  (esqueleto animado del sitio); la pestaña «Dominio» muestra un estado vacío honesto
+  (`.builder-empty`): el hostname se asigna al publicar y no hay API de dominios, así que no se
+  inventa un gestor.
+- **Inicio**: `BuilderHome` (`apps/platform/ui/BuilderHome.tsx`) sustituye al formulario de nombre
+  cuando la cuenta no tiene sitios; `onStart` crea el sitio con `POST /api/sites`, guarda el prompt
+  en `sessionStorage` (`design-prompt:<id>`) y abre el editor, que lo lee una vez
+  (`panel.tsx:224-232`) y arranca el chat con esa frase.
+- **Móvil (<720px)**: pestañas «Chat»/«Vista» (`.builder-mobile-tabs`) que conmutan
+  `data-mobile-view` en `.builder-body`; una columna, sin scroll horizontal.
+- **Borrado**: `apps/platform/ui/DesignWithAi.tsx` eliminado; de `brand.css` salieron
+  `.design-card`, `.design-fields` (y su `@media (max-width:560px)`), `.design-trigger` y
+  `.design-progress`. `.design-pending` se conserva: sigue avisando de los datos que el agente dejó
+  «pendiente de confirmar». `builder.css` se importa junto a `brand.css` (`panel.tsx:6`).
+- **Validado**: `tsc -p apps/platform/tsconfig.ui.json --noEmit` 0, `tsc -p
+  apps/platform/tsconfig.json --noEmit` 0, `node build-ui.mjs` (bundle + CSS sin terceros) y
+  `turbo run typecheck test --force`: **67 successful, 67 total**.
+
+## CORTE 10: el editor se construye conversando — hecho (sin subir)
+
+- **Orden**: el panel era un formulario cuadrado. El dueno pidio un constructor con chat,
+  al nivel de Airo/Lovable, y que deje de interrogar: con dos datos se empieza a construir.
+- **Inicio**: `apps/platform/ui/BuilderHome.tsx` (saludo grande, caja de prompt, chips de
+  ejemplo). Sustituye al alta por formulario.
+- **Chat**: `apps/platform/ui/DesignChat.tsx` sobre la logica pura de
+  `apps/platform/ui/design-chat-flow.ts` (2 pasos, `buildPayload`, `isSendKey`, `undoMessage`).
+  Tarjeta de pregunta con opciones numeradas (teclas 1-4), "Otro...", "Saltar" y, en el
+  paso 2, nombre + contacto con "Empezar a disenar". Ciudad y oferta ya no se preguntan:
+  quedan como "pendiente de confirmar" (spec 9.1).
+- **Teclado**: Enter envia, Shift+Enter salta linea, se respeta `isComposing` (IME).
+- **Deshacer**: boton en el chat contra `POST /api/sites/:id/design-runs/:runId/undo`
+  (`apps/platform/src/server.ts:789`); 409 `edited_after` pide confirmacion y reenvia con
+  `force:true`. Pendientes como chips.
+- **Reanudar**: `GET .../design-runs/latest` (`server.ts:750`) permite retomar una ejecucion.
+- **Layout**: `panel.tsx` en dos columnas (chat 420px + lienzo), pestanas Sitio/Dominio,
+  esqueleto animado mientras disena, pestanas Chat/Vista en movil. `DesignWithAi.tsx` eliminado.
+- **Validacion**: `tsc` ui y server 0; `turbo run typecheck test --force` 67/67, 0 cached;
+  `@webdesign/platform` 36 pass / 0 fail (incluye `test/design-chat-flow.test.mjs`, 7 casos);
+  `node build-ui.mjs` OK. **Pendiente de orden de subida.**

@@ -744,6 +744,151 @@ async function handleApi(pool: import("pg").Pool, sitesRoot: string, req: Incomi
     return true;
   }
 
+  // Reanudar el chat (punto D, segunda mitad): el panel necesita saber cual fue
+  // la ultima ejecucion para retomar la conversacion donde se quedo. Sin esto
+  // el dueno cierra la pestana y pierde el hilo.
+  const designLatestMatch = /^\/api\/sites\/([0-9a-f-]{36})\/design-runs\/latest$/.exec(url.pathname);
+  if (designLatestMatch) {
+    if (!session) {
+      json(res, 401, { error: "unauthorized" });
+      return true;
+    }
+    if (req.method !== "GET") {
+      json(res, 405, { error: "method_not_allowed" });
+      return true;
+    }
+    const siteId = designLatestMatch[1] as string;
+    // Sitio ajeno e inexistente comparten respuesta, como en el resto de rutas.
+    const found = await withUser(pool, session.userId, async (tx) => {
+      const owns = (await tx.query("SELECT 1 FROM sites WHERE id = $1", [siteId])).rows[0];
+      if (!owns) return undefined;
+      return (await tx.query<{
+        id: string; status: string; stop_reason: string | null;
+        started_at: Date; ended_at: Date | null;
+      }>(
+        `SELECT id, status, stop_reason, started_at, ended_at FROM agent_runs
+         WHERE site_id = $1 AND user_id = $2
+         ORDER BY started_at DESC LIMIT 1`,
+        [siteId, session.userId],
+      )).rows[0];
+    });
+    if (!found) {
+      json(res, 404, { error: "not_found" });
+      return true;
+    }
+    json(res, 200, {
+      runId: found.id,
+      status: found.status,
+      stopReason: found.stop_reason,
+      startedAt: found.started_at,
+      endedAt: found.ended_at,
+    });
+    return true;
+  }
+
+  // Deshacer un diseno con IA (spec 9.1): devuelve el borrador al checkpoint
+  // que el job guardo antes de tocar nada. La comprobacion de "nadie edito
+  // despues" es lo que impide que este boton pise trabajo del dueno.
+  const designUndoMatch = /^\/api\/sites\/([0-9a-f-]{36})\/design-runs\/([0-9a-f-]{36})\/undo$/.exec(url.pathname);
+  if (designUndoMatch) {
+    if (!session) {
+      json(res, 401, { error: "unauthorized" });
+      return true;
+    }
+    if (req.method !== "POST") {
+      json(res, 405, { error: "method_not_allowed" });
+      return true;
+    }
+    const siteId = designUndoMatch[1] as string;
+    const runId = designUndoMatch[2] as string;
+    const body = (await readJson(req)) as { force?: unknown } | undefined;
+    // Solo un `true` literal salta el aviso: cualquier otra cosa no fuerza.
+    const force = body?.force === true;
+
+    const state = await withUser(pool, session.userId, async (tx) => {
+      const owns = (await tx.query("SELECT 1 FROM sites WHERE id = $1", [siteId])).rows[0];
+      if (!owns) return undefined;
+      const run = (await tx.query<{ status: string }>(
+        "SELECT status FROM agent_runs WHERE id = $1 AND site_id = $2 AND user_id = $3",
+        [runId, siteId, session.userId],
+      )).rows[0];
+      if (!run) return { run: undefined } as const;
+      // Ultimo checkpoint de ESTA ejecucion: el que se tomo antes de escribir.
+      // Columnas reales (0014:75-83): label y doc; la revision vive en `label`
+      // porque el esquema no tiene columna propia para ella.
+      const checkpoint = (await tx.query<{ label: string; doc: unknown }>(
+        `SELECT label, doc FROM draft_checkpoints
+         WHERE run_id = $1 AND site_id = $2
+         ORDER BY created_at DESC LIMIT 1`,
+        [runId, siteId],
+      )).rows[0];
+      return { run, checkpoint };
+    });
+
+    if (!state) {
+      json(res, 404, { error: "not_found" });
+      return true;
+    }
+    if (!state.run || !state.checkpoint) {
+      json(res, 404, { error: "not_found" });
+      return true;
+    }
+
+    // Revision que dejo escrita la ejecucion. El checkpoint guarda la rev ANTERIOR
+    // (`… (rev N)`); el job escribe con `expectedRev N`, asi que si guardo, la rev
+    // nueva es N+1. Un run cerrado como `error` no guardo nada: su rev es N.
+    const checkpointRev = Number(/\(rev (\d+)\)$/.exec(state.checkpoint.label)?.[1] ?? "");
+    const savedIt = state.run.status === "ok" || state.run.status === "budget_exhausted";
+    // Si la etiqueta no se puede leer, se toma 0: casi cualquier borrador estara
+    // por encima y hara falta `force`, que es el lado seguro.
+    const runRev = Number.isFinite(checkpointRev) ? checkpointRev + (savedIt ? 1 : 0) : 0;
+
+    const current = await loadDraft(pool, session.userId, siteId);
+    if (!current) {
+      json(res, 404, { error: "not_found" });
+      return true;
+    }
+    if (current.rev > runRev && !force) {
+      // El dueno siguio editando: deshacer le borraria su trabajo. Se avisa y el
+      // panel decide con `force: true`.
+      json(res, 409, { error: "edited_after" });
+      return true;
+    }
+
+    // Restauracion por la via normal: rev optimista, validacion y `draft.save`
+    // en `audit_log`, igual que cualquier otro cambio del dueno.
+    const saved = await saveDraft(pool, {
+      userId: session.userId, siteId, doc: state.checkpoint.doc,
+      expectedRev: current.rev, actorType: "user",
+    });
+    if (!saved.ok) {
+      if (saved.reason === "conflict") {
+        // Alguien guardo entre la lectura y la escritura: mismo aviso.
+        json(res, 409, { error: "edited_after" });
+      } else {
+        // Un checkpoint que ya no valida no se aplica a la fuerza.
+        json(res, 422, { error: "invalid", findings: saved.findings, errors: saved.errors });
+      }
+      return true;
+    }
+
+    // Traza propia del deshacer: quien mira la auditoria distingue una vuelta
+    // atras de una edicion a mano, aunque las dos las firme el dueno.
+    await withUser(pool, session.userId, async (tx) => {
+      await tx.query(
+        `INSERT INTO audit_log (id, actor_type, actor_id, site_id, action, target, meta)
+         VALUES ($1, 'user', $2, $3, 'draft.undo', $4, $5)`,
+        [
+          randomUUID(), session.userId, siteId, `rev${saved.rev}`,
+          JSON.stringify({ runId, fromRev: current.rev, rev: saved.rev, forced: force }),
+        ],
+      );
+    });
+
+    json(res, 200, { rev: saved.rev });
+    return true;
+  }
+
   // Agente de diseño con IA (punto D): el dueno pide un diseño rapido desde el
   // panel. El token NUNCA vuelve al navegador: lo ve el worker, no el dueno.
   const designRunsMatch = /^\/api\/sites\/([0-9a-f-]{36})\/design-runs$/.exec(url.pathname);
@@ -790,10 +935,20 @@ async function handleApi(pool: import("pg").Pool, sitesRoot: string, req: Incomi
       return true;
     }
     const body = await readJson(req);
-    const parsedBrief = quickBriefSchema.safeParse(body);
-    // Los cinco campos son opcionales por separado, pero el brief entero no:
-    // sin un solo dato el agente no puede escribir nada y la ejecucion se
-    // gastaria para acabar en error. Se corta aqui, antes de crear la fila.
+    // El panel manda un `prompt` de texto libre ademas de los cinco campos. Se
+    // recorta a 500 (6.1) y viaja dentro del brief como `description`: es
+    // contexto para el resumen, no un sexto dato del negocio.
+    const rawPrompt = (body as { prompt?: unknown } | undefined)?.prompt;
+    const promptText = typeof rawPrompt === "string" ? rawPrompt.trim().slice(0, 500) : "";
+    const briefInput = {
+      ...(body && typeof body === "object" ? body : {}),
+      ...(promptText ? { description: promptText } : {}),
+    };
+    const parsedBrief = quickBriefSchema.safeParse(briefInput);
+    // Los campos son opcionales por separado, pero el brief entero no: sin un
+    // solo dato el agente no puede escribir nada y la ejecucion se gastaria
+    // para acabar en error. Se corta aqui, antes de crear la fila. Un brief con
+    // solo `description` SI cuenta: el dueno escribio algo.
     const hasData = parsedBrief.success
       && Object.values(parsedBrief.data).some((v) => typeof v === "string" && v.trim().length > 0);
     if (!parsedBrief.success || !hasData) {

@@ -3,10 +3,12 @@ import { createRoot } from "react-dom/client";
 import { Puck } from "@measured/puck";
 import "@measured/puck/puck.css";
 import "./brand.css";
+import "./builder.css";
 import { buildEditorConfig } from "@webdesign/editor/config";
 import { documentToPuck, puckToDocument, mergeEditedPage } from "@webdesign/puck-adapter";
 import { StyleStart } from "./StyleStart";
-import { DesignWithAi } from "./DesignWithAi";
+import { DesignChat } from "./DesignChat";
+import { BuilderHome } from "./BuilderHome";
 import { themeCss } from "@webdesign/renderer";
 
 type Site = { id: string; name: string; status: string };
@@ -69,14 +71,91 @@ function Login({ onDone }: { onDone: () => void }) {
   return <main className="auth-shell"><div className="auth-card"><Brand/><p className="eyebrow">TU PRESENCIA DIGITAL</p><h1>Haz que tu idea se vea increíble.</h1><p className="muted">Entra a tu espacio de trabajo y crea sitios que conectan con tus clientes.</p><form onSubmit={submit}><label>Correo electrónico<input type="email" value={email} onChange={e => setEmail(e.target.value)} required autoFocus placeholder="tu@empresa.com"/></label><label>Contraseña<input type="password" value={password} onChange={e => setPassword(e.target.value)} required placeholder="••••••••"/></label>{error && <div className="alert">{error}</div>}<button className="primary full" disabled={busy}>{busy ? "Entrando…" : "Entrar a mi cuenta"}</button></form><p className="fine">¿Aún no tienes cuenta? <span className="link">Solicita acceso</span></p></div><div className="auth-art"><div className="orb orb-one"/><div className="orb orb-two"/><p>Diseña. Publica.<br/><strong>Crece.</strong></p></div></main>;
 }
 function Dashboard({ sites, refresh }: { sites: Site[]; refresh: () => void }) {
-  const [name, setName] = useState(""); const [creating, setCreating] = useState(false); const [error, setError] = useState("");
+  const [creating, setCreating] = useState(false); const [error, setError] = useState("");
   // Solo se prueba una vez: si no es operador, el boton no aparece y no se
   // vuelve a preguntar.
   const [isOp, setIsOp] = useState(false); const [showOp, setShowOp] = useState(false);
   useEffect(() => { api("/api/operator/sites").then(r => setIsOp(r.ok)).catch(() => {}); }, []);
-  async function remove(id: string) { if (!confirm("¿Eliminar este sitio? Esta acción no se puede deshacer.")) return; const r = await api(`/api/sites/${id}`, { method: "DELETE" }); if (r.ok) refresh(); else setError("No se pudo eliminar el sitio."); }
-  async function create(e: React.FormEvent) { e.preventDefault(); if (!name.trim()) return; setCreating(true); const r = await api("/api/sites", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: name.trim() }) }); setCreating(false); if (!r.ok) { setError("No se pudo crear el sitio."); return; } const d = await r.json() as { id: string }; go(`/app?site=${d.id}`); }
-  return <div className="app-shell"><header className="topbar"><Brand/><div className="user-pill">{isOp && <button className="ghost op-link" onClick={() => setShowOp(true)}>Operador</button>}<span className="avatar">A</span><span>Mi espacio</span></div></header><main className="dashboard"><div className="hero"><div><p className="eyebrow">PANEL DE CONTROL</p><h1>Tu próxima gran web empieza aquí.</h1><p className="muted">Gestiona tus sitios y convierte tus ideas en experiencias memorables.</p></div><span className="spark">✦</span></div><section className="section-head"><div><h2>Mis sitios</h2><p className="muted">{sites.length ? "Tus proyectos, siempre a mano." : "Crea tu primer proyecto en unos segundos."}</p></div></section><div className="create-card"><div className="create-icon">＋</div><div><h3>Crear un nuevo sitio</h3><p className="muted">Empieza con una página pensada para tu marca.</p></div><form onSubmit={create}><input value={name} onChange={e => setName(e.target.value)} placeholder="Nombre del sitio" aria-label="Nombre del sitio"/><button className="primary" disabled={creating}>{creating ? "Creando…" : "Crear sitio"}</button></form></div>{error && <div className="alert">{error}</div>}{showOp && <Operator onClose={() => setShowOp(false)}/>}<div className="site-grid">{sites.map(site => <article className="site-card" key={site.id}><div className="site-preview"><span>ZW</span></div><div className="site-info"><div><h3>{site.name}</h3><p className="muted">{site.status === "active" ? "Publicado" : "Borrador"}</p></div><div className="site-actions"><button className="secondary" onClick={() => go(`/app?site=${site.id}`)}>Editar sitio <span>→</span></button><button className="text-danger" onClick={() => remove(site.id)}>Eliminar</button></div></div></article>)}</div></main></div>;
+
+  /**
+   * Crea el sitio y abre su editor con el prompt que escribio el dueno.
+   *
+   * El prompt no cabe con holgura en la URL (hasta 500 caracteres) y no debe
+   * quedar en el historial: viaja por sessionStorage y el editor lo lee una
+   * vez para arrancar el chat con esa frase. Se borra al leerlo.
+   */
+  async function start(prompt: string): Promise<void> {
+    setError("");
+    const r = await api("/api/sites", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      // El nombre del sitio sale de la primera linea del prompt: es lo que el
+      // dueno reconoceria en su lista, no un "Mi sitio" generico.
+      body: JSON.stringify({ name: prompt.split(/[.\n]/)[0]?.slice(0, 80) ?? prompt.slice(0, 80) }),
+    });
+    if (!r.ok) { setError("No se pudo crear el sitio."); throw new Error("create_failed"); }
+    const d = await r.json() as { id: string };
+    try { sessionStorage.setItem(`design-prompt:${d.id}`, prompt); } catch { /* modo privado: se abre sin el prompt */ }
+    go(`/app?site=${d.id}`);
+  }
+
+  async function remove(id: string) {
+    if (!confirm("¿Eliminar este sitio? Esta acción no se puede deshacer.")) return;
+    const r = await api(`/api/sites/${id}`, { method: "DELETE" });
+    if (r.ok) refresh(); else setError("No se pudo eliminar el sitio.");
+  }
+
+  // Sin sitios (o al pedir uno nuevo) construir es conversar: se pregunta por
+  // el proyecto en una frase, no se pide un nombre en un campo.
+  if (sites.length === 0) {
+    return <>
+      <BuilderHome
+        onStart={start}
+        {...(isOp ? { back: { label: "Operador", onClick: () => setShowOp(true) } } : {})}
+      />
+      {showOp && <Operator onClose={() => setShowOp(false)}/>}
+    </>;
+  }
+  return <div className="app-shell">
+    <header className="topbar">
+      <Brand/>
+      <div className="user-pill">
+        {isOp && <button className="ghost op-link" onClick={() => setShowOp(true)}>Operador</button>}
+        <span className="avatar">A</span><span>Mi espacio</span>
+      </div>
+    </header>
+    <main className="dashboard">
+      <div className="hero">
+        <div>
+          <p className="eyebrow">PANEL DE CONTROL</p>
+          <h1>Tu próxima gran web empieza aquí.</h1>
+          <p className="muted">Gestiona tus sitios y convierte tus ideas en experiencias memorables.</p>
+        </div>
+        <span className="spark">✦</span>
+      </div>
+      <section className="section-head">
+        <div><h2>Mis sitios</h2><p className="muted">Tus proyectos, siempre a mano.</p></div>
+        <button className="primary" onClick={() => setCreating(true)}>Crear sitio</button>
+      </section>
+      {error && <div className="alert">{error}</div>}
+      {showOp && <Operator onClose={() => setShowOp(false)}/>}
+      {creating && <div className="modal-veil" onClick={() => setCreating(false)}>
+        <div className="builder-new-card" onClick={e => e.stopPropagation()}>
+          <BuilderHome onStart={start} back={{ label: "Cancelar", onClick: () => setCreating(false) }}/>
+        </div>
+      </div>}
+      <div className="site-grid">{sites.map(site => <article className="site-card" key={site.id}>
+        <div className="site-preview"><span>ZW</span></div>
+        <div className="site-info">
+          <div><h3>{site.name}</h3><p className="muted">{site.status === "active" ? "Publicado" : "Borrador"}</p></div>
+          <div className="site-actions">
+            <button className="secondary" onClick={() => go(`/app?site=${site.id}`)}>Editar sitio <span>→</span></button>
+            <button className="text-danger" onClick={() => remove(site.id)}>Eliminar</button>
+          </div>
+        </div>
+      </article>)}</div>
+    </main>
+  </div>;
 }
 
 // Los hallazgos del linter son codigos. Un dueno no sabe que es
@@ -214,10 +293,26 @@ function Editor({ siteId }: { siteId: string }) {
   // guarda id y nombre para ofrecer despublicarlo desde el mismo aviso, sin
   // `confirm()` del navegador.
   const [activeElsewhere, setActiveElsewhere] = useState<{ id: string; name: string }|null>(null);
-  // Diseñar con IA (9.1): el agente escribe en el borrador, nunca publica. El
-  // estado `showDesign` abre el formulario; `designPending` recuerda lo que el
-  // agente dejo sin confirmar para pedirlo despues de recargar.
-  const [showDesign, setShowDesign] = useState(false); const [designPending, setDesignPending] = useState<string[]>([]);
+  // Diseñar con IA (9.1): el chat de la izquierda escribe en el borrador,
+  // nunca publica. `designPending` recuerda lo que el agente dejo sin
+  // confirmar para pedirlo tras recargar el borrador.
+  const [designPending, setDesignPending] = useState<string[]>([]);
+  // Diseño del constructor (etapa C): pestaña activa, si el chat esta
+  // colapsado (mas sitio para el lienzo), que ve el movil y si el agente
+  // esta disenando ahora mismo (para el esqueleto animado del lienzo).
+  const [pageTab, setPageTab] = useState<"site" | "domain">("site");
+  const [chatCollapsed, setChatCollapsed] = useState(false);
+  const [mobileView, setMobileView] = useState<"chat" | "site">("chat");
+  const [designing, setDesigning] = useState(false);
+  // El prompt con el que el dueno creo el sitio desde BuilderHome viaja por
+  // sessionStorage (no por la URL: puede tener hasta 500 caracteres) y se lee
+  // una sola vez para arrancar el chat con esa frase.
+  const [initialPrompt, setInitialPrompt] = useState("");
+  useEffect(() => {
+    const key = `design-prompt:${siteId}`;
+    const stored = sessionStorage.getItem(key);
+    if (stored) { setInitialPrompt(stored); sessionStorage.removeItem(key); }
+  }, [siteId]);
   async function refreshAssets() { try { const r = await api(`/api/sites/${siteId}/assets`); if (!r.ok) return; const body = await r.json() as { assets?: EditorAsset[] }; setAssets(Array.isArray(body.assets) ? body.assets : []); } catch { setAssets([]); } }
   async function removeAsset(id: string) { if (!confirm("¿Eliminar esta imagen?")) return; const r = await api(`/api/sites/${siteId}/assets?id=${encodeURIComponent(id)}`, { method: "DELETE" }); if (r.ok) { await refreshAssets(); setStatus("Imagen eliminada"); } }
   async function upload(file: File) { setUploading(true); const r = await api(`/api/sites/${siteId}/assets?kind=image`, { method: "POST", headers: { "content-type": file.type }, body: file }); setUploading(false); if (r.ok) { await refreshAssets(); setStatus("Imagen subida. Copia su ID en el bloque Imagen."); } else {
@@ -326,111 +421,164 @@ function Editor({ siteId }: { siteId: string }) {
       onSkip={() => setShowStyles(false)}
     />;
   }
-  return <div className="editor-shell">
+  // El lienzo del sitio: el editor de Puck tal cual, con la biblioteca de
+  // imagenes. Se saca a una variable para poder pintarlo dentro del marco
+  // redondeado del constructor y, en el movil, en su propia pestaña.
+  const canvas = <>
+    <Puck
+      // `publicUrl` es opcional en la respuesta: con exactOptionalPropertyTypes
+      // no se puede pasar `path: undefined`, y un asset sin URL en el selector
+      // solo daria una imagen rota. Se filtra.
+      config={buildEditorConfig({ assets: assets.filter(a => a.publicUrl).map(a => ({ id: a.id, path: a.publicUrl as string })) })}
+      data={documentToPuck(doc, PAGE)}
+      onChange={save}
+      overrides={{
+        // El lienzo es un iframe: el CSS del panel no llega dentro, asi que
+        // el editor mostraba las secciones desnudas. Se inyecta el tema del
+        // documento para ver el sitio como quedara publicado.
+        iframe: ({ children, document: frame }) => (
+          <FrameTheme frame={frame} css={doc ? themeCss(doc.theme) : ""}>{children}</FrameTheme>
+        ),
+        // Sin acciones propias en la cabecera de Puck. Devolver `null` no es un
+        // elemento valido para su tipo de render, aunque en pantalla no se note.
+        "headerActions": () => <></>,
+      }}
+    />
+    {showAssets && <aside className="asset-popover" aria-label="Biblioteca de imágenes">
+      <header>
+        <div><h3>Biblioteca de imágenes</h3><p>Arrastra una miniatura al campo Imagen.</p></div>
+        <button className="close" onClick={() => setShowAssets(false)} aria-label="Cerrar biblioteca">✕</button>
+      </header>
+      <label className="upload-button">{uploading ? "Subiendo…" : "Subir imagen"}<input type="file" accept="image/png,image/jpeg,image/webp" hidden disabled={uploading} onChange={e => { const f = e.target.files?.[0]; if (f) void upload(f); e.currentTarget.value = ""; }}/></label>
+      <div className="asset-list">
+        {assets.length ? assets.map(a => <button className="asset-item" key={a.id} draggable onDragStart={e => e.dataTransfer.setData("text/asset-id", a.id)} title="Arrastra al campo Imagen o haz clic para copiar el ID" onClick={() => { void navigator.clipboard?.writeText(a.id); setStatus("ID copiado al portapapeles"); }}>
+          {a.publicUrl ? <img className="asset-thumb" src={a.publicUrl} alt="" onError={e => { e.currentTarget.style.visibility = "hidden"; }}/> : <span className="asset-thumb asset-thumb--empty">—</span>}
+          <span className="asset-meta"><span>{a.id.slice(0, 8)}</span><small>{a.bytes ? `${Math.round(a.bytes / 1024)} KB` : "imagen"}</small></span>
+          <b className="asset-remove" role="button" tabIndex={0} aria-label="Eliminar imagen" onClick={e => { e.stopPropagation(); void removeAsset(a.id); }}>✕</b>
+        </button>) : <p className="asset-empty">Aún no has subido imágenes.</p>}
+      </div>
+    </aside>}
+  </>;
+
+  return <div className="builder-shell">
     {/* Capa, no pantalla: cerrarla no debe desmontar el editor ni perder lo
         que el dueno tenia sin guardar. */}
     {showInbox && <Inbox siteId={siteId} onClose={() => setShowInbox(false)}/>}
-    {showDesign && <DesignWithAi
-      siteId={siteId}
-      onClose={() => setShowDesign(false)}
-      onApplied={() => { void reloadDraft().then(() => setDesignPending(pendingFromDoc(docRef.current))); }}
-    />}
-    <header className="editorbar">
+
+    <header className="builder-top">
       <button className="back" onClick={() => go("/app")} aria-label="Volver al panel">←</button>
       <Brand/>
-      <span className="divider"/>
-      <span className="editor-status">{status}</span>
-      {publishedUrl && <a className="published-url" href={publishedUrl} target="_blank" rel="noreferrer">Tu sitio: {publishedUrl.replace("https://", "")}</a>}
-      {/* Un unico contenedor en columna: antes "blockers" y "notice" compartian
-          la misma esquina absoluta y se pintaban encima uno de otro, tapando
-          ademas la biblioteca de imagenes. Orden de lectura: primero lo que
-          bloquea, luego lo que exige decision, al final el aviso de estilo
-          (spec 6.5: este ultimo nunca bloquea la publicacion). */}
-      {(blockers.length > 0 || activeElsewhere || visualNotice.length > 0 || designPending.length > 0) && <div className="publish-alerts">
-        {designPending.length > 0 && <div className="design-pending" role="status">
-          <strong>El diseño con IA dejó datos por confirmar:</strong>
-          <ul>{designPending.map((p) => <li key={p}>{p}</li>)}</ul>
-          <p className="muted small">Rellénalos editando las secciones que dicen «pendiente de confirmar».</p>
-          <button className="ghost" onClick={() => setDesignPending([])} aria-label="Descartar aviso">×</button>
-        </div>}
-        {blockers.length > 0 && <div className="publish-blockers" role="alert">
-          <strong>Para publicar falta:</strong>
-          <ul>{blockers.map((b) => <li key={b}>{b}</li>)}</ul>
-          <button className="ghost" onClick={() => setBlockers([])} aria-label="Cerrar">×</button>
-        </div>}
-        {activeElsewhere && <div className="publish-notice" role="status">
-          <strong>Ya tienes un sitio publicado:</strong>
-          <ul><li>«{activeElsewhere.name}» está publicado ahora mismo. Tu cuenta solo puede tener uno publicado a la vez.</li></ul>
-          {activeElsewhere.id
-            ? <button className="primary" onClick={() => void unpublishAndRetry(activeElsewhere.id)}>Despublicar «{activeElsewhere.name}» y publicar este</button>
-            : <span className="muted small">Abre el otro sitio y despublícalo desde ahí.</span>}
-          <button className="ghost" onClick={() => setActiveElsewhere(null)} aria-label="Descartar aviso">×</button>
-        </div>}
-        {visualNotice.length > 0 && <div className="publish-notice" role="status">
-          <strong>Aviso de estilo (no impide publicar):</strong>
-          <ul>{visualNotice.map((n) => <li key={n}>{n}</li>)}</ul>
-          <button className="primary" onClick={() => void publish(true)}>Publicar igual</button>
-          <button className="ghost" onClick={() => setVisualNotice([])} aria-label="Descartar aviso">×</button>
-        </div>}
-      </div>}
-      <div className="editor-actions">
-        <button className="asset-trigger" aria-expanded={showAssets} onClick={() => setShowAssets(v => !v)}>
-          Imágenes {assets.length > 0 && <span className="asset-count">{assets.length}</span>}
-        </button>
-        <button className="ghost" onClick={() => setShowStyles(true)}>Estilos</button>
-        <button className="ghost design-trigger" onClick={() => setShowDesign(true)}>Diseñar con IA</button>
-        <button className="ghost" onClick={() => setShowInbox(true)}>Mensajes {newLeads > 0 && <span className="asset-count">{newLeads}</span>}</button>
-        <button className="ghost" onClick={() => setShowPreview(true)}>Vista previa</button>
-        <button className="primary publish" onClick={() => void publish()}>Publicar sitio</button>
+      <span className="builder-status">{status}</span>
+      {/* Pestañas: el sitio es lo activo; el dominio, lo que viene despues. */}
+      <div className="builder-tabs" role="tablist" aria-label="Secciones del sitio">
+        <button role="tab" className="builder-tab" aria-selected={pageTab === "site"} onClick={() => setPageTab("site")}>Sitio</button>
+        <button role="tab" className="builder-tab" aria-selected={pageTab === "domain"} onClick={() => setPageTab("domain")}>Dominio</button>
+      </div>
+      <div className="builder-top-actions">
+        {publishedUrl && <a className="published-url" href={publishedUrl} target="_blank" rel="noreferrer">{publishedUrl.replace("https://", "")}</a>}
+        <button className="ghost builder-secondary-action" onClick={() => setShowInbox(true)}>Mensajes {newLeads > 0 && <span className="asset-count">{newLeads}</span>}</button>
+        <button className="ghost builder-secondary-action" onClick={() => setShowPreview(true)}>Vista previa</button>
+        <button className="primary" onClick={() => void publish()}>Publicar</button>
       </div>
     </header>
-    <div className="editor-body">
-      <Puck
-        // `publicUrl` es opcional en la respuesta: con exactOptionalPropertyTypes
-        // no se puede pasar `path: undefined`, y un asset sin URL en el selector
-        // solo daria una imagen rota. Se filtra.
-        config={buildEditorConfig({ assets: assets.filter(a => a.publicUrl).map(a => ({ id: a.id, path: a.publicUrl as string })) })}
-        data={documentToPuck(doc, PAGE)}
-        onChange={save}
-        overrides={{
-          // El lienzo es un iframe: el CSS del panel no llega dentro, asi que
-          // el editor mostraba las secciones desnudas. Se inyecta el tema del
-          // documento para ver el sitio como quedara publicado.
-          iframe: ({ children, document: frame }) => (
-            <FrameTheme frame={frame} css={doc ? themeCss(doc.theme) : ""}>{children}</FrameTheme>
-          ),
-          // Sin acciones propias en la cabecera de Puck. Devolver `null` no es un
-          // elemento valido para su tipo de render, aunque en pantalla no se note.
-          "headerActions": () => <></>,
-        }}
-      />
-      {showAssets && <aside className="asset-popover" aria-label="Biblioteca de imágenes">
-        <header>
-          <div><h3>Biblioteca de imágenes</h3><p>Arrastra una miniatura al campo Imagen.</p></div>
-          <button className="close" onClick={() => setShowAssets(false)} aria-label="Cerrar biblioteca">✕</button>
-        </header>
-        <label className="upload-button">{uploading ? "Subiendo…" : "Subir imagen"}<input type="file" accept="image/png,image/jpeg,image/webp" hidden disabled={uploading} onChange={e => { const f = e.target.files?.[0]; if (f) void upload(f); e.currentTarget.value = ""; }}/></label>
-        <div className="asset-list">
-          {assets.length ? assets.map(a => <button className="asset-item" key={a.id} draggable onDragStart={e => e.dataTransfer.setData("text/asset-id", a.id)} title="Arrastra al campo Imagen o haz clic para copiar el ID" onClick={() => { void navigator.clipboard?.writeText(a.id); setStatus("ID copiado al portapapeles"); }}>
-            {a.publicUrl ? <img className="asset-thumb" src={a.publicUrl} alt="" onError={e => { e.currentTarget.style.visibility = "hidden"; }}/> : <span className="asset-thumb asset-thumb--empty">—</span>}
-            <span className="asset-meta"><span>{a.id.slice(0, 8)}</span><small>{a.bytes ? `${Math.round(a.bytes / 1024)} KB` : "imagen"}</small></span>
-            <b className="asset-remove" role="button" tabIndex={0} aria-label="Eliminar imagen" onClick={e => { e.stopPropagation(); void removeAsset(a.id); }}>✕</b>
-          </button>) : <p className="asset-empty">Aún no has subido imágenes.</p>}
-        </div>
-      </aside>}
-      {showPreview && <div role="dialog" aria-modal="true" aria-label="Vista previa del sitio" className="preview-overlay" style={{ position: "fixed", inset: 0, zIndex: 1000, background: "#0b1020", display: "flex", flexDirection: "column" }}>
-        <header style={{ flex: "none", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16, padding: "12px 20px", background: "#0b1020", borderBottom: "1px solid #1d2740" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10, color: "#fff" }}>
-            <span style={{ fontWeight: 700, fontSize: 14 }}>Vista previa</span>
-            <span style={{ fontSize: 12, color: "#8b97b3" }}>Así verán tu sitio los visitantes</span>
-          </div>
-          <button onClick={() => setShowPreview(false)} style={{ display: "inline-flex", alignItems: "center", gap: 7, padding: "9px 16px", borderRadius: 10, border: "1px solid #2b3757", background: "#131c33", color: "#fff", fontWeight: 650, fontSize: 13 }}>✕ Cerrar</button>
-        </header>
-        <iframe title="Vista previa" sandbox="allow-scripts" src={`/api/sites/${siteId}/preview?page=${PAGE}`} style={{ flex: 1, width: "100%", border: 0, background: "#fff" }}/>
+
+    {/* Avisos: un solo contenedor en columna bajo la barra. Primero lo que
+        bloquea, luego lo que exige decision, al final el aviso de estilo
+        (spec 6.5: ese nunca impide publicar). */}
+    {(blockers.length > 0 || activeElsewhere || visualNotice.length > 0 || designPending.length > 0) && <div className="publish-alerts">
+      {designPending.length > 0 && <div className="design-pending" role="status">
+        <strong>El diseño dejó datos por confirmar:</strong>
+        <ul className="builder-chips">{designPending.map((p) => <li key={p} className="builder-chip">{p}</li>)}</ul>
+        <p className="muted small">Rellénalos editando las secciones que dicen «pendiente de confirmar».</p>
+        <button className="ghost" onClick={() => setDesignPending([])} aria-label="Descartar aviso">×</button>
       </div>}
+      {blockers.length > 0 && <div className="publish-blockers" role="alert">
+        <strong>Para publicar falta:</strong>
+        <ul>{blockers.map((b) => <li key={b}>{b}</li>)}</ul>
+        <button className="ghost" onClick={() => setBlockers([])} aria-label="Cerrar">×</button>
+      </div>}
+      {activeElsewhere && <div className="publish-notice" role="status">
+        <strong>Ya tienes un sitio publicado:</strong>
+        <ul><li>«{activeElsewhere.name}» está publicado ahora mismo. Tu cuenta solo puede tener uno publicado a la vez.</li></ul>
+        {activeElsewhere.id
+          ? <button className="primary" onClick={() => void unpublishAndRetry(activeElsewhere.id)}>Despublicar «{activeElsewhere.name}» y publicar este</button>
+          : <span className="muted small">Abre el otro sitio y despublícalo desde ahí.</span>}
+        <button className="ghost" onClick={() => setActiveElsewhere(null)} aria-label="Descartar aviso">×</button>
+      </div>}
+      {visualNotice.length > 0 && <div className="publish-notice" role="status">
+        <strong>Aviso de estilo (no impide publicar):</strong>
+        <ul>{visualNotice.map((n) => <li key={n}>{n}</li>)}</ul>
+        <button className="primary" onClick={() => void publish(true)}>Publicar igual</button>
+        <button className="ghost" onClick={() => setVisualNotice([])} aria-label="Descartar aviso">×</button>
+      </div>}
+    </div>}
+
+    {/* Pestañas del movil (<720px): en escritorio no se pintan. */}
+    <div className="builder-mobile-tabs" role="tablist" aria-label="Vista del constructor">
+      <button role="tab" aria-selected={mobileView === "chat"} onClick={() => setMobileView("chat")}>Chat</button>
+      <button role="tab" aria-selected={mobileView === "site"} onClick={() => setMobileView("site")}>Vista</button>
     </div>
+
+    <div className="builder-body" data-mobile-view={mobileView}>
+      <DesignChat
+        siteId={siteId}
+        {...(initialPrompt ? { initialPrompt } : {})}
+        collapsed={chatCollapsed}
+        onDraftChanged={() => { void reloadDraft().then(() => setDesignPending(pendingFromDoc(docRef.current))); }}
+        onRunningChange={setDesigning}
+        pending={designPending}
+      />
+
+      <section className="builder-canvas" aria-label="Tu sitio">
+        <div className="builder-canvas-bar">
+          <span className="builder-canvas-tag">{pageTab === "domain" ? "Dominio" : "Tu sitio"}</span>
+          {/* Plegar el chat da el ancho entero al lienzo para editar a mano. */}
+          <div className="builder-canvas-actions">
+            <button className="ghost" onClick={() => setChatCollapsed(v => !v)} aria-pressed={chatCollapsed}>
+              {chatCollapsed ? "Mostrar chat" : "Ocultar chat"}
+            </button>
+            <button className="asset-trigger" aria-expanded={showAssets} onClick={() => setShowAssets(v => !v)}>
+              Imágenes {assets.length > 0 && <span className="asset-count">{assets.length}</span>}
+            </button>
+            <button className="ghost" onClick={() => setShowStyles(true)}>Estilos</button>
+          </div>
+        </div>
+
+        <div className="builder-canvas-stage">
+          {pageTab === "domain"
+            // La pestaña de dominio solo informa de lo que hay: la asignacion la
+            // hace el servidor al publicar. No se inventa un gestor que no existe.
+            ? <div className="builder-empty"><div className="builder-empty-inner">
+                <h2>El dominio se asigna al publicar</h2>
+                <p>{publishedUrl
+                  ? <>Tu sitio está en <strong>{publishedUrl.replace("https://", "")}</strong>. Cada cuenta puede tener un sitio publicado a la vez.</>
+                  : "Publica el sitio y te damos una dirección. Mientras tanto, el borrador no se sirve en ningún dominio."}</p>
+              </div></div>
+            : designing
+              ? <div className="builder-skeleton" role="status" aria-label="Diseñando tu sitio">
+                  <div className="builder-skel builder-skel--hero"/>
+                  <div className="builder-skel builder-skel--line w70"/>
+                  <div className="builder-skel builder-skel--line w45"/>
+                  <div className="builder-skel builder-skel--row"><div className="builder-skel"/><div className="builder-skel"/></div>
+                </div>
+              : canvas}
+        </div>
+      </section>
+    </div>
+
+    {showPreview && <div role="dialog" aria-modal="true" aria-label="Vista previa del sitio" className="preview-overlay" style={{ position: "fixed", inset: 0, zIndex: 1000, background: "#0b1020", display: "flex", flexDirection: "column" }}>
+      <header style={{ flex: "none", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16, padding: "12px 20px", background: "#0b1020", borderBottom: "1px solid #1d2740" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, color: "#fff" }}>
+          <span style={{ fontWeight: 700, fontSize: 14 }}>Vista previa</span>
+          <span style={{ fontSize: 12, color: "#8b97b3" }}>Así verán tu sitio los visitantes</span>
+        </div>
+        <button onClick={() => setShowPreview(false)} style={{ display: "inline-flex", alignItems: "center", gap: 7, padding: "9px 16px", borderRadius: 10, border: "1px solid #2b3757", background: "#131c33", color: "#fff", fontWeight: 650, fontSize: 13 }}>✕ Cerrar</button>
+      </header>
+      <iframe title="Vista previa" sandbox="allow-scripts" src={`/api/sites/${siteId}/preview?page=${PAGE}`} style={{ flex: 1, width: "100%", border: 0, background: "#fff" }}/>
+    </div>}
   </div>;
 }
+
 function App() {
   const [route, setRoute] = useState(location.href); const [sites, setSites] = useState<Site[]>([]);
   const [state, setState] = useState("loading");

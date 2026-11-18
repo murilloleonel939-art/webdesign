@@ -25,6 +25,15 @@ export const quickBriefSchema = z.object({
   service: text(200).optional(),
   /** Contacto en lenguaje natural: correo, teléfono o "WhatsApp 600 000 000". */
   contact: text(200).optional(),
+  /**
+   * Texto libre del dueño (el `prompt` del panel, máximo 500 según 6.1).
+   *
+   * NO es un sexto dato del negocio y no entra en `BRIEF_FIELDS`: es contexto
+   * para el resumen que el agente le devuelve al dueño. Ninguna sección se
+   * rellena con esto, porque de aquí no sale ningún hecho comprobable; la regla
+   * de 9.1 sigue mandando (no se inventan clientes, cifras ni testimonios).
+   */
+  description: text(500).optional(),
 });
 
 export type QuickBriefInput = z.infer<typeof quickBriefSchema>;
@@ -39,6 +48,13 @@ export interface QuickBrief {
   city: string;
   service: string;
   contact: string;
+  /**
+   * Texto libre del dueño, ya recortado, o `undefined` si no lo escribió.
+   *
+   * Con `exactOptionalPropertyTypes` la clave se omite en vez de valer
+   * `undefined`: es lo mismo que hace `Preset.dials` en `pg-store`.
+   */
+  description?: string;
   /** Campos que faltaban y quedaron con el marcador. Nunca vacío por suposición. */
   pending: BriefField[];
 }
@@ -77,7 +93,33 @@ export function normalizeBrief(input: unknown): QuickBrief {
     }
     out[field] = value;
   }
+  // El texto libre no es un sexto dato: no entra en `pending` ni cambia ningún
+  // campo. Solo viaja al resumen, y vacío se omite igual que los demás.
+  const description = parsed.success ? parsed.data.description?.trim() : undefined;
+  if (description && description.toLowerCase() !== PENDING_MARKER) out.description = description;
   return out;
+}
+
+/**
+ * ¿El dueño dio al menos un dato?
+ *
+ * Un brief con solo `description` cuenta como uno: hay algo escrito por él,
+ * aunque falten los cinco campos y todos queden con el marcador. Lo que NO
+ * cuenta es un brief sin nada, que es el que se rechaza antes de gastar.
+ */
+export function hasBriefData(brief: QuickBrief): boolean {
+  return brief.description !== undefined || brief.pending.length < BRIEF_FIELDS.length;
+}
+
+/**
+ * Contexto para el resumen del modelo: el texto libre del dueño, tal cual.
+ *
+ * Se devuelve sin adornos para que el modelo sepa qué le preocupa al dueño, y
+ * `undefined` cuando no escribió nada. Sirve solo para hablar del trabajo hecho:
+ * de aquí no se copia contenido al sitio, porque no es un dato verificado.
+ */
+export function briefDescriptionContext(brief: QuickBrief): string | undefined {
+  return brief.description;
 }
 
 /** Nombre del sitio para `meta.name`: el del negocio o el marcador. */

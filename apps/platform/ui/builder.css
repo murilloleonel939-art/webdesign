@@ -1,0 +1,358 @@
+/* Constructor conversacional (etapa C).
+   Una sola idea: construir es conversar. El chat vive a la izquierda en una
+   tarjeta con aire y el sitio en vivo a la derecha en un lienzo amplio.
+   Solo usa los tokens de brand.css: nada de bordes duros ni cajas cuadradas,
+   y todo lo que se mueve respeta prefers-reduced-motion. */
+
+/* --- Marco general ------------------------------------------------------- */
+
+.builder-shell{
+  height:100vh;display:flex;flex-direction:column;
+  background:
+    radial-gradient(1200px 520px at 12% -8%,#6c5ce70f,transparent 60%),
+    radial-gradient(900px 500px at 100% 110%,#24c8a510,transparent 55%),
+    var(--canvas);
+  overflow:hidden;
+}
+
+/* Barra superior limpia: pestañas tipo píldora a la izquierda y la acción
+   principal (Publicar) a la derecha. Sin bordes duros: una línea suave. */
+.builder-top{
+  flex:none;display:flex;align-items:center;gap:14px;
+  padding:14px clamp(14px,2.4vw,26px);
+  background:color-mix(in srgb,var(--surface) 82%,transparent);
+  backdrop-filter:blur(10px);
+  border-bottom:1px solid var(--line);
+}
+.builder-top .back{
+  display:grid;place-items:center;width:34px;height:34px;flex:none;
+  border-radius:10px;color:var(--ink-2);font-size:17px;
+  transition:background .16s var(--ease),color .16s var(--ease);
+}
+.builder-top .back:hover{background:var(--canvas-2);color:var(--ink)}
+.builder-status{
+  min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  font-size:12.5px;font-weight:600;color:var(--muted);
+}
+.builder-top-actions{margin-left:auto;display:flex;align-items:center;gap:8px}
+
+/* Pestañas píldora: la activa en negro, el resto en gris callado. */
+.builder-tabs{
+  display:inline-flex;align-items:center;gap:4px;padding:4px;
+  border-radius:999px;background:var(--canvas-2);
+}
+.builder-tab{
+  padding:8px 18px;border-radius:999px;font-size:13.5px;font-weight:700;
+  color:var(--ink-2);background:transparent;
+  transition:background .18s var(--ease),color .18s var(--ease);
+}
+.builder-tab:hover{color:var(--ink)}
+.builder-tab[aria-selected="true"]{background:var(--ink);color:#fff;box-shadow:var(--sh-sm)}
+
+/* --- Cuerpo: chat + lienzo ---------------------------------------------- */
+
+.builder-body{
+  flex:1;min-height:0;display:flex;align-items:stretch;gap:18px;
+  padding:18px clamp(14px,2.4vw,24px) 22px;
+}
+
+/* Chat: columna fija de 420px. Radio 16, sombra suave y un resplandor de la
+   marca abajo, que es lo que separa esta pantalla de un formulario. */
+.builder-chat{
+  position:relative;flex:none;width:420px;max-width:44vw;
+  display:flex;flex-direction:column;min-height:0;
+  border-radius:16px;background:var(--surface);
+  border:1px solid var(--line);
+  box-shadow:0 18px 44px #0e17300f,0 2px 6px #0e17300a;
+  overflow:hidden;
+}
+.builder-chat::after{
+  content:"";position:absolute;left:0;right:0;bottom:0;height:180px;pointer-events:none;
+  background:linear-gradient(180deg,transparent,#6c5ce714 55%,#24c8a51f);
+}
+.builder-chat.is-collapsed{display:none}
+
+.builder-chat-head{
+  position:relative;z-index:1;flex:none;display:flex;align-items:center;gap:10px;
+  padding:16px 18px 12px;
+}
+.builder-chat-head h1{
+  margin:0;font-size:16.5px;font-weight:800;letter-spacing:-.02em;
+}
+.builder-chat-head .builder-chat-sub{margin:2px 0 0;font-size:12px;color:var(--muted)}
+.builder-chat-head .builder-collapse{margin-left:auto}
+
+/* Registro de la conversación: tipografía grande y aire entre turnos. */
+.builder-chat-log{
+  position:relative;z-index:1;flex:1;min-height:0;overflow-y:auto;
+  display:flex;flex-direction:column;gap:14px;padding:6px 18px 18px;
+  scrollbar-width:thin;
+}
+.builder-msg{max-width:100%;font-size:14.5px;line-height:1.55}
+.builder-msg--assistant{
+  align-self:flex-start;padding:12px 14px;border-radius:14px 14px 14px 5px;
+  background:var(--canvas-2);color:var(--ink);
+}
+.builder-msg--user{
+  align-self:flex-end;padding:12px 14px;border-radius:14px 14px 5px 14px;
+  background:var(--ink);color:#fff;
+}
+.builder-msg p{margin:0}
+.builder-msg p+p{margin-top:8px}
+
+.builder-chat-foot{position:relative;z-index:2;flex:none;padding:12px 14px 14px}
+
+/* Compositor: una sola caja blanda con el botón dentro. */
+.builder-composer{
+  display:flex;align-items:flex-end;gap:10px;padding:10px 10px 10px 14px;
+  border-radius:16px;border:1px solid var(--line-strong);background:var(--surface);
+  box-shadow:var(--sh-sm);transition:border-color .16s var(--ease),box-shadow .16s var(--ease);
+}
+.builder-composer:focus-within{border-color:var(--accent);box-shadow:0 0 0 4px #6c5ce71a}
+.builder-composer textarea{
+  flex:1;min-height:44px;max-height:132px;resize:none;padding:11px 2px;
+  border:0;background:none;font-size:14.5px;line-height:1.45;
+}
+.builder-composer textarea:focus{outline:none}
+.builder-send{
+  flex:none;display:inline-flex;align-items:center;gap:7px;
+  padding:11px 16px;border-radius:12px;font-size:14px;font-weight:700;
+  color:#fff;background:var(--ink);
+  transition:background .16s var(--ease),transform .16s var(--ease);
+}
+.builder-send:hover:not(:disabled){background:var(--accent)}
+.builder-send:active:not(:disabled){transform:translateY(1px)}
+.builder-send:disabled{opacity:.45;cursor:not-allowed}
+
+/* --- Tarjeta de pregunta (flotante sobre el compositor) ------------------ */
+
+/* No es un formulario: es una tarjeta que se apoya encima de la entrada del
+   chat, con la pregunta como titulo, opciones numeradas y "Otro...". */
+.builder-ask{
+  position:relative;z-index:3;
+  margin:0 14px 10px;padding:16px 16px 12px;
+  border-radius:16px;background:var(--surface);
+  border:1px solid var(--line-strong);
+  box-shadow:0 18px 46px #0e17301f,0 2px 8px #0e17300d;
+  animation:builder-rise .2s var(--ease);
+}
+.builder-ask-head{display:flex;align-items:flex-start;gap:10px}
+.builder-ask-head h2{margin:0;font-size:15.5px;font-weight:800;letter-spacing:-.015em;line-height:1.35}
+.builder-ask-head .builder-chevron{
+  margin-left:auto;flex:none;width:28px;height:28px;display:grid;place-items:center;
+  border-radius:9px;color:var(--muted);font-size:12px;
+  transition:background .16s var(--ease),transform .18s var(--ease),color .16s;
+}
+.builder-ask-head .builder-chevron:hover{background:var(--canvas-2);color:var(--ink)}
+.builder-ask-head .builder-chevron[aria-expanded="false"]{transform:rotate(-90deg)}
+.builder-ask-hint{margin:4px 0 0;font-size:12px;color:var(--muted)}
+.builder-ask-list{
+  list-style:none;margin:12px 0 0;padding:0;
+  display:flex;flex-direction:column;gap:6px;
+}
+.builder-opt{
+  width:100%;display:flex;align-items:center;gap:11px;
+  padding:11px 12px;border-radius:12px;text-align:left;
+  font-size:14px;font-weight:600;color:var(--ink);
+  background:var(--canvas-2);
+  transition:background .16s var(--ease),transform .16s var(--ease);
+}
+.builder-opt:hover{background:var(--accent-soft)}
+.builder-opt:active{transform:translateY(1px)}
+.builder-opt .builder-key{
+  flex:none;display:grid;place-items:center;width:23px;height:23px;border-radius:8px;
+  background:var(--surface);color:var(--ink-2);
+  font-size:11.5px;font-weight:800;border:1px solid var(--line);
+}
+.builder-opt:hover .builder-key{background:#fff;border-color:#cfc8fb;color:var(--accent-ink)}
+
+/* Fila "Otro...": un campo libre, no un quinto boton. */
+.builder-other{display:flex;align-items:center;gap:9px;margin-top:6px}
+.builder-other input{
+  flex:1;min-width:0;padding:11px 12px;border-radius:12px;
+  border:1px solid var(--line);background:var(--surface);font-size:14px;
+  transition:border-color .16s var(--ease),box-shadow .16s var(--ease);
+}
+.builder-other input:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px #6c5ce71a}
+.builder-ask-actions{display:flex;align-items:center;gap:10px;margin-top:12px}
+.builder-ask-actions .builder-skip{
+  margin-left:auto;font-size:13px;font-weight:650;color:var(--muted);
+  padding:8px 6px;border-radius:9px;transition:color .16s var(--ease);
+}
+.builder-ask-actions .builder-skip:hover{color:var(--ink)}
+
+/* --- Lienzo -------------------------------------------------------------- */
+
+/* El sitio en vivo: marco amplio y redondeado, sin barra dentro. */
+.builder-canvas{
+  position:relative;flex:1;min-width:0;min-height:0;
+  display:flex;flex-direction:column;
+  border-radius:18px;background:var(--surface);
+  border:1px solid var(--line);
+  box-shadow:0 22px 54px #0e173012;
+  overflow:hidden;
+}
+.builder-canvas-bar{
+  flex:none;display:flex;align-items:center;gap:10px;
+  padding:11px 16px;border-bottom:1px solid var(--line);
+  background:color-mix(in srgb,var(--surface) 88%,transparent);
+}
+.builder-canvas-bar .builder-canvas-tag{
+  font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);
+}
+.builder-canvas-bar .builder-canvas-actions{margin-left:auto;display:flex;align-items:center;gap:8px}
+.builder-canvas-stage{flex:1;min-height:0;position:relative;background:var(--surface)}
+.builder-canvas-stage>div{height:100%}
+
+/* Estado vacio: icono grande de chat, el titulo y una linea de contexto. */
+.builder-empty{
+  position:absolute;inset:0;display:grid;place-items:center;padding:32px;
+  background:
+    radial-gradient(680px 320px at 50% 12%,#6c5ce70d,transparent 65%),
+    var(--surface);
+}
+.builder-empty-inner{max-width:420px;text-align:center;display:flex;flex-direction:column;align-items:center;gap:6px}
+.builder-empty-icon{
+  display:grid;place-items:center;width:78px;height:78px;margin-bottom:14px;
+  border-radius:24px;color:#fff;
+  background:linear-gradient(140deg,var(--accent),#8b7cf6 55%,var(--mint));
+  box-shadow:0 18px 40px #6c5ce733;
+}
+.builder-empty h2{margin:0;font-size:clamp(20px,2.2vw,26px);font-weight:800;letter-spacing:-.025em;line-height:1.2}
+.builder-empty p{margin:0;font-size:14.5px;line-height:1.55;color:var(--muted)}
+
+/* Esqueleto del sitio mientras se disena: bloques con shimmer, sin cajas
+   cuadradas. El degradado se mueve solo si el visitante no pide quietud. */
+.builder-skeleton{
+  position:absolute;inset:0;padding:clamp(18px,3vw,38px);
+  display:flex;flex-direction:column;gap:16px;background:var(--surface);
+}
+.builder-skel{
+  border-radius:14px;
+  background:linear-gradient(100deg,var(--canvas-2) 22%,#e4e8f4 38%,var(--canvas-2) 54%);
+  background-size:280% 100%;
+  animation:builder-shimmer 1.5s var(--ease) infinite;
+}
+.builder-skel--hero{height:132px;border-radius:18px}
+.builder-skel--line{height:16px}
+.builder-skel--line.w70{width:70%}
+.builder-skel--line.w45{width:45%}
+.builder-skel--row{display:flex;gap:16px;flex:1;min-height:0}
+.builder-skel--row>.builder-skel{flex:1;border-radius:16px}
+
+/* Pasos del diseno: se leen como una lista corta, no como un log. */
+.builder-steps{margin:8px 0 0;padding:0;list-style:none;display:flex;flex-direction:column;gap:7px}
+.builder-step{display:flex;align-items:center;gap:9px;font-size:13.5px;color:var(--muted)}
+.builder-step.is-done{color:var(--ink-2)}
+.builder-step .builder-dot{
+  flex:none;width:8px;height:8px;border-radius:50%;background:var(--line-strong);
+}
+.builder-step.is-active .builder-dot{background:var(--accent);animation:builder-pulse 1.4s var(--ease) infinite}
+.builder-step.is-done .builder-dot{background:var(--mint)}
+.builder-done{
+  display:flex;align-items:center;gap:10px;margin-top:10px;padding:11px 13px;
+  border-radius:12px;background:var(--accent-soft);color:var(--accent-ink);
+  font-size:13.5px;font-weight:700;
+}
+.builder-done .builder-copy{
+  margin-left:auto;font-size:12.5px;font-weight:650;color:var(--accent-ink);
+  padding:6px 10px;border-radius:9px;background:#fff;border:1px solid #d8d2fb;
+  transition:background .16s var(--ease);
+}
+.builder-done .builder-copy:hover{background:#f4f2ff}
+
+/* --- Inicio del constructor ---------------------------------------------- */
+
+.builder-home{
+  min-height:100vh;display:grid;place-items:center;padding:clamp(24px,6vw,72px);
+  background:
+    radial-gradient(900px 460px at 20% 0%,#6c5ce712,transparent 60%),
+    radial-gradient(800px 420px at 88% 100%,#24c8a512,transparent 58%),
+    var(--canvas);
+}
+.builder-home-inner{width:min(760px,100%);display:flex;flex-direction:column;align-items:flex-start;gap:8px}
+.builder-home h1{
+  margin:10px 0 0;font-size:clamp(30px,4.6vw,52px);line-height:1.06;
+  font-weight:800;letter-spacing:-.035em;
+}
+.builder-home h1 em{font-style:normal;color:var(--accent)}
+.builder-home .builder-home-sub{
+  margin:14px 0 0;max-width:52ch;font-size:16px;line-height:1.6;color:var(--ink-2);
+}
+.builder-home-form{
+  display:flex;align-items:center;gap:10px;width:100%;margin-top:26px;
+  padding:8px 8px 8px 20px;border-radius:18px;background:var(--surface);
+  border:1px solid var(--line-strong);box-shadow:0 16px 40px #0e17300f;
+  transition:border-color .16s var(--ease),box-shadow .16s var(--ease);
+}
+.builder-home-form:focus-within{border-color:var(--accent);box-shadow:0 0 0 4px #6c5ce71a,0 16px 40px #0e17300f}
+.builder-home-form input{
+  flex:1;min-width:0;border:0;background:none;padding:14px 0;font-size:16px;
+}
+.builder-home-form input:focus{outline:none}
+.builder-home-samples{display:flex;flex-wrap:wrap;gap:8px;margin-top:16px}
+.builder-chip{
+  padding:9px 14px;border-radius:999px;font-size:13px;font-weight:600;
+  color:var(--ink-2);background:var(--surface);border:1px solid var(--line);
+  transition:border-color .16s var(--ease),background .16s var(--ease),color .16s;
+}
+.builder-chip:hover{border-color:var(--accent);color:var(--accent-ink);background:var(--accent-soft)}
+
+/* --- Pestañas del movil -------------------------------------------------- */
+
+/* Solo existen por debajo de 720px: en escritorio se ven las dos columnas. */
+.builder-mobile-tabs{display:none}
+
+/* --- Animaciones --------------------------------------------------------- */
+
+@keyframes builder-shimmer{from{background-position:180% 0}to{background-position:-80% 0}}
+@keyframes builder-pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.45;transform:scale(.82)}}
+@keyframes builder-rise{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+@keyframes builder-fade{from{opacity:0}to{opacity:1}}
+.builder-fade{animation:builder-fade .22s var(--ease)}
+
+@media (prefers-reduced-motion:reduce){
+  .builder-skel,.builder-step.is-active .builder-dot,.builder-ask,.builder-fade{animation:none}
+  .builder-skel{background:var(--canvas-2)}
+  .builder-ask-head .builder-chevron,.builder-send,.builder-opt{transition:none}
+}
+
+/* --- Movil (<720px): chat y lienzo en pestanas --------------------------- */
+
+@media (max-width:720px){
+  .builder-top{flex-wrap:wrap;gap:10px;padding:12px 14px}
+  .builder-status{display:none}
+  .builder-tabs{order:3;width:100%;justify-content:center}
+  .builder-top-actions{gap:6px}
+  .builder-top-actions .builder-secondary-action{display:none}
+  .builder-mobile-tabs{
+    display:inline-flex;align-items:center;gap:4px;padding:4px;
+    border-radius:999px;background:var(--canvas-2);margin:0 14px 0;
+  }
+  .builder-mobile-tabs button{
+    padding:8px 20px;border-radius:999px;font-size:13.5px;font-weight:700;color:var(--ink-2);
+    transition:background .18s var(--ease),color .18s var(--ease);
+  }
+  .builder-mobile-tabs button[aria-selected="true"]{background:var(--ink);color:#fff}
+  .builder-body{flex-direction:column;padding:12px 12px 16px;gap:12px}
+  /* Una columna a la vez: la pestana decide cual. `is-collapsed` la esconde. */
+  .builder-chat,
+  .builder-canvas{width:100%;max-width:none;flex:1;min-height:0}
+  .builder-body[data-mobile-view="chat"] .builder-canvas{display:none}
+  .builder-body[data-mobile-view="site"] .builder-chat{display:none}
+  .builder-chat.is-collapsed{display:none}
+  .builder-empty-icon{width:62px;height:62px;border-radius:20px}
+}
+
+/* Modo "crear sitio" desde el panel: el inicio del constructor se abre como
+   una capa centrada, no como una pantalla que tape la lista de sitios. */
+.builder-new-card{width:min(720px,100%);max-height:90vh;overflow:auto;border-radius:22px;background:var(--surface,#fff);box-shadow:var(--sh-lg,0 24px 60px rgb(14 23 48 / .18))}
+.builder-new-card .builder-home{padding:clamp(20px,4vw,40px) clamp(18px,3vw,32px)}
+.builder-new-card .builder-home h1{font-size:clamp(1.5rem,3.2vw,2.1rem)}
+.builder-secondary-action{color:var(--ink-2,#39435c);font-weight:600}
+
+/* --- Pendientes como chips y acciones del run (deshacer/ver resultado) --- */
+.builder-chips{display:flex;flex-wrap:wrap;gap:6px;list-style:none;padding:0;margin:8px 0 0}
+.builder-chip{padding:4px 10px;border-radius:999px;background:var(--canvas-2);font-size:12.5px}
+.builder-run-actions{display:flex;gap:8px;margin-top:8px}
+.builder-run-actions button{border-radius:999px}

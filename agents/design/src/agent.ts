@@ -5,7 +5,7 @@ import { lintSite, type LintFinding } from "@webdesign/linter";
 import { lintHtml } from "@webdesign/lint-visual";
 import { renderPage } from "@webdesign/renderer";
 import type { SiteDocument } from "@webdesign/site-schema";
-import { BRIEF_FIELDS, FIELD_LABEL, normalizeBrief, quickBriefSchema, type BriefField } from "./brief.js";
+import { FIELD_LABEL, briefDescriptionContext, hasBriefData, normalizeBrief, quickBriefSchema, type BriefField } from "./brief.js";
 import { draftSite, type Preset } from "./draft.js";
 import { inventory, planSections, type Inventory, type Plan } from "./plan.js";
 import { createStore, saveCheckpoint } from "./store.js";
@@ -101,7 +101,10 @@ export async function runFastDesign(deps: FastDesignDeps): Promise<FastDesignRes
     throw new Error(`brief invalido: ${first?.path.join(".") ?? ""} ${first?.message ?? ""}`.trim());
   }
   const brief = normalizeBrief(parsed.data);
-  if (brief.pending.length === BRIEF_FIELDS.length) throw new Error("brief vacio: no hay ningun dato del negocio");
+  // Un brief con solo `description` cuenta como "al menos un dato": el dueño
+  // escribió algo. Lo que se rechaza es un brief sin nada, que no da ni para
+  // rellenar un titular sin inventar.
+  if (!hasBriefData(brief)) throw new Error("brief vacio: no hay ningun dato del negocio");
   if (presets.length === 0) throw new Error("no hay presets en el catalogo");
 
   const warnings: string[] = [];
@@ -162,6 +165,9 @@ export async function runFastDesign(deps: FastDesignDeps): Promise<FastDesignRes
 
   // 7. Una sola ronda: el modelo solo escribe el resumen que lee el dueño.
   const pendingText = brief.pending.map((f) => FIELD_LABEL[f]).join(", ");
+  // El texto libre del dueño viaja solo aqui: es contexto para el resumen, no
+  // una fuente de contenido. `undefined` deja el mensaje como estaba.
+  const contextText = briefDescriptionContext(brief);
   const run = await runAgent({
     agent: designAgent,
     client,
@@ -174,7 +180,13 @@ export async function runFastDesign(deps: FastDesignDeps): Promise<FastDesignRes
         content:
           `Preset aplicado: ${preset.id} (${preset.name}). ` +
           `Datos que faltan por confirmar: ${pendingText || "ninguno"}. ` +
-          `Hallazgos de 6.5: ${findings6_5.length}. Resume en dos frases lo que se ha hecho.`,
+          `Hallazgos de 6.5: ${findings6_5.length}. ` +
+          (contextText === undefined
+            ? ""
+            : `El dueno describio su negocio asi: ${contextText} `) +
+          "Usa esa descripcion solo como contexto para el resumen: no la copies " +
+          "al sitio, no la presentes como un dato confirmado y no inventes nada a partir de ella. " +
+          "Resume en dos frases lo que se ha hecho.",
       },
     ],
     opts: {
