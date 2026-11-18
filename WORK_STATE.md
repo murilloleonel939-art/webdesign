@@ -503,3 +503,57 @@ corregidos y verificados en disco. No se debilito ninguna politica, ni FORCE, ni
 - **Pendiente de comprobar en una maquina con Postgres**: los asserts de 0019 y las pruebas
   gateadas por `DB_TEST_URL` (7 ficheros). Aqui pasan por la rama skip y no prueban nada.
 - Verificado: tsc plataforma 0, tsc UI 0, turbo `typecheck test --force` **67/67**.
+
+## CORTE 7 (Fase 4): agente de diseno conectado de punta a punta — hecho
+
+Verificador dio rojo; corregido punto por punto:
+- **A. Ruta** `POST /api/sites/:id/design-runs` (`server.ts:749-855`): 401 sin sesion, 404
+  indistinto para sitio ajeno, 400 si el brief no trae ni un dato, 202 `{runId}`. El `agent_id`
+  del run ya es `designAgent.id` (era el alias suelto `design-fast`). `@webdesign/agent-design`
+  declarado en `apps/platform/package.json` y en el lockfile.
+- **B. Checkpoint previo** (`design-job.ts`, `pg-store.ts`): antes de escribir se guarda el
+  borrador tal como estaba en `draft_checkpoints` (`ON CONFLICT (id) DO NOTHING`, id = run, rev en
+  la etiqueta). Si no se puede guardar, el job cierra en `error` y NO toca el sitio: un cambio sin
+  vuelta atras es peor que no cambiar. `0020` gana `INSERT` sobre `draft_checkpoints` (sin tocar
+  politicas ni RLS).
+- **B2.** El camino `budget_exhausted` ya no ignora `saveDraft`: si hubo conflicto, el motivo dice
+  que no se sobrescribio nada y `rev` no se inventa.
+- **D. Panel**: `ui/DesignWithAi.tsx` (boton «Disenar con IA», formulario de cinco campos
+  opcionales con al menos uno, sondeo cada 1,5 s, recarga del borrador, mensajes en castellano) y
+  aviso de «pendiente de confirmar» en `.publish-alerts`. CSS nuevo con clases propias
+  (`.design-*`), sin tocar `.publish-alerts` ni `.asset-popover`.
+- **E. Pruebas**: `apps/platform/test/design-runs.test.mjs` (10 casos, registrado en el script
+  `test`) y dos casos nuevos en `apps/workers/test/design-job.test.mjs` (sin checkpoint no hay
+  guardado; presupuesto agotado con conflicto). `node_modules` y lockfile sincronizados
+  (`pnpm install --frozen-lockfile --lockfile-only` pasa).
+- Verificado en esta maquina: `tsc -p apps/platform/tsconfig.json` 0, `tsc -p
+  apps/platform/tsconfig.ui.json` 0, turbo `typecheck test --force` **67/67** (platform 26/26).
+- Pendiente en maquina con Postgres: los asserts de `0020` y las pruebas gateadas por `DB_TEST_URL`.
+
+## CORTE 8 (Fase 4): el agente de diseno pasa al proveedor compatible OpenAI — hecho
+
+- **Proveedor real** (`apps/llm-gateway/src/server.ts`): `HttpTransport` ya no lleva la URL
+  fija del proveedor anterior ni su variable de clave. Lee `LLM_PROVIDER_BASE_URL` (por defecto
+  `https://api.pateway.ai/v1`, sin barra final; POST a `${base}/chat/completions`) y
+  `LLM_PROVIDER_API_KEY` como `Authorization: Bearer`. Sin clave sigue siendo
+  `LlmError provider_error 'missing provider key'` y no se hace la peticion. La clave se
+  lee SOLO dentro de `complete()`, en cada llamada, y no se registra en ningun sitio.
+  `provider = 'pateway'` y `recordUsage` guarda el `provider` del transporte, no un literal.
+- **Id real del modelo**: `LlmClient` sigue razonando en alias (es lo que tiene coste en la
+  tabla) y la traduccion `resolveModel(alias).id` se hace en el gateway, que es el unico que
+  habla el dialecto del proveedor. Un alias desconocido se contesta 400 antes de gastar.
+- **Catalogo** (`packages/llm/src/index.ts:84-92`): alias `design` -> `pateway` /
+  `claude-sonnet-5`, 0,000003 USD/token de entrada y 0,000015 de salida, ventana 200 000,
+  con el comentario «precio provisional, confirmar con el proveedor». `fast-small` y
+  `fast-large` intactos.
+- **Presupuesto del modo rapido** (`agents/design/src/agent.ts`): `maxCostUsd` sube de 0,02 a
+  **0,35**. Con los precios nuevos, 0,02 no cubria ni la primera ronda (2 048 tokens de salida
+  = 0,031 USD): el tope de coste habria cortado antes que el de tokens. 0,35 cubre el tope de
+  20 000 tokens al precio de salida.
+- **Pruebas**: `apps/llm-gateway/test/provider.test.mjs` (5 casos, sin red: URL, cabecera
+  Bearer, `body.model === "claude-sonnet-5"`, sin clave -> error controlado y cero peticiones,
+  alias desconocido). Registrado en el script `test` del paquete. En `packages/llm` un caso
+  nuevo fija la frontera alias/id. El `server.ts` solo escucha cuando se ejecuta como programa,
+  para que importarlo desde la prueba no abra puerto ni toque la base.
+- **Grep limpio**: cero apariciones de la variable de clave anterior y del host del proveedor
+  anterior fuera de `node_modules`/`dist`. Documentado en `docs/runbooks/diagnostico.md`.

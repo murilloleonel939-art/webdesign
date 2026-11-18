@@ -22,14 +22,18 @@ import { makeDesignTools } from "./tools.js";
 export const FAST_BUDGET = {
   maxTokens: 20_000,
   maxToolCalls: 8,
-  maxCostUsd: 0.02,
+  // El tope de coste tiene que cubrir el tope de tokens al precio del modelo
+  // `design`: 20 000 tokens × 0,000015 USD (salida, el más caro) = 0,30 USD.
+  // Con 0,02 la primera ronda ya no cabía (2 048 de salida = 0,031 USD): el
+  // presupuesto se agotaba antes de que el modelo escribiera el resumen.
+  maxCostUsd: 0.35,
   timeoutMs: 30_000,
 } as const;
 
 export const designAgent: AgentDefinition = {
   id: "design",
   description: "Diseña un sitio a partir del brief del dueño aplicando un preset del catálogo.",
-  model: "fast-small",
+  model: "design",
   systemPrompt: [
     "Eres el agente de diseño de la plataforma. Trabajas en modo rápido: una sola ronda.",
     "El diseño lo decide el catálogo de presets, no tú. No inventes clientes, cifras,",

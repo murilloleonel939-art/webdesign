@@ -323,3 +323,26 @@ button{cursor:pointer;border:0;background:none}
 .badge.dark,.badge.suspended{background:#fdeceb;color:#8a1f18;border-color:#f5c9c5}
 .badge.draft{background:#f1f0ed;color:#4a4844;border-color:#e5e3df}
 .op-link{margin-right:10px}
+
+/* Diseñar con IA (9.1). El formulario y su aviso son piezas nuevas: sus clases
+   no repiten .asset-popover (biblioteca de imagenes) ni .publish-alerts (los
+   avisos de la esquina), para que ninguna regla de aqui mueva lo que ya
+   funcionaba. El aviso de pendientes vive DENTRO de .publish-alerts y hereda su
+   columna: asi no se pinta encima de nada. */
+.design-card{width:min(560px,100%)}
+.design-fields{display:grid;grid-template-columns:1fr 1fr;gap:12px 14px;margin-bottom:6px}
+.design-fields label{display:flex;flex-direction:column;gap:5px;font-size:13px;font-weight:600}
+.design-fields input{width:100%;box-sizing:border-box;padding:9px 11px;font:inherit;font-weight:400;border:1px solid var(--line,#e5e3df);border-radius:10px;background:#fff}
+.design-fields input:focus{outline:2px solid var(--accent,#6c5ce7);outline-offset:1px}
+/* Los cinco campos son opcionales; el ultimo ocupa la fila entera porque el
+   texto de "que ofreces" suele ser mas largo que el resto. */
+.design-fields label:last-child{grid-column:1 / -1}
+.design-progress{margin:14px 0 0;padding:10px 12px;border-radius:10px;background:#f5f4ff;border:1px solid #dbd7fb;font-size:13px;line-height:1.5;color:#2f2a55}
+.design-pending{padding:1rem 1.2rem;border-radius:12px;background:var(--surface,#fff);border:1px solid color-mix(in srgb,var(--ink, #111) 16%,transparent);border-left:3px solid var(--accent);box-shadow:0 8px 28px rgb(0 0 0 / .16);font-size:.9rem}
+.design-pending strong{display:block;margin-bottom:.4rem}
+.design-pending ul{margin:0 0 .5rem;padding-left:1.1rem}
+.design-pending li+li{margin-top:.3rem}
+.design-pending .small{margin:0}
+.design-pending button{float:right;margin-top:-.2rem;background:none;border:0;font-size:1.1rem;cursor:pointer;color:inherit}
+@media (max-width:560px){.design-fields{grid-template-columns:1fr}}
+

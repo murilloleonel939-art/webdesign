@@ -12,6 +12,10 @@
     "start": "node dist/main.js"
   },
   "dependencies": {
+    "@webdesign/agent-design": "workspace:*",
+    "@webdesign/db": "workspace:*",
+    "@webdesign/editor": "workspace:*",
+    "@webdesign/llm": "workspace:*",
     "@webdesign/lint-visual": "workspace:*",
     "@webdesign/linter": "workspace:*",
     "@webdesign/renderer": "workspace:*",

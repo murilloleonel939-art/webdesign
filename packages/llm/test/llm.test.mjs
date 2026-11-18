@@ -146,3 +146,24 @@ test("el circuito se cierra solo al pasar el enfriamiento", async () => {
   assert.equal(r.ok, true);
   assert.equal(client.breakerState, "closed");
 });
+
+test("el alias no cruza al proveedor: el cliente lo pasa y el gateway traduce", async () => {
+  // `LlmClient` razona en alias (es lo que tiene coste en la tabla); el id real
+  // del modelo solo lo conoce el transporte. Aqui se fija la frontera: lo que
+  // se devuelve al llamante es el id, no el alias.
+  const seen = {};
+  const spy = {
+    provider: "fake",
+    async complete(req) {
+      seen.model = req.model;
+      return { text: "", toolCalls: [], finishReason: "stop", usage: { tokensIn: 1, tokensOut: 1, costUsd: 0 }, model: "x", latencyMs: 0 };
+    },
+  };
+  const r = await new LlmClient(spy, tracker(), { sleep: noSleep }).complete({
+    model: "design", maxOutputTokens: 10, messages: [{ role: "user", content: "x" }],
+  });
+  assert.equal(r.ok, true);
+  assert.equal(seen.model, "design", "el transporte recibe el alias");
+  assert.equal(r.result.model, resolveModel("design").id, "al llamante se le devuelve el id real");
+  assert.equal(r.result.model, "claude-sonnet-5");
+});

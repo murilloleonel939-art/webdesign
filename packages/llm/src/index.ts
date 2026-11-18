@@ -84,6 +84,10 @@ export class LlmError extends Error {
 export const MODELS = {
   "fast-small": { provider: "openai", id: "gpt-4o-mini", usdIn: 0.00000015, usdOut: 0.0000006, contextWindow: 128000 },
   "fast-large": { provider: "openai", id: "gpt-4o", usdIn: 0.0000025, usdOut: 0.00001, contextWindow: 128000 },
+  // Agente de diseño. `provider` es el nombre del transporte que lo sirve
+  // (`HttpTransport.provider`), no la marca del modelo: el id real viaja en `id`.
+  // Precio provisional, confirmar con el proveedor.
+  "design": { provider: "pateway", id: "claude-sonnet-5", usdIn: 0.000003, usdOut: 0.000015, contextWindow: 200000 },
 } as const satisfies Record<string, { provider: string; id: string; usdIn: number; usdOut: number; contextWindow: number }>;
 
 export type ModelAlias = keyof typeof MODELS;
@@ -166,3 +170,7 @@ export class BudgetTracker {
 
 export { LlmClient, Breaker, estimateTokens } from "./client.js";
 export type { ClientOptions, ClientResult } from "./client.js";
+// Transporte hacia el gateway interno. Se exporta aqui para que un consumidor
+// (por ejemplo el worker de diseño) lo construya sin depender de `apps/`.
+export { GatewayTransport } from "./gateway-transport.js";
+export type { GatewayTransportOptions } from "./gateway-transport.js";

@@ -60,6 +60,7 @@ Salida esperada, resumida:
 | `counts.domains: null` | La migración `0008` no está aplicada | Normal hoy; llega con Fase 2 |
 | `ok: false` con base alcanzable | Conecta pero falta una migración | Es el caso anterior |
 | `storage.sitesOnDisk: []` | No hay ningún sitio en disco | Coherente: todavía no se publicó ninguno |
+| `llm-gateway` responde `{"error":"error"}` con `missing provider key` en el log | Falta `LLM_PROVIDER_API_KEY` en el entorno del gateway | Definir `LLM_PROVIDER_API_KEY` (y `LLM_PROVIDER_BASE_URL` si el endpoint no es el de por defecto) y redeploy. La clave solo vive en `llm-gateway`, nunca en `platform` ni en `workers` |
 
 Los `error`/`note` del informe son **códigos fijos**, nunca el mensaje del driver: este
 último puede arrastrar host, usuario o SQL. El detalle real se registra solo en el servidor.

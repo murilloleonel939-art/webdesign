@@ -1,8 +1,9 @@
 import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
+import { pathToFileURL } from "node:url";
 import pg from "pg";
 import { z } from "zod";
-import { BudgetTracker, LlmClient, LlmError, budgetSchema, type Transport } from "@webdesign/llm";
+import { BudgetTracker, LlmClient, LlmError, budgetSchema, resolveModel, type Transport } from "@webdesign/llm";
 
 // Servicio `llm-gateway` (spec 8.3 y linea 131): el UNICO que tiene las claves de
 // proveedor. Emite y valida tokens temporales con presupuesto.
@@ -14,29 +15,39 @@ import { BudgetTracker, LlmClient, LlmError, budgetSchema, type Transport } from
 const PORT = Number(process.env["PORT"] ?? 3001);
 const pool = new pg.Pool({ connectionString: process.env["DATABASE_URL"] });
 
-/**
- * Transporte real. Traduce el formato neutro al del proveedor y de vuelta.
- *
- * La clave se lee aqui y no sale de este proceso: ni siquiera se pasa por
- * argumento a otra funcion, para que no acabe en un log de traza.
- */
-class HttpTransport implements Transport {
-  readonly provider = "openai";
+/** Base del proveedor compatible OpenAI. Sin barra final: las rutas la anaden. */
+const PROVIDER_BASE_URL = (process.env["LLM_PROVIDER_BASE_URL"] ?? "https://api.pateway.ai/v1").replace(/\/+$/, "");
+
+// Transporte del proveedor (compatible OpenAI, detras de un solo endpoint).
+//
+// Al proveedor se le manda SIEMPRE el id real del modelo (`resolveModel(alias).id`)
+// y nunca el alias del catalogo: el alias es vocabulario nuestro, y un proveedor
+// que no lo conozca devolveria un 400 que se leeria como fallo del sistema. La
+// traduccion vive aqui y no en `LlmClient` porque es dialecto del proveedor: el
+// cliente sigue razonando en alias, que es lo que tiene coste en la tabla.
+export class HttpTransport implements Transport {
+  readonly provider = "pateway";
+
+  constructor(private readonly baseUrl: string = PROVIDER_BASE_URL) {}
 
   async complete(req: Parameters<Transport["complete"]>[0]) {
     const started = Date.now();
-    const key = process.env["OPENAI_API_KEY"];
+    // La clave se lee aqui, en el ultimo momento y solo aqui: no se guarda en
+    // un campo, no viaja como argumento y nunca se registra.
+    const key = process.env["LLM_PROVIDER_API_KEY"];
     if (!key) throw new LlmError("provider_error", "missing provider key");
 
+    const modelId = resolveModel(req.model).id;
+
     const body = {
-      model: req.model,
+      model: modelId,
       messages: req.messages.map(toProviderMessage),
       max_tokens: req.maxOutputTokens,
       ...(req.temperature !== undefined ? { temperature: req.temperature } : {}),
       ...(req.tools?.length ? { tools: req.tools.map((t) => ({ type: "function", function: t })) } : {}),
     };
 
-    const res = await fetch("https://api.openai.com/v1/chat/completions", {
+    const res = await fetch(`${this.baseUrl}/chat/completions`, {
       method: "POST",
       headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
       body: JSON.stringify(body),
@@ -121,11 +132,16 @@ async function loadBudget(runId: string) {
   return r.rows[0];
 }
 
-async function recordUsage(runId: string, used: { tokens: number; costUsd: number }, outcome: string, model: string) {
+/**
+ * Consumo observado. El `provider` es el real del transporte (`pateway`), no un
+ * literal fijo: si algun dia cambia el proveedor, `usage_events` lo dira sin
+ * tener que adivinar de donde vino el gasto.
+ */
+async function recordUsage(runId: string, provider: string, used: { tokens: number; costUsd: number }, outcome: string, model: string) {
   await pool.query(
     `INSERT INTO usage_events (id, provider, model, tokens_in, tokens_out, cost_usd, latency_ms, run_id, outcome)
-     VALUES ($1, 'openai', $2, 0, 0, $3, 0, $4::uuid, $5)`,
-    [randomUUID(), model, used.costUsd, runId, outcome],
+     VALUES ($1, $2, $3, 0, 0, $4, 0, $5::uuid, $6)`,
+    [randomUUID(), provider, model, used.costUsd, runId, outcome],
   );
 }
 
@@ -167,7 +183,17 @@ const server = createServer(async (req, res) => {
     maxTokens: Math.max(1, run.prompt_tokens_max - spent),
     maxToolCalls: 0, maxCostUsd: 1, timeoutMs: 60_000, maxContextTokens: 24000,
   });
-  const client = new LlmClient(new HttpTransport(), new BudgetTracker(budget));
+  // Un alias desconocido es un error de configuracion: se contesta y no se gasta.
+  // Se resuelve aqui para poder registrar el id real tambien cuando la llamada falla.
+  let modelId: string;
+  try {
+    modelId = resolveModel(body.model).id;
+  } catch {
+    return send(400, { error: "invalid_request", detail: `unknown model alias: ${body.model}` });
+  }
+
+  const transport = new HttpTransport();
+  const client = new LlmClient(transport, new BudgetTracker(budget));
   const out = await client.complete({
     model: body.model,
     messages: body.messages as Parameters<LlmClient["complete"]>[0]["messages"],
@@ -176,7 +202,7 @@ const server = createServer(async (req, res) => {
 
   if (!out.ok) {
     const reason = out.error?.code === "timeout" ? "timeout" : out.error?.code === "refused" ? "refused" : "error";
-    await recordUsage(body.runId, { tokens: 0, costUsd: 0 }, reason, body.model);
+    await recordUsage(body.runId, transport.provider, { tokens: 0, costUsd: 0 }, reason, modelId);
     return send(out.stop.kind === "budget" ? 429 : 502, { error: reason, stop: out.stop });
   }
 
@@ -184,7 +210,7 @@ const server = createServer(async (req, res) => {
     `UPDATE agent_runs SET tokens_in = tokens_in + $2, tokens_out = tokens_out + $3 WHERE id = $1::uuid`,
     [body.runId, out.result.usage.tokensIn, out.result.usage.tokensOut],
   );
-  await recordUsage(body.runId, { tokens: 0, costUsd: out.result.usage.costUsd }, "ok", out.result.model);
+  await recordUsage(body.runId, transport.provider, { tokens: 0, costUsd: out.result.usage.costUsd }, "ok", out.result.model);
 
   return send(200, {
     text: out.result.text,
@@ -201,6 +227,10 @@ async function readBody(req: import("node:http").IncomingMessage): Promise<unkno
   try { return JSON.parse(Buffer.concat(chunks).toString("utf8")); } catch { return null; }
 }
 
-server.listen(PORT, () => {
-  process.stdout.write(`llm-gateway escuchando en ${PORT}\n`);
-});
+// Solo escucha cuando se ejecuta como programa. Importarlo desde una prueba
+// (transporte y mapeo de errores) no debe abrir un puerto ni tocar la base.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  server.listen(PORT, () => {
+    process.stdout.write(`llm-gateway escuchando en ${PORT}\n`);
+  });
+}

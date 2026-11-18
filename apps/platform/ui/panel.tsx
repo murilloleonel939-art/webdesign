@@ -6,6 +6,7 @@ import "./brand.css";
 import { buildEditorConfig } from "@webdesign/editor/config";
 import { documentToPuck, puckToDocument, mergeEditedPage } from "@webdesign/puck-adapter";
 import { StyleStart } from "./StyleStart";
+import { DesignWithAi } from "./DesignWithAi";
 import { themeCss } from "@webdesign/renderer";
 
 type Site = { id: string; name: string; status: string };
@@ -31,6 +32,37 @@ function needsStyle(doc: unknown): boolean {
 }
 
 function Brand() { return <div className="brand"><span className="brand-mark">Z</span><span>Zottaweb</span></div>; }
+
+// El agente deja escrito "pendiente de confirmar" donde no tenia el dato: no
+// inventa testimonios, precios ni textos. Aqui se recorre el borrador para
+// decirle al dueno, en sus palabras, que le falta rellenar. Se mira el texto del
+// documento, no una lista que el servidor tenga que mantener aparte.
+const PENDING_TEXT = "pendiente de confirmar";
+const PENDING_PARTS: Array<{ test: RegExp; label: string }> = [
+  { test: /"plans"|"price"/, label: "Precios o tarifas" },
+  { test: /"testimonial|"quote"|"author"/, label: "Testimonios de clientes" },
+  { test: /"faq"|"questions"/, label: "Preguntas frecuentes" },
+  { test: /"body"/, label: "Texto de las secciones" },
+  { test: /"headline"/, label: "Titular de la portada" },
+  { test: /"name"|"businessName"/, label: "Nombre del negocio" },
+  { test: /"address"|"city"/, label: "Dirección o ciudad" },
+  { test: /"phone"|"email"|"href"/, label: "Datos de contacto" },
+];
+function pendingFromDoc(doc: unknown): string[] {
+  const pages = (doc as { pages?: Array<{ sections?: unknown[] }> })?.pages;
+  if (!Array.isArray(pages) || pages.length === 0) return [];
+  const found = new Set<string>();
+  for (const page of pages) {
+    for (const section of page?.sections ?? []) {
+      const json = JSON.stringify(section ?? {});
+      if (!json.toLowerCase().includes(PENDING_TEXT)) continue;
+      // Se etiqueta por el bloque que lo contiene: util y sin rutas internas.
+      const part = PENDING_PARTS.find((p) => p.test.test(json));
+      found.add(part ? part.label : "Contenido de una sección");
+    }
+  }
+  return [...found];
+}
 function Login({ onDone }: { onDone: () => void }) {
   const [email, setEmail] = useState(""); const [password, setPassword] = useState(""); const [busy, setBusy] = useState(false); const [error, setError] = useState("");
   async function submit(e: React.FormEvent) { e.preventDefault(); setBusy(true); setError(""); const r = await api("/api/login", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ email, password }) }); setBusy(false); if (!r.ok) { setError("El correo o la contraseña no son correctos."); return; } onDone(); }
@@ -182,6 +214,10 @@ function Editor({ siteId }: { siteId: string }) {
   // guarda id y nombre para ofrecer despublicarlo desde el mismo aviso, sin
   // `confirm()` del navegador.
   const [activeElsewhere, setActiveElsewhere] = useState<{ id: string; name: string }|null>(null);
+  // Diseñar con IA (9.1): el agente escribe en el borrador, nunca publica. El
+  // estado `showDesign` abre el formulario; `designPending` recuerda lo que el
+  // agente dejo sin confirmar para pedirlo despues de recargar.
+  const [showDesign, setShowDesign] = useState(false); const [designPending, setDesignPending] = useState<string[]>([]);
   async function refreshAssets() { try { const r = await api(`/api/sites/${siteId}/assets`); if (!r.ok) return; const body = await r.json() as { assets?: EditorAsset[] }; setAssets(Array.isArray(body.assets) ? body.assets : []); } catch { setAssets([]); } }
   async function removeAsset(id: string) { if (!confirm("¿Eliminar esta imagen?")) return; const r = await api(`/api/sites/${siteId}/assets?id=${encodeURIComponent(id)}`, { method: "DELETE" }); if (r.ok) { await refreshAssets(); setStatus("Imagen eliminada"); } }
   async function upload(file: File) { setUploading(true); const r = await api(`/api/sites/${siteId}/assets?kind=image`, { method: "POST", headers: { "content-type": file.type }, body: file }); setUploading(false); if (r.ok) { await refreshAssets(); setStatus("Imagen subida. Copia su ID en el bloque Imagen."); } else {
@@ -294,6 +330,11 @@ function Editor({ siteId }: { siteId: string }) {
     {/* Capa, no pantalla: cerrarla no debe desmontar el editor ni perder lo
         que el dueno tenia sin guardar. */}
     {showInbox && <Inbox siteId={siteId} onClose={() => setShowInbox(false)}/>}
+    {showDesign && <DesignWithAi
+      siteId={siteId}
+      onClose={() => setShowDesign(false)}
+      onApplied={() => { void reloadDraft().then(() => setDesignPending(pendingFromDoc(docRef.current))); }}
+    />}
     <header className="editorbar">
       <button className="back" onClick={() => go("/app")} aria-label="Volver al panel">←</button>
       <Brand/>
@@ -305,7 +346,13 @@ function Editor({ siteId }: { siteId: string }) {
           ademas la biblioteca de imagenes. Orden de lectura: primero lo que
           bloquea, luego lo que exige decision, al final el aviso de estilo
           (spec 6.5: este ultimo nunca bloquea la publicacion). */}
-      {(blockers.length > 0 || activeElsewhere || visualNotice.length > 0) && <div className="publish-alerts">
+      {(blockers.length > 0 || activeElsewhere || visualNotice.length > 0 || designPending.length > 0) && <div className="publish-alerts">
+        {designPending.length > 0 && <div className="design-pending" role="status">
+          <strong>El diseño con IA dejó datos por confirmar:</strong>
+          <ul>{designPending.map((p) => <li key={p}>{p}</li>)}</ul>
+          <p className="muted small">Rellénalos editando las secciones que dicen «pendiente de confirmar».</p>
+          <button className="ghost" onClick={() => setDesignPending([])} aria-label="Descartar aviso">×</button>
+        </div>}
         {blockers.length > 0 && <div className="publish-blockers" role="alert">
           <strong>Para publicar falta:</strong>
           <ul>{blockers.map((b) => <li key={b}>{b}</li>)}</ul>
@@ -331,6 +378,7 @@ function Editor({ siteId }: { siteId: string }) {
           Imágenes {assets.length > 0 && <span className="asset-count">{assets.length}</span>}
         </button>
         <button className="ghost" onClick={() => setShowStyles(true)}>Estilos</button>
+        <button className="ghost design-trigger" onClick={() => setShowDesign(true)}>Diseñar con IA</button>
         <button className="ghost" onClick={() => setShowInbox(true)}>Mensajes {newLeads > 0 && <span className="asset-count">{newLeads}</span>}</button>
         <button className="ghost" onClick={() => setShowPreview(true)}>Vista previa</button>
         <button className="primary publish" onClick={() => void publish()}>Publicar sitio</button>

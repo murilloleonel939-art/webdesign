@@ -22,6 +22,7 @@ import { ensureHostname, linkHost, unlinkHost } from "./hosting.js";
 import { parseCookies, resolveSession, login, createUser, createSite, deleteSite, listSites, saveDraft, loadDraft, publish, rollbackTo, unpublish, isAnotherSiteActive, activeAssets, SESSION_COOKIE } from "./api.js";
 import { renderPage } from "@webdesign/renderer";
 import { registerAsset, type AssetKind } from "@webdesign/assets";
+import { quickBriefSchema, designAgent, FAST_BUDGET } from "@webdesign/agent-design";
 import { diagnosticsEnabled, tokenMatches, runDiagnostics } from "./diagnose.js";
 
 // Punto de entrada de `platform`: healthcheck, panel y vista previa aislada.
@@ -740,6 +741,118 @@ async function handleApi(pool: import("pg").Pool, sitesRoot: string, req: Incomi
           });
       });
     }
+    return true;
+  }
+
+  // Agente de diseño con IA (punto D): el dueno pide un diseño rapido desde el
+  // panel. El token NUNCA vuelve al navegador: lo ve el worker, no el dueno.
+  const designRunsMatch = /^\/api\/sites\/([0-9a-f-]{36})\/design-runs$/.exec(url.pathname);
+  const designRunOneMatch = designRunsMatch ? null : /^\/api\/sites\/([0-9a-f-]{36})\/design-runs\/([0-9a-f-]{36})$/.exec(url.pathname);
+  if (designRunsMatch ?? designRunOneMatch) {
+    if (!session) {
+      json(res, 401, { error: "unauthorized" });
+      return true;
+    }
+    const siteId = (designRunsMatch ?? designRunOneMatch)![1] as string;
+    // El sitio debe ser del dueno. RLS ya limita `sites` a lo suyo (0001); si
+    // la fila no aparece, da igual si no existe o es de otra cuenta: 404 en
+    // ambos casos, igual que en `rollback` y `unpublish`.
+    const owns = await withUser(pool, session.userId, async (tx) =>
+      (await tx.query("SELECT 1 FROM sites WHERE id = $1", [siteId])).rows[0],
+    );
+    if (!owns) {
+      json(res, 404, { error: "not_found" });
+      return true;
+    }
+
+    if (designRunOneMatch) {
+      if (req.method !== "GET") {
+        json(res, 405, { error: "method_not_allowed" });
+        return true;
+      }
+      const runId = designRunOneMatch[2] as string;
+      const run = await withUser(pool, session.userId, async (tx) =>
+        (await tx.query<{ status: string; stop_reason: string | null }>(
+          "SELECT status, stop_reason FROM agent_runs WHERE id = $1 AND site_id = $2 AND user_id = $3",
+          [runId, siteId, session.userId],
+        )).rows[0],
+      );
+      if (!run) {
+        json(res, 404, { error: "not_found" });
+        return true;
+      }
+      json(res, 200, { status: run.status, stopReason: run.stop_reason });
+      return true;
+    }
+
+    if (req.method !== "POST") {
+      json(res, 405, { error: "method_not_allowed" });
+      return true;
+    }
+    const body = await readJson(req);
+    const parsedBrief = quickBriefSchema.safeParse(body);
+    // Los cinco campos son opcionales por separado, pero el brief entero no:
+    // sin un solo dato el agente no puede escribir nada y la ejecucion se
+    // gastaria para acabar en error. Se corta aqui, antes de crear la fila.
+    const hasData = parsedBrief.success
+      && Object.values(parsedBrief.data).some((v) => typeof v === "string" && v.trim().length > 0);
+    if (!parsedBrief.success || !hasData) {
+      json(res, 400, { error: "invalid_brief" });
+      return true;
+    }
+
+    const runId = randomUUID();
+    const jti = randomUUID();
+    // Presupuesto del modo rapido (14.1): el tope de tokens del run es el del
+    // agente, no un numero inventado aqui.
+    const maxTokens = FAST_BUDGET.maxTokens;
+    await withUser(pool, session.userId, async (tx) => {
+      await tx.query(
+        `INSERT INTO agent_runs (id, agent_id, user_id, site_id, status, model, prompt_tokens_max)
+         VALUES ($1, $2, $3, $4, 'running', $5, $6)`,
+        // `agent_id` es el del agente de verdad: el catalogo de ejecuciones se
+        // agrupa por el, y un alias suelto ('design-fast') quedaria huerfano.
+        [runId, designAgent.id, session.userId, siteId, designAgent.model, maxTokens],
+      );
+      await tx.query(
+        `INSERT INTO agent_tokens (jti, run_id, scopes, site_id, expires_at)
+         VALUES ($1, $2, $3, $4, now() + interval '15 minutes')`,
+        [jti, runId, ["llm:complete"], siteId],
+      );
+    });
+
+    const redisUrl = process.env.REDIS_URL;
+    if (!redisUrl) {
+      // Sin cola no hay quien ejecute el diseño: se cierra la ejecucion ya
+      // mismo, se revoca el token recien creado y se avisa al panel.
+      await withUser(pool, session.userId, async (tx) => {
+        await tx.query(
+          "UPDATE agent_runs SET status = 'error', stop_reason = $2, ended_at = now() WHERE id = $1",
+          [runId, "El servicio de diseño no está disponible ahora mismo"],
+        );
+        await tx.query("UPDATE agent_tokens SET revoked_at = now() WHERE jti = $1", [jti]);
+      });
+      json(res, 503, { error: "agent_unavailable" });
+      return true;
+    }
+
+    try {
+      const { enqueueDesignRun } = await import("@webdesign/workers");
+      await enqueueDesignRun({ url: redisUrl }, { runId, siteId, userId: session.userId, brief: parsedBrief.data });
+    } catch (e) {
+      console.warn("design_enqueue_failed", { siteId, runId, error: String((e && (e as Error).message) || e) });
+      await withUser(pool, session.userId, async (tx) => {
+        await tx.query(
+          "UPDATE agent_runs SET status = 'error', stop_reason = $2, ended_at = now() WHERE id = $1",
+          [runId, "El servicio de diseño no está disponible ahora mismo"],
+        );
+        await tx.query("UPDATE agent_tokens SET revoked_at = now() WHERE jti = $1", [jti]);
+      });
+      json(res, 503, { error: "agent_unavailable" });
+      return true;
+    }
+
+    json(res, 202, { runId });
     return true;
   }
 

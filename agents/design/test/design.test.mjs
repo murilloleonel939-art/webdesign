@@ -133,7 +133,9 @@ test("plan: degrada testimonios y ventajas, omite imágenes sin assets", () => {
 
 test("agente: definición de modo rápido, sin herramienta de publicar", () => {
   assert.equal(designAgent.id, "design");
-  assert.equal(designAgent.model, "fast-small");
+  // Alias nuevo del catalogo: el agente de diseño usa el modelo del proveedor
+  // compatible OpenAI (`claude-sonnet-5`), no el `fast-small` de antes.
+  assert.equal(designAgent.model, "design");
   assert.ok(designAgent.budget.maxTokens > 0);
   assert.ok(!designAgent.tools.some((t) => t.includes("publish")));
 });

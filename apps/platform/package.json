@@ -7,10 +7,11 @@
   "scripts": {
     "build": "tsc -p tsconfig.json && node build-ui.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node --test test/preview-isolation.test.mjs test/cycle.test.mjs test/load.test.mjs test/another-active.test.mjs test/finding-label.test.mjs"
+    "test": "node --test test/preview-isolation.test.mjs test/cycle.test.mjs test/load.test.mjs test/another-active.test.mjs test/finding-label.test.mjs test/design-runs.test.mjs"
   },
   "dependencies": {
     "@measured/puck": "0.20.2",
+    "@webdesign/agent-design": "workspace:*",
     "@webdesign/assets": "workspace:*",
     "@webdesign/auth": "workspace:*",
     "@webdesign/db": "workspace:*",

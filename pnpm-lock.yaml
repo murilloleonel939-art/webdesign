@@ -73,6 +73,9 @@ importers:
       '@measured/puck':
         specifier: 0.20.2
         version: 0.20.2(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
+      '@webdesign/agent-design':
+        specifier: workspace:*
+        version: link:../../agents/design
       '@webdesign/assets':
         specifier: workspace:*
         version: link:../../packages/assets
@@ -131,12 +134,24 @@ importers:
 
   apps/workers:
     dependencies:
+      '@webdesign/agent-design':
+        specifier: workspace:*
+        version: link:../../agents/design
+      '@webdesign/db':
+        specifier: workspace:*
+        version: link:../../packages/db
+      '@webdesign/editor':
+        specifier: workspace:*
+        version: link:../../packages/editor
       '@webdesign/lint-visual':
         specifier: workspace:*
         version: link:../../packages/lint-visual
       '@webdesign/linter':
         specifier: workspace:*
         version: link:../../packages/linter
+      '@webdesign/llm':
+        specifier: workspace:*
+        version: link:../../packages/llm
       '@webdesign/renderer':
         specifier: workspace:*
         version: link:../../packages/renderer
