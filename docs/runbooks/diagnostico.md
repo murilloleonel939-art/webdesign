@@ -16,8 +16,8 @@ estados y nombres de migración. El código que lo garantiza está en
 
 ## Activación
 
-El endpoint **no existe** si `DIAGNOSTIC_TOKEN` no está definida. No hay ruta, no hay 401:
-la petición cae en el 404 normal.
+El endpoint **no existe** si `DIAGNOSTIC_TOKEN` no está definida o tiene menos de 16
+caracteres. No hay ruta, no hay 401: la petición cae en el 404 normal.
 
 En Coolify, recurso `plataforma` → Environment Variables:
 
@@ -50,13 +50,19 @@ Salida esperada, resumida:
 
 | Síntoma | Qué significa | Qué hacer |
 | --- | --- | --- |
-| HTTP 404 | `DIAGNOSTIC_TOKEN` no está definida | Añadir la variable y redeploy |
+| HTTP 404 | `DIAGNOSTIC_TOKEN` no está definida o tiene menos de 16 caracteres | Definir la variable y redeploy |
 | HTTP 401 | Token mal escrito o ausente en la cabecera | Revisar el valor exacto |
+| `database.error: "db_unreachable"` | `platform` no alcanza Postgres | Revisar `DATABASE_URL`, credenciales y que `postgresql` esté `Running`; el mensaje real del driver queda en el log de `plataforma` con `console.error("diagnose", …)` |
 | `database.reachable: false` | `platform` no alcanza Postgres | Revisar `DATABASE_URL` y que `postgresql` esté `Running` |
+| `migrations.note: "migrations_unreadable"` | El rol de la app no puede leer `schema_migrations` | Es lo esperado con `app_platform`: el informe se apoya en las tablas. El error real está en el log |
+| `storage.error: "storage_unreadable"` | No se pudo listar `/data/sites` | Revisar el volumen montado y sus permisos; el error real está en el log |
 | `migrations.missing` con entradas | Migración no aplicada | Revisar los logs de arranque de `plataforma` |
 | `counts.domains: null` | La migración `0008` no está aplicada | Normal hoy; llega con Fase 2 |
 | `ok: false` con base alcanzable | Conecta pero falta una migración | Es el caso anterior |
 | `storage.sitesOnDisk: []` | No hay ningún sitio en disco | Coherente: todavía no se publicó ninguno |
+
+Los `error`/`note` del informe son **códigos fijos**, nunca el mensaje del driver: este
+último puede arrastrar host, usuario o SQL. El detalle real se registra solo en el servidor.
 
 ## Códigos de estado
 

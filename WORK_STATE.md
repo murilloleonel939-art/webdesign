@@ -467,3 +467,39 @@ obligatorio en `buildEditorConfig` sin que nadie lo leyera: ahora es opcional.
   por regex (no los copia) y extrae `findingLabel` con esbuild; falla si algun codigo se queda
   sin etiqueta o si la etiqueta es el propio codigo. 3/3.
 - Verificado: tsc plataforma 0, tsc UI 0, turbo `typecheck test` **67/67**.
+
+### Hallazgos de la auditoria de seguridad: cerrados
+
+Auditoria de aislamiento entre cuentas (skill `security-audit`). Cinco fallos reales; los cinco
+corregidos y verificados en disco. No se debilito ninguna politica, ni FORCE, ni el indice
+`sites_one_active_per_owner` (`git diff` de 0001-0018 vacio).
+
+1. **Revertir el sitio de otro** (`packages/publish/src/index.ts:278-314`). `rollbackTo` movia el
+   symlink `public` antes de `withUser` y su `UPDATE` no llevaba `owner_id`: con el UUID ajeno se
+   servia otra version. Ahora: cerrojo por dueno, `SELECT ... WHERE owner_id=$2 FOR UPDATE`, y
+   solo despues disco y `UPDATE ... AND owner_id`. Devuelve `RollbackResult` tipado; la ruta da
+   404 `not_found` / 409 `invalid_version`. Ademas la version anterior sale de `listVersions`, no
+   de restar 1 (con releases borradas apuntaba a una que no existe).
+2. **Subir imagen al directorio de otro** (`packages/assets/src/index.ts:135-180`). Escribia en
+   disco antes de comprobar dueno y cuota: dejaba basura en el sitio ajeno y saltaba la cuota.
+   Orden nuevo: dueno `FOR UPDATE` -> cuota -> disco -> INSERT, con `removeQuietly` si el INSERT
+   falla. Prueba sin BD: `packages/assets/test/register-order.test.mjs` (8/8).
+3. **Assets de sitios retirados** (`apps/platform/src/server.ts:374-392`). `GET /assets/...`
+   servia el fichero sin consultar la base: un asset `withdrawn_by_claim` seguia accesible. Ahora
+   el dueno con sesion lo ve (incluido draft) y el anonimo solo si `app_public_asset_visible`
+   dice que el sitio esta `active` y el asset no esta retirado; si no, 404.
+4. **Diagnostico abierto** (`apps/platform/src/diagnose.ts`). `DIAGNOSTIC_OPEN=1` dejaba
+   `/app/diagnose` sin autenticacion y devolvia `(e as Error).message` de pg (host y usuario de la
+   base). La variable ya no existe en el codigo (grep 0 fuera de `dist`); sin `DIAGNOSTIC_TOKEN`
+   de 16+ caracteres la ruta cae en el 404 generico, y al cliente solo van codigos
+   (`db_unreachable`, `migrations_unreadable`, `storage_unreadable`).
+5. **Limite de envios que nunca frenaba** (`apps/platform/src/lead.ts:99-107`). `count(*)` con el
+   pool crudo y `leads` con RLS forzado daba 0 siempre: el tope de 5/10 min no existia. Ahora por
+   funcion SECURITY DEFINER, sin abrir politica SELECT sobre `leads`.
+- **Migracion `0019_public_security_checks.sql`** (nueva): `app_lead_recent_count` y
+  `app_public_asset_visible`, ambas SECURITY DEFINER con `search_path` fijo, `REVOKE ALL FROM
+  PUBLIC` y `GRANT EXECUTE TO app_platform`. `migrate.test.mjs` comprueba `prosecdef`,
+  `provolatile`, `proconfig` y las ACL.
+- **Pendiente de comprobar en una maquina con Postgres**: los asserts de 0019 y las pruebas
+  gateadas por `DB_TEST_URL` (7 ficheros). Aqui pasan por la rama skip y no prueban nada.
+- Verificado: tsc plataforma 0, tsc UI 0, turbo `typecheck test --force` **67/67**.

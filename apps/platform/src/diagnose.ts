@@ -5,15 +5,15 @@
 // que datos hay. Nunca devuelve datos personales (emails, telefonos,
 // nombres): solo recuentos y estados.
 //
-// Se activa solo si DIAGNOSTIC_TOKEN esta definido. Sin esa variable el
-// endpoint no existe, asi que no amplia la superficie en produccion.
+// Se activa solo si DIAGNOSTIC_TOKEN esta definido y tiene al menos 16
+// caracteres. Sin esa variable el endpoint no existe, asi que no amplia la
+// superficie en produccion.
 
+import { timingSafeEqual } from "node:crypto";
 import type { Pool } from "pg";
 
 export interface DiagnosticReport {
   ok: boolean;
-  // Presente solo en modo abierto: recuerda que hay que retirarlo.
-  warning?: string | undefined;
   database: { reachable: boolean; version?: string | undefined; role?: string | undefined; error?: string | undefined };
   migrations: { applied: number; files: string[]; missing: string[]; note?: string | undefined };
   // Filas reales cuando RLS las oculta al rol de la app.
@@ -33,28 +33,35 @@ const EXPECTED_MIGRATIONS = [
 // Tablas de las que se cuenta sin exponer contenido.
 const COUNTED = ["users", "sites", "site_drafts", "site_versions", "assets", "domains", "leads"];
 
-export function diagnosticsEnabled(): boolean {
-  // Dos modos: `open` (provisional, sin cabecera) o token (permanente).
-  // `open` existe solo para una ventana de depuracion y debe retirarse.
-  if (process.env.DIAGNOSTIC_OPEN === "1") return true;
-  return Boolean(process.env.DIAGNOSTIC_TOKEN);
+// Longitud minima aceptada para el token. Un secreto mas corto no protege
+// nada y se trata como no configurado: la ruta no existe.
+const MIN_TOKEN_LENGTH = 16;
+
+// Token configurado y utilizable. Devuelve la cadena solo si vale; si no,
+// undefined (nunca null: el tipo no admite basura).
+function configuredToken(): string | undefined {
+  const expected = process.env.DIAGNOSTIC_TOKEN;
+  if (!expected || expected.length < MIN_TOKEN_LENGTH) return undefined;
+  return expected;
 }
 
-export function isOpenMode(): boolean {
-  return process.env.DIAGNOSTIC_OPEN === "1";
+export function diagnosticsEnabled(): boolean {
+  // Sin token valido no hay endpoint: la peticion cae en el 404 normal y no
+  // se revela que la ruta exista.
+  return configuredToken() !== undefined;
 }
 
 export function tokenMatches(presented: string | null): boolean {
-  // Modo abierto: no se exige cabecera. Marcado para retirar.
-  if (isOpenMode()) return true;
-  const expected = process.env.DIAGNOSTIC_TOKEN;
+  const expected = configuredToken();
   // Sin token configurado no hay comparacion posible: se cierra, no se abre.
-  if (!expected || !presented) return false;
+  if (expected === undefined || !presented) return false;
   // Comparacion de longitud constante: el token no se filtra por tiempos.
-  if (presented.length !== expected.length) return false;
-  let diff = 0;
-  for (let i = 0; i < expected.length; i++) diff |= presented.charCodeAt(i) ^ expected.charCodeAt(i);
-  return diff === 0;
+  // timingSafeEqual exige buffers del mismo tamano, asi que la longitud se
+  // comprueba antes.
+  const a = Buffer.from(presented, "utf8");
+  const b = Buffer.from(expected, "utf8");
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(a, b);
 }
 
 export async function runDiagnostics(pool: Pool, sitesRoot: string): Promise<DiagnosticReport> {
@@ -67,9 +74,6 @@ export async function runDiagnostics(pool: Pool, sitesRoot: string): Promise<Dia
     storage: { sitesRoot, sitesOnDisk: null },
     time: new Date().toISOString(),
   };
-  if (isOpenMode()) {
-    report.warning = "DIAGNOSTIC_OPEN activo: endpoint sin autenticacion. Retirar cuanto antes.";
-  }
 
   report.rlsHidden = {};
 
@@ -81,7 +85,10 @@ export async function runDiagnostics(pool: Pool, sitesRoot: string): Promise<Dia
     report.database.version = v.rows[0]?.version.split(" ").slice(0, 2).join(" ");
     report.database.role = v.rows[0]?.role;
   } catch (e) {
-    report.database.error = (e as Error).message;
+    // El cliente recibe un codigo fijo, nunca el mensaje del driver: puede
+    // llevar host, usuario o SQL. El detalle real va al log del servidor.
+    report.database.error = "db_unreachable";
+    console.error("diagnose", { step: "database", code: "db_unreachable", error: e });
     // Sin conexion no tiene sentido seguir: el resto depende de ella.
     return report;
   }
@@ -96,8 +103,10 @@ export async function runDiagnostics(pool: Pool, sitesRoot: string): Promise<Dia
     };
   } catch (e) {
     // Falta de permiso no es falta de migracion. Se distingue para no dar un
-    // falso negativo: el rol de la app no puede leer schema_migrations.
-    report.migrations.note = `sin permiso de lectura: ${(e as Error).message}`;
+    // falso negativo: el rol de la app no puede leer schema_migrations. El
+    // mensaje del error se queda en el log: al cliente le llega un codigo.
+    report.migrations.note = "migrations_unreadable";
+    console.error("diagnose", { step: "migrations", code: "migrations_unreadable", error: e });
   }
 
   // Recuentos por tabla. Cada uno se intenta por separado: una tabla ausente
@@ -136,7 +145,8 @@ export async function runDiagnostics(pool: Pool, sitesRoot: string): Promise<Dia
     const { readdir } = await import("node:fs/promises");
     report.storage.sitesOnDisk = await readdir(sitesRoot);
   } catch (e) {
-    report.storage.error = (e as Error).message;
+    report.storage.error = "storage_unreadable";
+    console.error("diagnose", { step: "storage", code: "storage_unreadable", error: e });
   }
 
   // Solo se declara sano si conecta y no falta ninguna migracion esperada.

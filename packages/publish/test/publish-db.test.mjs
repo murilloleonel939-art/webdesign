@@ -79,11 +79,35 @@ test("el dueno puede publicar confirmando el aviso, y queda en auditoria", async
 });
 
 test("revierte a la version anterior", async () => {
-  const to = await rollbackTo(pool, { sitesRoot: root, userId: OWNER, siteId: SITE });
-  assert.equal(to, 1);
+  const r = await rollbackTo(pool, { sitesRoot: root, userId: OWNER, siteId: SITE });
+  assert.equal(r.ok, true);
+  assert.equal(r.version, 1);
   assert.equal(currentVersion(root, SITE), 1);
   const audit = await withUser(pool, OWNER, async (tx) => (await tx.query("SELECT action FROM audit_log WHERE action = 'site.rollback'")).rows);
   assert.equal(audit.length, 1);
+});
+
+test("una version inexistente no mueve el symlink ni escribe auditoria", async () => {
+  // Regresion: `switchRelease` se llamaba antes de validar, y con el siteId de
+  // la URL. Revertir a v99 dejaba `public` movido y una fila de auditoria.
+  const r = await rollbackTo(pool, { sitesRoot: root, userId: OWNER, siteId: SITE }, 99);
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, "invalid_version");
+  assert.equal(currentVersion(root, SITE), 1);
+});
+
+test("un sitio ajeno no se puede revertir y no se toca su symlink", async () => {
+  const OTHER_SITE = "66666666-6666-4666-8666-666666666666";
+  const OTHER_OWNER = "22222222-2222-4222-8222-222222222222";
+  await pool.query(`INSERT INTO users (id, email, name) VALUES ('${OTHER_OWNER}', 'l@b.co', 'Luis')`);
+  await pool.query(`INSERT INTO sites (id, owner_id, name) VALUES ('${OTHER_SITE}', '${OTHER_OWNER}', 'Ajeno')`);
+  // OWNER intenta revertir el sitio de OTHER_OWNER.
+  const r = await rollbackTo(pool, { sitesRoot: root, userId: OWNER, siteId: OTHER_SITE });
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, "not_found");
+  // Sin las releases de ese sitio en disco, nada pudo escribirse.
+  assert.equal(currentVersion(root, OTHER_SITE), 0);
+  assert.equal(currentVersion(root, SITE), 1);
 });
 
 test("rechaza un documento invalido sin tocar ficheros", async () => {

@@ -334,17 +334,23 @@ test("the diagnostic endpoint is invisible without a token", async () => {
 
 test("the diagnostic route is not swallowed by the panel wildcard", async () => {
   // Regresion: GET /app/* servia panel.html y devolvia 404 antes de llegar aqui.
-  process.env.DIAGNOSTIC_OPEN = "1";
+  // Con token configurado la ruta existe y exige cabecera: 401, no 404.
+  process.env.DIAGNOSTIC_TOKEN = "token-de-prueba-1234567890";
   try {
     const r = await callRaw("GET", "/app/diagnose", false);
     assert.notEqual(r.status, 404, "el comodin del panel no debe capturar /app/diagnose");
-    assert.equal(r.status === 200 || r.status === 503, true);
-    const body = JSON.parse(r.text);
-    // En modo abierto el propio informe avisa de que hay que retirarlo.
-    assert.match(body.warning ?? "", /DIAGNOSTIC_OPEN/);
+    assert.equal(r.status, 401);
   } finally {
-    delete process.env.DIAGNOSTIC_OPEN;
+    delete process.env.DIAGNOSTIC_TOKEN;
   }
+});
+
+test("the diagnostic route does not exist without a configured token", async () => {
+  // Sin DIAGNOSTIC_TOKEN no hay ruta: 404 del comodin, nunca 401 ni 200.
+  delete process.env.DIAGNOSTIC_TOKEN;
+  const r = await callRaw("GET", "/app/diagnose", false);
+  assert.equal(r.status, 404);
+  assert.equal(r.text.includes("diagnose"), false);
 });
 
 test("the diagnostic reports migrations and counts, with no personal data", async () => {

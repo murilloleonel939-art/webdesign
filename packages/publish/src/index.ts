@@ -3,7 +3,7 @@ import type { Pool } from "pg";
 import { withUser, type Tx } from "@webdesign/db";
 import { lintSite, blocksPublication, type LintFinding } from "@webdesign/linter";
 import { lintRelease, needsOwnerConfirmation } from "@webdesign/lint-visual";
-import { publishRelease, rollback as rollbackFs, switchRelease, currentVersion } from "@webdesign/releases";
+import { publishRelease, switchRelease, listVersions } from "@webdesign/releases";
 import { renderPage } from "@webdesign/renderer";
 import { validateSiteDocument, type SiteDocument } from "@webdesign/site-schema";
 
@@ -262,20 +262,52 @@ export interface RollbackOptions {
   siteId: string;
 }
 
+export type RollbackResult =
+  | { ok: true; version: number }
+  // Sitio ajeno o inexistente: misma respuesta para no filtrar existencia.
+  | { ok: false; reason: "not_found" }
+  // Version no entera/<1, o sin release en disco para ese sitio.
+  | { ok: false; reason: "invalid_version" };
+
 // Revertir es volver a una version que ya existe: el documento no cambia.
-export async function rollbackTo(pool: Pool, opts: RollbackOptions, version?: number): Promise<number> {
-  // Revertir a una version concreta, o a la anterior si no se indica.
-  const target = version ?? currentVersion(opts.sitesRoot, opts.siteId) - 1;
-  if (!Number.isInteger(target) || target < 1) throw new Error("invalid target version");
-  if (version === undefined) rollbackFs(opts.sitesRoot, opts.siteId);
-  else switchRelease(opts.sitesRoot, opts.siteId, version);
-  await withUser(pool, opts.userId, async (tx: Tx) => {
+// ORDEN IMPORTANTE (mismo motivo que publish/unpublish): la comprobacion de
+// dueno y de version va ANTES de tocar el symlink `public`. Antes, `rollbackFs`/
+// `switchRelease` se llamaban con el `siteId` crudo de la URL, sin pasar por
+// `withUser` ni comprobar `owner_id`: cualquier sesion valida podia mover el
+// symlink publico de un sitio ajeno con solo adivinar su UUID.
+export async function rollbackTo(pool: Pool, opts: RollbackOptions, version?: number): Promise<RollbackResult> {
+  return await withUser(pool, opts.userId, async (tx: Tx): Promise<RollbackResult> => {
+    // Mismo cerrojo por dueno que publish/unpublish: serializa quien mueve el
+    // symlink de las releases de esta cuenta.
+    await tx.query(`SELECT pg_advisory_xact_lock(${ACTIVE_SITE_LOCK_NS}, hashtext($1))`, [opts.userId]);
+
+    const found = await tx.query<{ id: string }>(
+      `SELECT 1 FROM sites WHERE id = $1 AND owner_id = $2 FOR UPDATE`,
+      [opts.siteId, opts.userId],
+    );
+    if (found.rowCount === 0) return { ok: false, reason: "not_found" };
+
+    // Si no se pide version, la anterior en la lista de releases; si se pide,
+    // debe ser entera >= 1 y existir ya como release en disco. Se resuelve
+    // aqui, con la lista ordenada real: `currentVersion - 1` no siempre es la
+    // anterior (se pueden haber borrado releases intermedias), y `rollbackFs`
+    // lanzaba si habia menos de dos.
+    const versions = listVersions(opts.sitesRoot, opts.siteId);
+    const requested = version ?? versions.at(-2);
+    if (requested === undefined || !Number.isInteger(requested) || requested < 1) {
+      return { ok: false, reason: "invalid_version" };
+    }
+    if (!versions.includes(requested)) return { ok: false, reason: "invalid_version" };
+
+    const target = requested;
+    switchRelease(opts.sitesRoot, opts.siteId, target);
+
     await tx.query(
       `INSERT INTO audit_log (id, actor_type, actor_id, site_id, action, target, meta)
        VALUES ($1, 'user', $2, $3, 'site.rollback', $4, $5)`,
       [randomUUID(), opts.userId, opts.siteId, `v${target}`, JSON.stringify({ to: target })],
     );
-    await tx.query(`UPDATE sites SET published_version = $2 WHERE id = $1`, [opts.siteId, target]);
+    await tx.query(`UPDATE sites SET published_version = $2 WHERE id = $1 AND owner_id = $3`, [opts.siteId, target, opts.userId]);
+    return { ok: true, version: target };
   });
-  return target;
 }

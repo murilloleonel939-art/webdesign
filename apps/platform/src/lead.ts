@@ -97,11 +97,13 @@ export function validateLead(raw: Record<string, unknown>): { ok: true; value: L
 }
 
 // Limite sencillo por IP y sitio: descarta inundaciones sin tocar la tabla.
+// El conteo va por funcion SECURITY DEFINER (0019): `leads` lleva RLS forzado y
+// la peticion publica llega sin usuario fijado en la transaccion, asi que un
+// `count(*)` directo devolvia 0 siempre y el limite no frenaba nada.
 export async function recentCount(pool: pg.Pool, siteId: string, ipHash: string, minutes: number): Promise<number> {
-  const r = await pool.query<{ n: string }>(
-    `SELECT count(*) AS n FROM leads
-     WHERE site_id = $1 AND source_ip_hash = $2 AND created_at > now() - ($3 || ' minutes')::interval`,
-    [siteId, ipHash, String(minutes)],
+  const r = await pool.query<{ n: number | string }>(
+    "SELECT app_lead_recent_count($1, $2, $3) AS n",
+    [siteId, ipHash, minutes],
   );
   return Number(r.rows[0]?.n ?? 0);
 }

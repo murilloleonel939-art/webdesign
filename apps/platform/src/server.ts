@@ -356,16 +356,46 @@ async function handleApi(pool: import("pg").Pool, sitesRoot: string, req: Incomi
     return true;
   }
 
-  // Subida de asset: cuerpo binario crudo; el tipo real se detecta del contenido.
+  // Assets publicos. La ruta llega del navegador, asi que antes de leer el
+  // disco se comprueba quien la pide: el duenno ve sus propios assets aunque el
+  // sitio siga en borrador; cualquier otro solo ve los de un sitio publicado y
+  // sin retirar. Sin esta comprobacion, saber el uuid de un sitio bastaba para
+  // descargar los assets de un borrador ajeno.
   const publicAssetMatch = /^\/assets\/([0-9a-f-]{36})\/(image|video|poster)\/([a-zA-Z0-9._-]+)$/.exec(url.pathname);
   if (req.method === "GET" && publicAssetMatch) {
     const siteId = publicAssetMatch[1]!;
     const relative = `${publicAssetMatch[2]}/${publicAssetMatch[3]}`;
+
+    let allowed = false;
+    if (session) {
+      // Se pregunta por la fila, no por el sitio: `withUser` pone `app.user_id`
+      // y la politica de 0003 ya limita a los sitios del duenno. El JOIN con
+      // `sites` y `owner_id` es la condicion explicita del permiso.
+      const own = await withUser(pool, session.userId, async (tx) =>
+        (await tx.query(
+          "SELECT 1 FROM assets a JOIN sites s ON s.id = a.site_id WHERE a.site_id = $1 AND a.path = $2 AND s.owner_id = $3",
+          [siteId, relative, session.userId],
+        )).rows[0],
+      );
+      allowed = own !== undefined;
+    }
+    if (!allowed) {
+      // SECURITY DEFINER (0019): el visitante anonimo no puede leer `assets` ni
+      // `sites` con RLS forzado. La funcion responde solo si el sitio esta
+      // activo y el asset existe sin retirada.
+      const r = await pool.query<{ ok: boolean }>("SELECT app_public_asset_visible($1, $2) AS ok", [siteId, relative]);
+      allowed = r.rows[0]?.ok === true;
+    }
+    if (!allowed) {
+      json(res, 404, { error: "not_found" });
+      return true;
+    }
+
     const physical = join(sitesRoot, siteId, "assets", relative);
     try {
       const body = await readFile(physical);
       const mime = { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp" }[extname(physical).toLowerCase()] ?? "application/octet-stream";
-       res.writeHead(200, { "content-type": mime, "cache-control": "private, max-age=3600" });
+      res.writeHead(200, { "content-type": mime, "cache-control": "private, max-age=3600" });
       res.end(body);
     } catch { json(res, 404, { error: "not_found" }); }
     return true;
@@ -721,9 +751,15 @@ async function handleApi(pool: import("pg").Pool, sitesRoot: string, req: Incomi
     }
     const siteId = rollbackMatch[1] as string;
     const body = (await readJson(req)) as { version?: number } | undefined;
-    const version = await rollbackTo(pool, { sitesRoot, userId: session.userId, siteId },
+    const r = await rollbackTo(pool, { sitesRoot, userId: session.userId, siteId },
       body?.version === undefined ? undefined : Number(body.version));
-    json(res, 200, { version });
+    if (!r.ok) {
+      // Sitio ajeno e inexistente dan lo mismo: no se filtra quien tiene que.
+      if (r.reason === "not_found") json(res, 404, { error: "not_found" });
+      else json(res, 409, { error: r.reason });
+      return true;
+    }
+    json(res, 200, { version: r.version });
     return true;
   }
 

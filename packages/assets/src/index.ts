@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, rename, writeFile } from "node:fs/promises";
+import { mkdir, rename, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { Pool } from "pg";
 import { withUser } from "@webdesign/db";
@@ -123,17 +123,28 @@ export async function registerAsset(pool: Pool, opts: RegisterAssetOptions): Pro
   const rel = assetRelativePath(id, opts.kind, extensionFor(opts.kind, mime), opts.content);
   // Solo se acepta ruta bajo /data/sites/<siteId>/assets.
   const abs = join(opts.sitesRoot, opts.siteId, "assets", rel);
-  await mkdir(dirname(abs), { recursive: true });
   // Escritura atomica: un fallo a medias no deja un asset corrupto publicado.
   const tmp = `${abs}.tmp`;
-  await writeFile(tmp, opts.content);
-  await rename(tmp, abs);
 
+  // ORDEN: dueno y cuota primero, disco despues. Antes se hacia mkdir/writeFile
+  // con el `siteId` crudo de la URL, sin comprobar `owner_id` ni la cuota: una
+  // sesion valida podia escribir ficheros bajo /data/sites/<sitio ajeno>/assets
+  // con solo adivinar su UUID, y una subida rechazada por cuota dejaba el
+  // fichero en disco sin fila que lo referenciara.
   try {
-    await withUser(pool, opts.userId, async (tx) => {
-      // Cuota por sitio calculada al subir (spec 7.4 y 14.1).
+    return await withUser(pool, opts.userId, async (tx): Promise<RegisterResult> => {
+      // 1) Dueno del sitio y cerrojo de su fila. Nada de disco antes de esto.
+      const owned = await tx.query(
+        `SELECT 1 FROM sites WHERE id = $1 AND owner_id = $2 FOR UPDATE`,
+        [opts.siteId, opts.userId],
+      );
+      // Sitio ajeno o inexistente: misma respuesta para no filtrar existencia.
+      if (owned.rowCount === 0) throw new SiteNotFoundError();
+
+      // 2) Cuota por sitio calculada al subir (spec 7.4 y 14.1).
       // El peso se mide sobre el sitio entero y la cantidad por tipo: son dos
       // cuotas distintas y mezclarlas dejaria pasar 40 imagenes de 5 MB.
+      // Tambien antes de tocar disco: si se rechaza, no debe quedar el fichero.
       const used = await tx.query<{ total: string; n: string }>(
         `SELECT COALESCE(SUM(bytes), 0) AS total,
                 count(*) FILTER (WHERE kind = $2) AS n
@@ -144,18 +155,58 @@ export async function registerAsset(pool: Pool, opts: RegisterAssetOptions): Pro
       if (total + bytes > LIMITS.siteTotalBytes) throw new AssetError("site_quota_exceeded");
       const count = Number(used.rows[0]?.n ?? 0);
       if (count + 1 > countLimitFor(opts.kind)) throw new AssetError("site_asset_count_exceeded");
-      await tx.query(
-        `INSERT INTO assets (id, site_id, path, kind, bytes, mime, source, license, author, source_url, credit_text)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-        [id, opts.siteId, rel, opts.kind, bytes, mime, opts.source,
-         opts.license ?? null, opts.author ?? null, opts.sourceUrl ?? null, opts.creditText ?? null],
-      );
+
+      // 3) Escritura: solo con el sitio ya verificado y la cuota concedida.
+      await mkdir(dirname(abs), { recursive: true });
+      await writeFile(tmp, opts.content);
+      await rename(tmp, abs);
+
+      // 4) Registro. Si el INSERT falla, el fichero se retira: una fila que no
+      // existe no debe dejar bytes huerfanos en el sitio.
+      try {
+        await tx.query(
+          `INSERT INTO assets (id, site_id, path, kind, bytes, mime, source, license, author, source_url, credit_text)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+          [id, opts.siteId, rel, opts.kind, bytes, mime, opts.source,
+           opts.license ?? null, opts.author ?? null, opts.sourceUrl ?? null, opts.creditText ?? null],
+        );
+      } catch (e) {
+        // Best-effort y sin tapar el error real. ENOENT es lo esperado en el
+        // .tmp (el rename ya lo consumio); cualquier otro fallo de borrado se
+        // ignora por el mismo motivo: manda el error del INSERT.
+        await removeQuietly(abs);
+        await removeQuietly(tmp);
+        throw e;
+      }
+      return { ok: true, id, path: rel, bytes };
     });
   } catch (e) {
     if (e instanceof AssetError) return { ok: false, reason: e.reason };
     throw e;
   }
-  return { ok: true, id, path: rel, bytes };
+}
+
+// Borra un fichero del que no consta existencia. El caso normal es ENOENT (el
+// `rename` ya consumio el .tmp) y se ignora; el resto de fallos de borrado
+// tambien: quien llama relanza el error original del INSERT y un unlink que
+// falla no puede cambiarlo por otro.
+async function removeQuietly(path: string): Promise<void> {
+  try {
+    await unlink(path);
+  } catch {
+    // ENOENT incluido: el fichero no estaba donde se esperaba.
+  }
+}
+
+// Sitio ajeno o inexistente. Se lanza y no se devuelve como `RegisterResult`
+// para no ampliar el motivo de rechazo de subida: no es un problema del
+// archivo, es que ese sitio no es del usuario.
+export class SiteNotFoundError extends Error {
+  readonly code = "site_not_found";
+  constructor() {
+    super("site_not_found");
+    this.name = "SiteNotFoundError";
+  }
 }
 
 class AssetError extends Error {

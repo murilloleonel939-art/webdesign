@@ -16,6 +16,10 @@ after(() => pool.end());
 
 test("applies migrations once and is idempotent", async () => {
   await pool.query("DROP TABLE IF EXISTS sites, site_members, site_drafts, site_versions, assets, audit_log, users, schema_migrations CASCADE");
+  // El rol de la plataforma tiene que existir ANTES de migrar: las migraciones
+  // solo conceden permisos si lo encuentran (`IF EXISTS ... pg_roles`), asi que
+  // creandolo despues el assert de EXECUTE pasaria por el motivo equivocado.
+  await pool.query("DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='app_platform') THEN CREATE ROLE app_platform LOGIN; END IF; END $$");
   // Las migraciones se aplican todas, en orden y sin saltarse ninguna. La lista
   // se deriva del disco a proposito: escribirla a mano la dejo desfasada desde
   // la 0008 y, como esta prueba se salta sin base de datos, nada lo delato.
@@ -50,5 +54,43 @@ test("applies migrations once and is idempotent", async () => {
     for (const c of ["source", "license", "verified_at", "status"]) {
       assert.equal(nombres.includes(c), true, `${t} no tiene ${c}`);
     }
+  }
+
+  // Las dos comprobaciones publicas de 0019 son SECURITY DEFINER y solo las
+  // puede ejecutar la plataforma. Si alguien las recreara sin `REVOKE ... FROM
+  // PUBLIC`, cualquiera con conexion leeria el conteo de leads de un sitio
+  // ajeno: es justo lo que este bloque vigila.
+  const funciones = await pool.query(
+    `SELECT p.proname, p.prosecdef, p.provolatile, p.proconfig
+     FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+     WHERE n.nspname = 'public' AND p.proname = ANY($1) ORDER BY p.proname`,
+    [["app_lead_recent_count", "app_public_asset_visible"]],
+  );
+  assert.deepEqual(funciones.rows.map((r) => r.proname), ["app_lead_recent_count", "app_public_asset_visible"]);
+  for (const f of funciones.rows) {
+    assert.equal(f.prosecdef, true, `${f.proname} no es SECURITY DEFINER`);
+    // STABLE: 's'. Una VOLATILE dasa el conteo por bueno dentro de la transaccion.
+    assert.equal(f.provolatile, "s", `${f.proname} no es STABLE`);
+    // search_path fijo: sin el, la sesion del llamante puede anteponer un esquema.
+    assert.equal((f.proconfig ?? []).some((c) => c.startsWith("search_path=")), true, `${f.proname} sin search_path fijo`);
+  }
+  // `proacl` y no `has_function_privilege('public', ...)`: PUBLIC es un
+  // pseudorol y no un nombre de rol que esa funcion resuelva. La entrada de
+  // PUBLIC en el ACL se escribe sin destinatario (`=X/duenno`); tras el REVOKE
+  // solo debe quedar `app_platform=X/duenno`.
+  const permisos = await pool.query(
+    `SELECT p.proname, p.proacl::text AS acl,
+            has_function_privilege('app_platform', p.oid, 'EXECUTE') AS plataforma
+     FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+     WHERE n.nspname = 'public' AND p.proname = ANY($1) ORDER BY p.proname`,
+    [["app_lead_recent_count", "app_public_asset_visible"]],
+  );
+  assert.deepEqual(permisos.rows.map((r) => r.proname), ["app_lead_recent_count", "app_public_asset_visible"]);
+  for (const p of permisos.rows) {
+    assert.equal(p.plataforma, true, `app_platform no puede ejecutar ${p.proname}`);
+    assert.match(p.acl ?? "", /app_platform=X\//, `${p.proname} sin GRANT a app_platform`);
+    // PUBLIC como destinatario: el ACL va entre llaves y esa entrada se escribe
+    // sin nombre delante, asi que puede ir tras `{` o tras una coma.
+    assert.equal(/(?:[{,])=X\//.test(p.acl ?? ""), false, `${p.proname} sigue abierta a PUBLIC`);
   }
 });
