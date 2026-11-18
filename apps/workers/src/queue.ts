@@ -14,9 +14,15 @@ import { processDesignJob } from "./design-job.js";
 
 export const LINT_QUEUE = "lint-release";
 
-/** Un release concreto: la clave de idempotencia del job. */
+/**
+ * Un release concreto: la clave de idempotencia del job.
+ *
+ * Separador `-`, nunca `:`: BullMQ 5 rechaza el `jobId` con dos puntos
+ * (`Custom Id cannot contain :`) y el encolado entero falla. Misma entrada,
+ * mismo id: el separador es fijo y los tramos no llevan guiones sueltos.
+ */
 export function lintJobId(job: LintJob): string {
-  return `lint:${job.siteId}:${job.version}`;
+  return `lint-${job.siteId}-${job.version}`;
 }
 
 /** Corte por defecto del encolado: si Redis no contesta, se rinde y se sigue. */
@@ -28,9 +34,13 @@ export const AGENT_DESIGN_QUEUE = "agent-design";
 /** Cuantos diseños pueden correr a la vez: llaman al modelo y no son gratis. */
 export const AGENT_DESIGN_CONCURRENCY = 4;
 
-/** Una ejecucion concreta: la clave de idempotencia del job. */
+/**
+ * Una ejecucion concreta: la clave de idempotencia del job.
+ *
+ * Mismo motivo que en `lintJobId`: sin `:`, o BullMQ 5 rechaza el job.
+ */
 export function designJobId(job: { runId: string }): string {
-  return `design:${job.runId}`;
+  return `design-${job.runId}`;
 }
 
 /**

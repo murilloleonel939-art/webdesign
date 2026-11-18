@@ -100,7 +100,7 @@ test("una cola propia y su concurrencia quedan fijadas", () => {
   assert.equal(AGENT_DESIGN_QUEUE, "agent-design");
   assert.equal(AGENT_DESIGN_CONCURRENCY, 4);
   // Idempotencia: el mismo run no entra dos veces.
-  assert.equal(designJobId({ runId: RUN }), `design:${RUN}`);
+  assert.equal(designJobId({ runId: RUN }), `design-${RUN}`);
 });
 
 test("el presupuesto del modo rapido trae todos los limites de 8.2", () => {

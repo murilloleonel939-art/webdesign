@@ -99,10 +99,10 @@ test("e) reejecutar el mismo job deja el mismo numero de filas", async () => {
   assert.equal(table.size, 1);
 });
 
-test("f) lintJobId produce lint:<siteId>:<version>", () => {
+test("f) lintJobId produce lint-<siteId>-<version>", () => {
   // NOTA: `enqueueReleaseLint` crea su propia `Queue` de bullmq dentro de la
   // funcion y no admite inyeccion de conexion/cola, asi que no se puede
   // sustituir por un falso sin mockear bullmq. Se comprueba la clave que usa
   // (exportada), y que `enqueueReleaseLint` la pasa como `jobId` en queue.ts.
-  assert.equal(lintJobId({ siteId: SITE, version: 7 }), `lint:${SITE}:7`);
+  assert.equal(lintJobId({ siteId: SITE, version: 7 }), `lint-${SITE}-7`);
 });
