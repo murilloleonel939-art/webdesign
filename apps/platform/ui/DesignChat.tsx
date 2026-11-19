@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { QUESTIONS, buildPayload, isSendKey, undoMessage } from "./design-chat-flow";
-import type { BriefKey, Question } from "./design-chat-flow";
+import { QUESTIONS, buildPayload, isSendKey, undoMessage, resumeFrom, pollDecision, pollDelay } from "./design-chat-flow";
+import type { BriefKey, LatestRun, Question } from "./design-chat-flow";
 
 // El constructor conversacional (etapa C).
 //
@@ -19,14 +19,13 @@ const api = (path: string, init?: RequestInit) => fetch(path, { credentials: "sa
 const CONTACT_MAX = 200;
 const CONTACT_PLACEHOLDER = "hola@cafeaurora.es o 600 123 123";
 
-/** Cada cuanto se pregunta por la ejecucion, y cuando se deja de preguntar. */
-const POLL_MS = 1500;
-const POLL_MAX = 60;
-
 /** Pasos que se leen mientras el agente escribe. No son un log tecnico. */
 const STEPS = ["Leyendo tu idea", "Eligiendo la estructura", "Escribiendo las secciones", "Revisando el estilo"] as const;
 
-type Phase = "asking" | "running" | "done";
+/** A partir de aqui se avisa que se puede cerrar la ventana sin perder el diseño. */
+const LONG_WAIT_MS = 45000;
+
+type Phase = "asking" | "running" | "stalled" | "done";
 
 interface RunStatus {
   status?: string;
@@ -88,11 +87,47 @@ export function DesignChat({ siteId, initialPrompt, collapsed = false, onDraftCh
   const [startedAt, setStartedAt] = useState<number | null>(null);
   const [elapsed, setElapsed] = useState(0);
   const [copied, setCopied] = useState(false);
+  // Se esta mirando si habia una ejecucion previa (punto D): mientras tanto,
+  // no se pregunta nada, para no interrogar de nuevo a quien ya respondio.
+  const [resuming, setResuming] = useState(true);
 
   // El sondeo se para al cerrar o al desmontar: sin esto, salir del editor
   // dejaria una peticion cada 1,5 s hasta el final de la ejecucion.
   const stopped = useRef(false);
   useEffect(() => () => { stopped.current = true; }, []);
+
+  // Al montar, se mira si ya hubo una ejecucion para este sitio (punto D): un
+  // dueno que cerro el navegador y vuelve no debe ver las preguntas de cero.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      let latest: LatestRun | null = null;
+      try {
+        const r = await api(`/api/sites/${siteId}/design-runs/latest`);
+        if (r.ok) latest = await r.json() as LatestRun;
+      } catch {
+        latest = null;
+      }
+      if (cancelled) return;
+      const resumed = resumeFrom(latest, Date.now());
+      if (resumed.phase === "running") {
+        setRunId(resumed.runId);
+        setPhase("running");
+        setStartedAt(resumed.startedAt);
+        void waitFor(resumed.runId, resumed.startedAt);
+      } else if (resumed.phase === "done") {
+        setRunId(resumed.runId);
+        setRunOk(resumed.ok);
+        setPhase("done");
+        setElapsed(resumed.elapsed);
+        setMessage(phaseText({ status: resumed.status, stopReason: resumed.stopReason }));
+        onDraftChanged();
+      }
+      setResuming(false);
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [siteId]);
 
   const current = QUESTIONS[index];
   const filled = Object.values(answers).some((v) => (v ?? "").trim().length > 0);
@@ -111,42 +146,69 @@ export function DesignChat({ siteId, initialPrompt, collapsed = false, onDraftCh
     const t = setInterval(() => setElapsed(Math.round((Date.now() - startedAt) / 1000)), 500);
     return () => clearInterval(t);
   }, [phase, startedAt]);
-  useEffect(() => { onRunningChange?.(phase === "running"); }, [phase, onRunningChange]);
+  useEffect(() => { onRunningChange?.(phase === "running" || phase === "stalled"); }, [phase, onRunningChange]);
 
-  async function waitFor(runId: string): Promise<void> {
-    for (let i = 0; i < POLL_MAX; i += 1) {
-      await new Promise((r) => setTimeout(r, POLL_MS));
+  /**
+   * Sondea el run hasta que el servidor diga algo distinto de 'running'
+   * (fallo A). Nunca se inventa un 'done': si pasan 10 min sigue 'running' de
+   * verdad, se pasa a 'stalled' y se sigue comprobando en segundo plano.
+   */
+  async function waitFor(runId: string, startedAtMs: number): Promise<void> {
+    while (true) {
+      const elapsedMs = Date.now() - startedAtMs;
+      await new Promise((r) => setTimeout(r, pollDelay(elapsedMs)));
       if (stopped.current) return;
-      let run: RunStatus;
-      try {
-        const r = await api(`/api/sites/${siteId}/design-runs/${runId}`);
-        // Una ejecucion que ya no se ve (sesion cerrada, sitio borrado) no se
-        // reintenta: se deja de preguntar y se dice lo unico cierto.
-        if (!r.ok) {
-          setPhase("done");
-          setMessage("El diseño no pudo completarse. Tu borrador sigue como estaba.");
-          return;
-        }
-        run = await r.json() as RunStatus;
-      } catch {
-        // Un corte de red no cancela el trabajo del agente: se sigue mirando.
-        continue;
-      }
-      if (run.status && run.status !== "running") {
-        setPhase("done");
-        setRunOk(run.status === "ok");
-        setMessage(phaseText(run));
-        if (startedAt !== null) setElapsed(Math.round((Date.now() - startedAt) / 1000));
-        // Ya hay documento nuevo en el servidor: se recarga para que el dueño
-        // lo vea sin salir del editor.
-        onDraftChanged();
-        return;
-      }
-      setMessage("Escribiendo el diseño…");
+      const polled = await pollOnce(runId, startedAtMs);
+      if (polled === "stop") return;
     }
-    // Se acabo la espera, no la ejecucion. Se dice tal cual, sin inventar.
-    setPhase("done");
-    setMessage("El diseño está tardando más de lo normal. Vuelve a entrar en un rato y estará.");
+  }
+
+  /** Una sola comprobacion del run: usada por el sondeo y por "Comprobar ahora". */
+  async function pollOnce(runId: string, startedAtMs: number): Promise<"stop" | "continue"> {
+    let status: string | undefined;
+    let run: RunStatus = {};
+    try {
+      const r = await api(`/api/sites/${siteId}/design-runs/${runId}`);
+      // Una ejecucion que ya no se ve (sesion cerrada, sitio borrado) no se
+      // reintenta: se deja de preguntar y se dice lo unico cierto.
+      if (!r.ok) {
+        setPhase("done");
+        setRunOk(false);
+        setMessage("El diseño no pudo completarse. Tu borrador sigue como estaba.");
+        return "stop";
+      }
+      run = await r.json() as RunStatus;
+      status = run.status;
+    } catch {
+      // Un corte de red no cancela el trabajo del agente: se sigue mirando.
+      status = undefined;
+    }
+    const elapsedMs = Date.now() - startedAtMs;
+    const decision = pollDecision(status, elapsedMs);
+    if (decision === "done") {
+      setPhase("done");
+      setRunOk(run.status === "ok");
+      setMessage(phaseText(run));
+      setElapsed(Math.round(elapsedMs / 1000));
+      // Ya hay documento nuevo en el servidor: se recarga para que el dueño
+      // lo vea sin salir del editor.
+      onDraftChanged();
+      return "stop";
+    }
+    if (decision === "stalled") {
+      setPhase("stalled");
+      return "stop";
+    }
+    setPhase("running");
+    setMessage("Escribiendo el diseño…");
+    return "continue";
+  }
+
+  /** Boton "Comprobar ahora" en 'stalled': una sola comprobacion manual. */
+  async function checkNow(): Promise<void> {
+    if (!runId || startedAt === null) return;
+    const result = await pollOnce(runId, startedAt);
+    if (result === "continue") void waitFor(runId, startedAt);
   }
 
   /**
@@ -168,7 +230,8 @@ export function DesignChat({ siteId, initialPrompt, collapsed = false, onDraftCh
     setPhase("running");
     setStep(0);
     setElapsed(0);
-    setStartedAt(Date.now());
+    const startedAtMs = Date.now();
+    setStartedAt(startedAtMs);
     setMessage("Preparando el diseño…");
     let res: Response;
     try {
@@ -206,7 +269,7 @@ export function DesignChat({ siteId, initialPrompt, collapsed = false, onDraftCh
     setRunId(body.runId);
     setRunOk(false);
     setUndoState(null);
-    await waitFor(body.runId);
+    await waitFor(body.runId, startedAtMs);
   }
 
   /** Deshace la ejecucion actual. `force` salta el aviso de "editado despues". */
@@ -233,6 +296,20 @@ export function DesignChat({ siteId, initialPrompt, collapsed = false, onDraftCh
     } else if (result.kind === "gone") {
       setRunOk(false);
     }
+  }
+
+  /**
+   * Vuelve a las preguntas por eleccion del dueño (boton "Diseñar de nuevo").
+   * Esto es distinto de preguntar solo al reabrir: aqui lo pide el, no la UI.
+   */
+  function resetToAsking(): void {
+    setAnswers({});
+    setIndex(0);
+    setRunId(null);
+    setUndoState(null);
+    setRunOk(false);
+    setError("");
+    setPhase("asking");
   }
 
   /** Responde la pregunta actual y avanza. La ultima respuesta lanza el diseño. */
@@ -270,10 +347,12 @@ export function DesignChat({ siteId, initialPrompt, collapsed = false, onDraftCh
   // resumen. El del dueño se pinta aparte con lo que escribio al crear el sitio.
   const assistantTurn = phase === "running"
     ? "Voy a montarlo. Te aviso aquí en cuanto esté."
+    : phase === "stalled"
+    ? "Esto está tardando más de lo que debería. Lo sigo mirando en segundo plano."
     : phase === "done" ? message : null;
 
   // Lo mismo que mira el boton: una sola condicion para el boton y el teclado.
-  const sendDisabled = phase === "running" || (!filled && !composerText.trim() && !(initialPrompt ?? "").trim());
+  const sendDisabled = phase === "running" || phase === "stalled" || (!filled && !composerText.trim() && !(initialPrompt ?? "").trim());
 
   return <section className={collapsed ? "builder-chat builder-fade is-collapsed" : "builder-chat builder-fade"} aria-label="Chat del constructor">
     <header className="builder-chat-head">
@@ -288,6 +367,9 @@ export function DesignChat({ siteId, initialPrompt, collapsed = false, onDraftCh
       <div className="builder-msg builder-msg--assistant">
         <p>Cuéntame tu proyecto y lo voy montando. Te hago unas preguntas cortas primero.</p>
       </div>
+      {resuming && <div className="builder-msg builder-msg--assistant">
+        <p>Recuperando la conversación…</p>
+      </div>}
       {assistantTurn && <div className="builder-msg builder-msg--assistant"><p>{assistantTurn}</p></div>}
 
       {phase === "running" && <div className="builder-msg builder-msg--assistant">
@@ -299,10 +381,17 @@ export function DesignChat({ siteId, initialPrompt, collapsed = false, onDraftCh
             </li>
           ))}
         </ul>
+        {elapsed * 1000 >= LONG_WAIT_MS && <p className="muted small">Sigue trabajando; puedes cerrar esta ventana, al volver lo verás aquí.</p>}
+      </div>}
+
+      {phase === "stalled" && <div className="builder-msg builder-msg--assistant">
+        <div className="builder-run-actions">
+          <button type="button" className="builder-opt" onClick={() => void checkNow()}>Comprobar ahora</button>
+        </div>
       </div>}
 
       {phase === "done" && <div className="builder-done" role="status">
-        <span>Completado en {elapsed}s</span>
+        <span>{runOk ? `Completado en ${elapsed}s` : "No se pudo terminar"}</span>
         <button
           type="button"
           className="builder-copy"
@@ -315,6 +404,15 @@ export function DesignChat({ siteId, initialPrompt, collapsed = false, onDraftCh
             onClick={() => { onDraftChanged(); onShowResult?.(); }}
           >Ver resultado</button>
           <button type="button" className="builder-opt" onClick={() => void undo(false)}>Deshacer</button>
+          <button type="button" className="builder-opt" onClick={resetToAsking}>Diseñar de nuevo</button>
+        </div>}
+        {!runOk && <div className="builder-run-actions">
+          <button
+            type="button"
+            className="builder-opt"
+            onClick={() => { if (filled || (initialPrompt ?? "").trim() || composerText.trim()) void design(); else resetToAsking(); }}
+          >Reintentar</button>
+          <button type="button" className="builder-opt" onClick={resetToAsking}>Diseñar de nuevo</button>
         </div>}
       </div>}
 
@@ -337,7 +435,7 @@ export function DesignChat({ siteId, initialPrompt, collapsed = false, onDraftCh
       </div>}
     </div>
 
-    {phase === "asking" && current && <div className="builder-ask" role="group" aria-labelledby="builder-ask-title">
+    {!resuming && phase === "asking" && current && <div className="builder-ask" role="group" aria-labelledby="builder-ask-title">
       <div className="builder-ask-head">
         <div>
           <h2 id="builder-ask-title">{current.title}</h2>
@@ -350,7 +448,7 @@ export function DesignChat({ siteId, initialPrompt, collapsed = false, onDraftCh
           aria-controls="builder-ask-body"
           aria-label={open ? "Plegar la pregunta" : "Desplegar la pregunta"}
           onClick={() => setOpen((v) => !v)}
-        >▾</button>
+        ><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} aria-hidden="true"><polyline points="6 9 12 15 18 9" /></svg></button>
       </div>
 
       {open && <div id="builder-ask-body">
@@ -382,10 +480,16 @@ export function DesignChat({ siteId, initialPrompt, collapsed = false, onDraftCh
 
         {/* La segunda tarjeta pide los dos datos a la vez: nombre y contacto.
             No hay tercera pregunta: con esto se empieza a construir. */}
-        {!current.options.length && <div className="builder-fields">
+        {!current.options.length && <form
+          className="builder-fields"
+          onSubmit={(e) => { e.preventDefault(); if (!sendDisabled) void design(); }}
+        >
           <label>
-            <span className="muted small">Nombre del negocio</span>
+            <span>Nombre del negocio</span>
             <input
+              type="text"
+              autoFocus
+              autoComplete="organization"
               value={answers.name ?? ""}
               maxLength={current.max}
               placeholder={current.placeholder}
@@ -393,21 +497,22 @@ export function DesignChat({ siteId, initialPrompt, collapsed = false, onDraftCh
             />
           </label>
           <label>
-            <span className="muted small">Cómo te contactan</span>
+            <span>Cómo te contactan</span>
             <input
+              autoComplete="email"
               value={answers.contact ?? ""}
               maxLength={CONTACT_MAX}
               placeholder={CONTACT_PLACEHOLDER}
               onChange={(e) => setAnswers((a) => ({ ...a, contact: e.target.value }))}
             />
           </label>
-          <button type="button" className="builder-send" disabled={sendDisabled} onClick={() => void design()}>
+          <button type="submit" className="builder-send" disabled={sendDisabled}>
             Empezar a diseñar
           </button>
-        </div>}
+        </form>}
 
         <div className="builder-ask-actions">
-          <span className="muted small">{QUESTIONS.length - index} pregunta{QUESTIONS.length - index === 1 ? "" : "s"} por delante</span>
+          <span className="muted small">{index === QUESTIONS.length - 1 ? "Último paso" : `Paso ${index + 1} de ${QUESTIONS.length}`}</span>
           <button
             type="button"
             className="builder-skip"
@@ -450,7 +555,7 @@ export function DesignChat({ siteId, initialPrompt, collapsed = false, onDraftCh
           className="builder-send"
           disabled={sendDisabled}
         >
-          {phase === "running" ? "Diseñando…" : "Diseñar"}
+          {phase === "running" || phase === "stalled" ? "Diseñando…" : "Diseñar"}
         </button>
       </form>
     </div>

@@ -113,6 +113,47 @@ mismo log la línea `llm-gateway: aviso: LLM_DESIGN_MODEL no es un id valido; ..
 - **401** — token incorrecto.
 - **404** — diagnóstico desactivado, o cualquier otro motivo.
 
+## `permission denied for table site_drafts`
+
+**Síntoma.** Los jobs de diseño acaban en `design_job_failed` con
+`permission denied for table site_drafts` en el log de workers, y el sitio no cambia: el
+agente no llega a escribir nada. RLS no tiene culpa — Postgres comprueba el privilegio de
+tabla antes de evaluar la política, así que el error es de GRANT, no de política.
+
+Causa habitual: las migraciones conceden los permisos a `app_platform` dentro de bloques
+`DO` condicionados a `IF EXISTS (... pg_roles ...)`. Si el rol no existía al aplicar (base
+restaurada, entorno nuevo), el bloque se salta en silencio y `schema_migrations` queda
+marcada como aplicada.
+
+**Comprobación de privilegios** (con `psql`, como superusuario):
+
+```sql
+SELECT has_table_privilege('app_platform','site_drafts','SELECT');
+```
+
+`false` confirma el diagnóstico.
+
+**Qué rol usan de verdad los workers:**
+
+```sql
+SELECT current_user;
+```
+
+Ejecutado desde la conexión de workers, no desde `psql` de administración. Si devuelve algo
+distinto de `app_platform`, el GRANT correcto no es el que falta: revisa el rol de conexión.
+
+**Qué migraciones están aplicadas:**
+
+```sql
+SELECT name FROM schema_migrations ORDER BY name;
+```
+
+**Arreglo.** Aplicar `packages/db/migrations/0021_regrant_app_tables.sql`. Reaplica los
+GRANT sin condicional y falla en voz alta con
+`falta el rol app_platform: aplica 0002 antes` si el rol no existe. Es idempotente: se puede
+aplicar dos veces. Al final verifica con `has_table_privilege` y lanza excepción nombrando la
+tabla que siga sin permiso.
+
 ## Retirar el diagnóstico
 
 Borrar `DIAGNOSTIC_TOKEN` del entorno y redeploy. La ruta vuelve a dar 404. No hay nada

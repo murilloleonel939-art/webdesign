@@ -1,6 +1,6 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { readdirSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
@@ -93,4 +93,37 @@ test("applies migrations once and is idempotent", async () => {
     // sin nombre delante, asi que puede ir tras `{` o tras una coma.
     assert.equal(/(?:[{,])=X\//.test(p.acl ?? ""), false, `${p.proname} sigue abierta a PUBLIC`);
   }
+});
+
+// 0021 existe porque las migraciones viejas conceden permisos dentro de bloques
+// condicionados a que el rol exista: si no existia, el GRANT se saltaba en
+// silencio y el permiso no se volvia a pedir nunca. Esta prueba aplica el
+// archivo dos veces seguidas, que es lo que pasara en produccion cuando ya este
+// aplicada y alguien lo relance a mano para reparar.
+test("0021 se aplica dos veces y el permiso sigue concedido", async () => {
+  const sql = readFileSync(join(MIGRATIONS_DIR, "0021_regrant_app_tables.sql"), "utf8");
+  await pool.query(sql);
+  // La segunda no rompe: no crea nada, solo repite GRANT y recomprueba.
+  await pool.query(sql);
+
+  const { rows } = await pool.query(
+    `SELECT t AS tabla,
+            has_table_privilege('app_platform', t, 'SELECT') AS sel,
+            has_table_privilege('app_platform', t, 'INSERT') AS ins,
+            has_table_privilege('app_platform', t, 'UPDATE') AS upd,
+            has_table_privilege('app_platform', t, 'DELETE') AS del
+     FROM unnest($1::text[]) AS t ORDER BY t`,
+    [["assets", "site_drafts", "site_members", "site_versions", "users", "sites", "user_sessions"]],
+  );
+  assert.equal(rows.length, 7);
+  for (const r of rows) {
+    assert.equal(r.sel && r.ins && r.upd && r.del, true, `app_platform sin permisos sobre ${r.tabla} tras 0021`);
+  }
+  // audit_log es la excepcion: se lee y se escribe, pero no se modifica ni se
+  // borra nunca desde la aplicacion.
+  const { rows: audit } = await pool.query(
+    `SELECT has_table_privilege('app_platform', 'audit_log', 'SELECT,INSERT') AS ok,
+            has_table_privilege('app_platform', 'audit_log', 'UPDATE') AS modifica`,
+  );
+  assert.deepEqual(audit[0], { ok: true, modifica: false });
 });

@@ -10,7 +10,7 @@ const out = await build({
   platform: "node",
 });
 const mod = await import("data:text/javascript;base64," + Buffer.from(out.outputFiles[0].text).toString("base64"));
-const { QUESTIONS, buildPayload, isSendKey, undoMessage } = mod;
+const { QUESTIONS, buildPayload, isSendKey, undoMessage, resumeFrom, pollDecision, pollDelay } = mod;
 
 test("QUESTIONS tiene solo 2 preguntas y sin keys city/service", () => {
   assert.equal(QUESTIONS.length, 2);
@@ -67,4 +67,65 @@ test("ningun text incluye codigos HTTP", () => {
       assert.equal(c.text.includes(cod), false);
     }
   }
+});
+
+test("resumeFrom(null) devuelve asking", () => {
+  assert.deepEqual(resumeFrom(null, 1000), { phase: "asking" });
+});
+
+test("resumeFrom con status running devuelve running con runId", () => {
+  const r = resumeFrom({ runId: "r1", status: "running", startedAt: "2024-01-01T00:00:00.000Z" }, 999);
+  assert.equal(r.phase, "running");
+  assert.equal(r.runId, "r1");
+  assert.equal(r.startedAt, Date.parse("2024-01-01T00:00:00.000Z"));
+
+  const sinFecha = resumeFrom({ runId: "r2", status: "running" }, 999);
+  assert.equal(sinFecha.startedAt, 999);
+});
+
+test("resumeFrom con status ok devuelve done ok true y elapsed correcto", () => {
+  const r = resumeFrom({
+    runId: "r3",
+    status: "ok",
+    stopReason: "listo",
+    startedAt: "2024-01-01T00:00:00.000Z",
+    endedAt: "2024-01-01T00:00:10.000Z",
+  }, 0);
+  assert.deepEqual(r, { phase: "done", runId: "r3", ok: true, status: "ok", stopReason: "listo", elapsed: 10 });
+});
+
+test("resumeFrom con status failed devuelve done ok false", () => {
+  const r = resumeFrom({ runId: "r4", status: "failed", stopReason: null }, 0);
+  assert.equal(r.phase, "done");
+  assert.equal(r.ok, false);
+  assert.equal(r.elapsed, 0);
+});
+
+test("pollDecision: running y menos de 10 min sigue sondeando", () => {
+  assert.equal(pollDecision("running", 0), "keep");
+  assert.equal(pollDecision("running", 90000), "keep");
+  assert.equal(pollDecision("running", 599999), "keep");
+});
+
+test("pollDecision: running y 10 min o mas pasa a stalled", () => {
+  assert.equal(pollDecision("running", 600000), "stalled");
+  assert.equal(pollDecision("running", 700000), "stalled");
+});
+
+test("pollDecision: un estado definido distinto de running es done", () => {
+  assert.equal(pollDecision("ok", 100), "done");
+  assert.equal(pollDecision("failed", 700000), "done");
+  assert.equal(pollDecision("budget_exhausted", 0), "done");
+});
+
+test("pollDecision: sin estado todavia (undefined) sigue sondeando", () => {
+  assert.equal(pollDecision(undefined, 0), "keep");
+  assert.equal(pollDecision(undefined, 700000), "keep");
+});
+
+test("pollDelay: 2s antes de 90s, 4s desde los 90s", () => {
+  assert.equal(pollDelay(0), 2000);
+  assert.equal(pollDelay(89999), 2000);
+  assert.equal(pollDelay(90000), 4000);
+  assert.equal(pollDelay(600000), 4000);
 });

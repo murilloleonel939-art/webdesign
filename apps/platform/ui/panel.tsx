@@ -213,22 +213,46 @@ function findingLabel(code: string): string {
   return map[code] ?? "Hay algo que revisar en esta pagina: revisa los bloques antes de publicar";
 }
 
-// Puck monta el lienzo en un iframe, asi que hereda el CSS del panel pero no el
-// del tema: el editor ensenaba el sitio sin diseno. Este componente mete la
-// hoja del tema dentro del documento del iframe.
+// Puck monta el lienzo en un iframe (iframe.enabled por defecto es true:
+// @measured/puck/dist/walk-tree-JdJYB16L.d.ts:508-511), asi que hereda el CSS
+// del panel pero no el del tema: el editor ensenaba el sitio sin diseno.
+// El override `iframe` llega como RenderFunc<{ children: ReactNode; document?: Document }>
+// (mismo archivo, lineas 466-469): `document` puede llegar undefined en el
+// primer render (el iframe aun no tiene `contentDocument`), asi que el
+// useEffect de abajo no bastaba por si solo: si `frame` nunca cambia tras ese
+// primer render, nunca se repite. Se reintenta con un intervalo corto hasta
+// que `frame.head` exista, y ademas se pinta la hoja en linea como PRIMER hijo
+// de `children`: Puck renderiza `children` dentro del iframe via portal, asi
+// que ese <style> se monta de verdad en el documento del iframe aunque el
+// efecto por `document` llegue tarde o nunca.
 function FrameTheme({ frame, css, children }: { frame?: Document | undefined; css: string; children: any }) {
   useEffect(() => {
-    if (!frame?.head || !css) return;
-    const id = "sitio-theme";
-    let el = frame.getElementById(id) as HTMLStyleElement | null;
-    if (!el) {
-      el = frame.createElement("style");
-      el.id = id;
-      frame.head.appendChild(el);
+    if (!css) return;
+    function apply(doc: Document): boolean {
+      if (!doc.head) return false;
+      const id = "sitio-theme";
+      let el = doc.getElementById(id) as HTMLStyleElement | null;
+      if (!el) {
+        el = doc.createElement("style");
+        el.id = id;
+        doc.head.appendChild(el);
+      }
+      el.textContent = css;
+      return true;
     }
-    el.textContent = css;
+    if (frame && apply(frame)) return;
+    // `frame` undefined en el primer render: se reintenta hasta que Puck
+    // entregue el documento del iframe (o hasta que el efecto se limpie).
+    const t = setInterval(() => { if (frame && apply(frame)) clearInterval(t); }, 150);
+    return () => clearInterval(t);
   }, [frame, css]);
-  return children;
+  return <>
+    {/* Respaldo: si el <head> del iframe nunca recibe la hoja, esta etiqueta
+        viaja dentro de `children` y se monta en el documento del iframe de
+        todos modos, porque Puck pinta `children` ahi mismo via portal. */}
+    <style id="sitio-theme-inline">{css}</style>
+    {children}
+  </>;
 }
 
 // Panel de operador (Fase 2): clientes y estado de los sitios. Solo aparece si
