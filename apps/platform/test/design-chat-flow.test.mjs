@@ -10,7 +10,7 @@ const out = await build({
   platform: "node",
 });
 const mod = await import("data:text/javascript;base64," + Buffer.from(out.outputFiles[0].text).toString("base64"));
-const { QUESTIONS, buildPayload, isSendKey, undoMessage, resumeFrom, pollDecision, pollDelay } = mod;
+const { QUESTIONS, buildPayload, isSendKey, undoMessage, resumeFrom, pollDecision, pollDelay, shouldAutoStart } = mod;
 
 test("QUESTIONS tiene solo 2 preguntas y sin keys city/service", () => {
   assert.equal(QUESTIONS.length, 2);
@@ -128,4 +128,17 @@ test("pollDelay: 2s antes de 90s, 4s desde los 90s", () => {
   assert.equal(pollDelay(89999), 2000);
   assert.equal(pollDelay(90000), 4000);
   assert.equal(pollDelay(600000), 4000);
+});
+
+test("shouldAutoStart: true solo con prompt no vacio y sin ejecucion previa", () => {
+  assert.equal(shouldAutoStart("Una cafetería", false), true);
+});
+
+test("shouldAutoStart: false si ya hubo una ejecucion previa", () => {
+  assert.equal(shouldAutoStart("Una cafetería", true), false);
+});
+
+test("shouldAutoStart: false sin prompt", () => {
+  assert.equal(shouldAutoStart("", false), false);
+  assert.equal(shouldAutoStart("   ", false), false);
 });

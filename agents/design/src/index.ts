@@ -15,7 +15,9 @@ export {
   type QuickBriefInput,
 } from "./brief.js";
 
-export { draftSite, type Preset } from "./draft.js";
+export { draftSite, heroHeadline, type Preset } from "./draft.js";
+
+export { copyPrompt, guardCopy, siteCopySchema, type SiteCopy } from "./copy.js";
 
 export {
   inventory,

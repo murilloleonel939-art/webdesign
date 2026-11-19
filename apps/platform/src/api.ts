@@ -6,6 +6,24 @@ import { withUser } from "@webdesign/db";
 import { hashPassword, verifyPassword, newSessionToken } from "@webdesign/auth";
 import { saveDraft, loadDraft } from "@webdesign/editor/save";
 import { publish, rollbackTo, unpublish, isAnotherSiteActive } from "@webdesign/publish";
+import { validateSiteDocument } from "@webdesign/site-schema";
+
+// Error de entrada del dueño (nombre, etc.): se distingue de un fallo de
+// infraestructura para que la ruta HTTP responda 400 y no 500.
+export class SiteInputError extends Error {}
+
+/**
+ * Corta `s` en un límite de palabra sin superar `max` caracteres y sin dejar
+ * espacio final. Si ni la primera palabra cabe, corta en seco a `max`.
+ */
+export function cutWords(s: string, max: number): string {
+  const clean = s.trim();
+  if (clean.length <= max) return clean;
+  const slice = clean.slice(0, max);
+  const lastSpace = slice.lastIndexOf(" ");
+  if (lastSpace <= 0) return slice.trimEnd();
+  return slice.slice(0, lastSpace).trimEnd();
+}
 
 // Superficie HTTP del ciclo de Fase 1: crear, editar, previsualizar, publicar y
 // revertir. Cada operacion se ejecuta con el usuario de la sesion, nunca con el rol
@@ -83,21 +101,48 @@ export async function login(pool: Pool, email: string, password: string): Promis
   return { userId: row.id, token: await startSession(pool, row.id) };
 }
 
-export async function createSite(pool: Pool, userId: string, name: string): Promise<string> {
+/**
+ * Documento inicial de un sitio a partir de un nombre crudo (prompt, nombre de
+ * fila, etc.): el nombre se normaliza y recorta en límite de palabra ANTES de
+ * entrar en `meta.name` (máx 80) y `seo.title` (máx 70), para que nunca
+ * choque con el esquema. Se usa tanto al crear el sitio como al reparar uno
+ * que quedó sin borrador.
+ */
+export function initialDoc(rawName: string, rawIdea?: string) {
+  const clean = rawName.replace(/\s+/g, " ").trim();
+  const siteName = cutWords(clean, 60) || "Mi sitio";
+  const idea = (rawIdea ?? "").trim().slice(0, 500);
+  return {
+    doc: {
+      schemaVersion: 1, meta: { name: siteName, lang: "es", favicon: null },
+      design: { brief: "", idea, presetId: "editorial", dials: { variance: 3, motion: 2, density: 5 } },
+      theme: { colors: { ground: "#f7f7f2", ink: "#172033", accent: "#3b82f6" }, typography: { family: "Inter", scale: "normal" }, spacing: { margin: 48, sectionGap: 48 }, radius: "rounded" },
+      pages: [{ id: "p_home", slug: "/", seo: { title: cutWords(siteName, 70), description: "", noindex: false }, sections: [] }],
+      assets: [], integrations: { chatWidget: { enabled: false }, whatsapp: { phone: null, message: "" } },
+    },
+    siteName,
+  };
+}
+
+export async function createSite(pool: Pool, userId: string, name: string, idea?: string): Promise<string> {
   const id = randomUUID();
+  const { doc, siteName } = initialDoc(name, idea);
+  // Se valida ANTES de insertar: un documento que no cumple el esquema no
+  // debe dejar nunca una fila de `sites` huérfana.
+  const validated = validateSiteDocument(doc);
+  if (!validated.ok) throw new SiteInputError(`invalid site document: ${validated.errors.join(", ")}`);
   // RLS comprueba que owner_id sea el usuario de la sesion.
   await withUser(pool, userId, async (tx) => {
-    await tx.query("INSERT INTO sites (id, owner_id, name) VALUES ($1, $2, $3)", [id, userId, name]);
+    await tx.query("INSERT INTO sites (id, owner_id, name) VALUES ($1, $2, $3)", [id, userId, siteName]);
   });
-  const doc = {
-    schemaVersion: 1, meta: { name, lang: "es", favicon: null },
-    design: { brief: "", idea: "", presetId: "editorial", dials: { variance: 3, motion: 2, density: 5 } },
-    theme: { colors: { ground: "#f7f7f2", ink: "#172033", accent: "#3b82f6" }, typography: { family: "Inter", scale: "normal" }, spacing: { margin: 48, sectionGap: 48 }, radius: "rounded" },
-    pages: [{ id: "p_home", slug: "/", seo: { title: name, description: "", noindex: false }, sections: [] }],
-    assets: [], integrations: { chatWidget: { enabled: false }, whatsapp: { phone: null, message: "" } },
-  };
   const initialized = await saveDraft(pool, { userId, siteId: id, doc, expectedRev: 0, actorType: "user" });
-  if (!initialized.ok) throw new Error("failed to initialize site draft");
+  if (!initialized.ok) {
+    // Nunca debe quedar un sitio sin borrador: se borra la fila recién creada.
+    await withUser(pool, userId, async (tx) => {
+      await tx.query("DELETE FROM sites WHERE id = $1 AND owner_id = $2", [id, userId]);
+    });
+    throw new Error("failed to initialize site draft");
+  }
   return id;
 }
 

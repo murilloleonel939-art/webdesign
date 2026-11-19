@@ -255,13 +255,18 @@
 }
 .builder-step.is-active .builder-dot{background:var(--accent);animation:builder-pulse 1.4s var(--ease) infinite}
 .builder-step.is-done .builder-dot{background:var(--mint)}
+/* El bloque de fin de run: titulo arriba, acciones debajo.
+   Antes era una fila con `.builder-opt` (que es `width:100%`) dentro: cada boton
+   pedia el ancho completo y, con `border-radius:999px`, se veian como circulos
+   desbordados. En columna cada linea tiene su propio ancho. */
 .builder-done{
-  display:flex;align-items:center;gap:10px;margin-top:10px;padding:11px 13px;
+  display:flex;flex-direction:column;align-items:stretch;gap:8px;
+  margin-top:10px;padding:11px 13px;
   border-radius:12px;background:var(--accent-soft);color:var(--accent-ink);
   font-size:13.5px;font-weight:700;
 }
 .builder-done .builder-copy{
-  margin-left:auto;font-size:12.5px;font-weight:650;color:var(--accent-ink);
+  align-self:flex-start;margin-left:0;font-size:12.5px;font-weight:650;color:var(--accent-ink);
   padding:6px 10px;border-radius:9px;background:#fff;border:1px solid #d8d2fb;
   transition:background .16s var(--ease);
 }
@@ -360,5 +365,13 @@
 /* --- Pendientes como chips y acciones del run (deshacer/ver resultado) --- */
 .builder-chips{display:flex;flex-wrap:wrap;gap:6px;list-style:none;padding:0;margin:8px 0 0}
 .builder-chip{padding:4px 10px;border-radius:999px;background:var(--canvas-2);font-size:12.5px}
-.builder-run-actions{display:flex;gap:8px;margin-top:8px}
-.builder-run-actions button{border-radius:999px}
+.builder-run-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+.builder-run-actions button{
+  width:auto;flex:0 0 auto;
+  border-radius:10px;padding:8px 12px;font-size:13px;font-weight:650;
+  white-space:nowrap;background:var(--surface);border:1px solid var(--line);color:var(--ink);
+}
+/* "Ver resultado" es la accion que el dueño espera: va primero y se distingue.
+   Solo dentro de `.builder-done`, donde de verdad es el primer boton; en los
+   avisos de deshacer el primero es otro y no debe pintarse como principal. */
+.builder-done .builder-run-actions button:first-child{background:var(--ink);color:#fff;border-color:var(--ink)}

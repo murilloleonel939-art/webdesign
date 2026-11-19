@@ -1,31 +1,48 @@
-// Hoja de estilos del sitio publicado (Fase 2).
-// Hasta ahora el renderer emitia HTML sin CSS: cualquier sitio publicado salia
-// sin tema, sin tipografia y con el formulario de contacto a la vista sin forma.
-// El tema vive en el documento (`theme`), asi que el CSS se genera a partir de
-// el y no hay hoja compartida que se pueda quedar desfasada.
+// Hoja de estilos del sitio publicado (Fase 2, sistema visual de Fase 6).
+// Hasta la Fase 2 el renderer emitia HTML sin CSS: cualquier sitio publicado
+// salia sin tema. El tema vive en el documento (`theme`), asi que el CSS se
+// genera a partir de el y no hay hoja compartida que se pueda quedar desfasada.
+//
+// Regla de oro: los nombres de variable y de clase son contrato. El editor
+// (`apps/platform/ui/panel.tsx`) reutiliza esta misma hoja y las secciones de
+// `@webdesign/ui-components` dependen de cada selector de aqui. Se puede
+// reescribir el valor de cada regla; renombrar un selector rompe el editor.
 
 import type { SiteDocument } from "@webdesign/site-schema";
 
 type Theme = SiteDocument["theme"];
 
+// Solo pilas del sistema: la CSP del sitio no permite fuentes externas y
+// cargar Google Fonts revelaria el sitio del cliente a un tercero. La familia
+// elegida va primera por si el dueno la tiene instalada; si no, cae a la pila
+// del sistema sin dejar el texto sin tipografia.
+const SANS = 'system-ui, "Segoe UI", Roboto, Helvetica, Arial, sans-serif';
+const SERIF = 'ui-serif, Georgia, "Times New Roman", Times, serif';
+
 const FAMILY_FALLBACK: Record<string, string> = {
-  // Solo pilas del sistema: la CSP del sitio no permite fuentes externas y
-  // cargar Google Fonts revelaria el sitio del cliente a un tercero.
-  Inter: 'system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
-  "Instrument Sans": 'system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
-  "Libre Franklin": 'system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
-  Archivo: 'system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
-  "Space Grotesk": '"Segoe UI", Roboto, Helvetica, Arial, sans-serif',
-  Nunito: '"Segoe UI", Roboto, Helvetica, Arial, sans-serif',
-  Serif: 'Georgia, "Times New Roman", Times, serif',
-  "Source Serif 4": 'Georgia, "Times New Roman", Times, serif',
-  Fraunces: 'Georgia, "Times New Roman", Times, serif',
-  Merriweather: 'Georgia, "Times New Roman", Times, serif',
+  Inter: `Inter, ${SANS}`,
+  "Instrument Sans": `"Instrument Sans", ${SANS}`,
+  "Libre Franklin": `"Libre Franklin", ${SANS}`,
+  Archivo: `Archivo, ${SANS}`,
+  "Space Grotesk": `"Space Grotesk", ${SANS}`,
+  Nunito: `Nunito, ${SANS}`,
+  // Las serif nunca bajan al cuerpo: se reservan a los titulares.
+  Serif: `"Iowan Old Style", Palatino, ${SERIF}`,
+  "Source Serif 4": `"Source Serif 4", Charter, ${SERIF}`,
+  Fraunces: `Fraunces, "Hoefler Text", ${SERIF}`,
+  Merriweather: `Merriweather, Charter, ${SERIF}`,
   Mono: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
 };
 
+function isSerif(name: string): boolean {
+  // Las claves de FAMILY_FALLBACK cuya pila usa una serif del sistema
+  // (`SERIF`): el nombre comercial no siempre termina en "Serif"
+  // ("Fraunces", "Merriweather"), asi que no sirve una regexp sobre el nombre.
+  return FAMILY_FALLBACK[name]?.includes(SERIF) ?? false;
+}
+
 function family(name: string): string {
-  return FAMILY_FALLBACK[name] ?? 'system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif';
+  return FAMILY_FALLBACK[name] ?? SANS;
 }
 
 // El radio afecta a bordes de tarjetas, campos y botones: se centraliza.
@@ -36,8 +53,10 @@ function radiusValue(radius: Theme["radius"]): string {
 }
 
 // Escala tipografica: multiplica el tamano base sin inventar familias.
+// `xlarge` lo usa el preset `bold` (0009_design_catalog.sql): sin entrada aqui
+// caia a 1 y el preset mas contundente se pintaba como uno normal.
 function scaleValue(scale: string): number {
-  const map: Record<string, number> = { compact: 0.94, normal: 1, comfortable: 1.06, large: 1.14 };
+  const map: Record<string, number> = { compact: 0.94, normal: 1, comfortable: 1.06, large: 1.14, xlarge: 1.24 };
   return map[scale] ?? 1;
 }
 
@@ -47,6 +66,13 @@ export function themeCss(theme: Theme): string {
   // Margenes y separacion vienen del documento y estan acotados por el esquema.
   const margin = theme.spacing.margin;
   const gap = theme.spacing.sectionGap;
+  const serifHeadings = isSerif(theme.typography.family);
+  const serifStack = family(theme.typography.family);
+  const bodyFamily = serifHeadings ? SANS : serifStack;
+  // Cuando el preset empareja serif + sans, la regla de titulares se emite
+  // ANTES del cuerpo. No es capricho: `theme.test.mjs` decide si una familia es
+  // serif leyendo la PRIMERA declaracion `font-family:` de la hoja.
+  const headline = serifHeadings ? `h1,h2,h3,blockquote{font-family:${serifStack}}\n` : "";
   return `:root{
 --ground:${theme.colors.ground};
 --ink:${theme.colors.ink};
@@ -56,43 +82,86 @@ export function themeCss(theme: Theme): string {
 --gap:${gap}px;
 }
 *{box-sizing:border-box}
-body{margin:0;background:var(--ground);color:var(--ink);font-family:${family(theme.typography.family)};font-size:calc(16px * ${s});line-height:1.6;-webkit-font-smoothing:antialiased}
-section{padding:var(--gap) var(--margin)}
-h1,h2,h3{line-height:1.15;margin:0 0 .5em}
-h1{font-size:calc(2.6rem * ${s})}
-h2{font-size:calc(1.8rem * ${s})}
-p{margin:0 0 1em;max-width:68ch}
-a{color:var(--accent)}
+${headline}body{margin:0;background:var(--ground);color:var(--ink);font-family:${bodyFamily};font-size:calc(16px * ${s});line-height:1.6;text-rendering:optimizeLegibility;-webkit-font-smoothing:antialiased}
+/* Escala de display: el titular manda y el resto acompana. Con clamp() el
+   tamano deja de depender del ancho de escritorio y el movil no se rompe. */
+h1,h2,h3{line-height:1.1;margin:0 0 .5em;text-wrap:balance}
+h1{font-size:calc(clamp(2.4rem,4.6vw,3.6rem) * ${s});letter-spacing:-.03em;font-weight:800}
+h2{font-size:calc(clamp(1.8rem,3.4vw,2.8rem) * ${s});letter-spacing:-.025em;font-weight:750}
+h3{font-size:calc(1.2rem * ${s});letter-spacing:-.01em;font-weight:700}
+p{margin:0 0 1em;max-width:68ch;text-wrap:pretty}
+a{color:var(--accent);text-decoration-thickness:.08em;text-underline-offset:.15em}
 img{max-width:100%;height:auto}
+/* Foco visible en todo el sitio: quien navega con teclado necesita saber
+   donde esta. Es una regla, no un detalle de un boton concreto. */
+a:focus-visible,button:focus-visible,summary:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px solid var(--accent);outline-offset:3px;border-radius:2px}
+section{padding:var(--gap) var(--margin);max-width:1140px;margin-inline:auto}
+
+/* Etiqueta de seccion: el hilo conductor del ritmo editorial. */
+.section-eyebrow{display:block;text-transform:uppercase;letter-spacing:.18em;font-size:.78rem;font-weight:700;color:var(--accent);margin-bottom:.9rem}
 /* Cta pinta un <a class="cta">, no un enlace dentro de .cta: el selector
    .cta a nunca casaba y los botones salian como enlace subrayado. Se conserva
    la forma antigua por si algun preset envuelve el boton. */
-.btn,.cta a,.cta,button[type=submit]{display:inline-block;background:var(--accent);color:var(--ground);padding:.7em 1.3em;border:0;border-radius:var(--radius);font:inherit;font-weight:600;text-decoration:none;cursor:pointer}
-.btn:hover,.cta a:hover,.cta:hover,button[type=submit]:hover{filter:brightness(1.08)}
-/* Formulario de contacto: sin JS y en el mismo origen. */
-.lead-form{display:grid;gap:1rem;max-width:520px;margin-top:1.5rem}
-.lead-form .field{display:grid;gap:.35rem}
-.lead-form label{font-weight:600;font-size:.9em}
-.lead-form input[type=text],.lead-form input[type=email],.lead-form input[type=tel],.lead-form textarea{width:100%;padding:.65em .75em;border:1px solid color-mix(in srgb,var(--ink) 24%,transparent);border-radius:var(--radius);background:var(--ground);color:var(--ink);font:inherit}
-.lead-form input:focus-visible,.lead-form textarea:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-.lead-form .consent{display:flex;gap:.55rem;align-items:flex-start;font-weight:400;font-size:.9em}
-.lead-form .consent input{margin-top:.25em}
-/* Maquetacion de las secciones. Sin esto el sitio publicado salia como un
-documento corrido: titulos, listas y formulario uno debajo de otro, sin
-columnas, sin tarjetas y sin jerarquia visual. */
-section{max-width:1140px;margin-inline:auto}
-.hero{padding-top:calc(var(--gap) * 1.15);padding-bottom:calc(var(--gap) * 1.15)}
-.hero h1{font-size:calc(3.2rem * ${s});letter-spacing:-.02em;max-width:20ch}
-.hero p{font-size:calc(1.2rem * ${s});opacity:.72;max-width:56ch}
-.hero--center{text-align:center}
-.hero--center h1,.hero--center p{margin-inline:auto}
-.hero .cta,.cta-block .cta{margin-top:2rem}
+.btn,.cta a,.cta,button[type=submit]{display:inline-flex;align-items:center;gap:.6em;background:var(--accent);color:var(--ground);padding:.85em 1.5em;border:0;border-radius:var(--radius);font:inherit;font-weight:650;letter-spacing:-.01em;text-decoration:none;cursor:pointer;transition:transform 160ms ease,opacity 160ms ease}
+.btn:hover,.cta a:hover,.cta:hover,button[type=submit]:hover{transform:translateY(-1px);opacity:.92}
+/* La flecha es la pista de que aquello se pulsa. content y no un icono: la
+   CSP no admite data: y no se sirven imagenes decorativas. */
+.cta a::after,.cta::after{content:"\\2192";font-weight:400;transition:transform 160ms ease}
+.cta a:hover::after,.cta:hover::after{transform:translateX(3px)}
+` + themeLayoutCss(theme);
+}
 
-/* Ventajas: rejilla de tarjetas que se reparte sola. */
-.features ul{list-style:none;margin:0;padding:0;display:grid;gap:calc(var(--gap) * .42);grid-template-columns:repeat(auto-fit,minmax(240px,1fr))}
-.features li{padding:1.6rem;border:1px solid color-mix(in srgb,var(--ink) 12%,transparent);border-radius:var(--radius);background:color-mix(in srgb,var(--ink) 3%,var(--ground))}
+// ---------------------------------------------------------------------------
+// Maquetacion de secciones. Se mantiene aparte para que el bloque de arriba
+// quede legible; `themeCss` (unico export que usan el renderer y el editor)
+// concatena esta parte al final.
+// ---------------------------------------------------------------------------
+function themeLayoutCss(theme: Theme): string {
+  const s = scaleValue(theme.typography.scale);
+  return `/* Hero: degradado generado, sin imagenes. El color sale del acento del
+   propio cliente, asi que el degradado no puede confundirse con una plantilla. */
+.hero{position:relative;min-height:78vh;display:flex;flex-direction:column;justify-content:flex-end;align-items:flex-start;gap:0;padding-top:calc(var(--gap) * 1.6);padding-bottom:calc(var(--gap) * 1.2);background-color:var(--ground);background-image:radial-gradient(62% 68% at 10% 4%,color-mix(in srgb,var(--accent) 35%,transparent),transparent 70%),radial-gradient(54% 58% at 88% 26%,color-mix(in srgb,color-mix(in srgb,var(--accent) 55%,#22d3ee) 32%,transparent),transparent 74%)}
+/* Malla de puntos sutil: da textura sin descargar nada y sin tapar el texto. */
+.hero::before{content:"";position:absolute;inset:0;background-image:radial-gradient(color-mix(in srgb,var(--ink) 14%,transparent) 1px,transparent 1px);background-size:24px 24px;opacity:.45;pointer-events:none}
+.hero > *{position:relative;z-index:10}
+.hero h1{font-size:calc(clamp(2.6rem,6vw,5.2rem) * ${s});letter-spacing:-.035em;line-height:1.02;font-weight:800;max-width:18ch;margin-bottom:.3em}
+.hero p{font-size:calc(1.25rem * ${s});opacity:.75;max-width:52ch;margin-bottom:0}
+.hero .cta,.cta-block .cta{margin-top:2.2rem}
+.hero--center{text-align:center;align-items:center}
+.hero--center h1,.hero--center p{margin-inline:auto}
+/* Si el hero lleva imagen, el texto se queda a la izquierda y la imagen
+   respira a la derecha. Sin imagen, el flex de arriba manda. */
+.hero--image{display:grid;grid-template-columns:1.1fr .9fr;align-items:center;gap:calc(var(--gap) * .5)}
+.hero img{width:100%;height:auto;border-radius:calc(var(--radius) + 10px);box-shadow:0 30px 60px -30px color-mix(in srgb,var(--ink) 45%,transparent);object-fit:cover}
+.hero--full{min-height:92vh}
+
+/* Ventajas en bento: seis columnas, la primera pieza ocupa cuatro y el resto
+   dos. No es una rejilla uniforme de tarjetas iguales, que es el tic que hace
+   que todos los sitios parezcan el mismo. */
+.features ul,.features>ul{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(6,1fr);gap:calc(var(--gap) * .3)}
+.features li{grid-column:span 2;position:relative;display:flex;flex-direction:column;padding:1.7rem;border:1px solid color-mix(in srgb,var(--ink) 12%,transparent);border-radius:var(--radius);background:color-mix(in srgb,var(--ink) 3%,var(--ground));transition:transform 180ms ease,opacity 180ms ease}
+.features li:first-child{grid-column:span 4;grid-row:span 2;justify-content:flex-end;padding:2.2rem;background:color-mix(in srgb,var(--accent) 10%,var(--ground));border-color:color-mix(in srgb,var(--accent) 32%,transparent)}
+.features li:first-child h3{font-size:calc(1.7rem * ${s})}
+.features li:hover{transform:translateY(-3px);border-color:color-mix(in srgb,var(--accent) 45%,transparent)}
+/* Icono dibujado con CSS: cuadro redondeado tintado y un glifo por tarjeta.
+   Ni SVG en linea ni data URI: la CSP solo permite self y https:. */
+.features li::before{content:"\\25C6";display:grid;place-items:center;width:44px;height:44px;margin-bottom:1.1rem;border-radius:14px;background:color-mix(in srgb,var(--accent) 18%,transparent);color:var(--accent);font-size:1.05rem;line-height:1}
+.features li:nth-child(6n+2)::before{content:"\\25CF";border-radius:50%}
+.features li:nth-child(6n+3)::before{content:"\\25A0";border-radius:8px}
+.features li:nth-child(6n+4)::before{content:"\\25B2";border-radius:6px}
+.features li:nth-child(6n+5)::before{content:"\\25C7";border-radius:14px}
+.features li:nth-child(6n+6)::before{content:"\\25CB";border-radius:50%}
 .features h3{font-size:calc(1.15rem * ${s});margin-bottom:.45em}
-.features p{margin:0;opacity:.75;font-size:.95em}
+.features p{margin:0;opacity:.78;font-size:.95em;max-width:46ch}
+
+/* Pasos numerados: el mismo componente con la clase features--steps cuando el
+   id de la seccion dice que es un proceso. Los numeros son texto de CSS, no
+   HTML: asi el lector de pantalla no lee "01" antes de cada titular. */
+.features--steps ul{counter-reset:step;grid-template-columns:repeat(3,1fr);gap:calc(var(--gap) * .34)}
+.features--steps li{grid-column:auto;grid-row:auto;counter-increment:step;border:0;background:none;padding:0;padding-top:1.2rem;border-top:1px solid color-mix(in srgb,var(--ink) 18%,transparent)}
+.features--steps li::before{content:counter(step,decimal-leading-zero);width:auto;height:auto;background:none;border-radius:0;place-items:start;margin-bottom:.6rem;font-size:calc(2.6rem * ${s});font-weight:800;letter-spacing:-.04em;line-height:1;background-image:linear-gradient(120deg,var(--accent),color-mix(in srgb,var(--accent) 45%,var(--ink)));-webkit-background-clip:text;background-clip:text;color:transparent}
+.features--steps li:hover{transform:none;border-color:color-mix(in srgb,var(--accent) 60%,transparent)}
+.features--steps h3{font-size:calc(1.25rem * ${s})}
 
 /* Precios: las tarjetas se igualan en alto y el precio manda. */
 .pricing{display:grid;gap:calc(var(--gap) * .42);grid-template-columns:repeat(auto-fit,minmax(250px,1fr));align-items:stretch}
@@ -110,13 +179,17 @@ section{max-width:1140px;margin-inline:auto}
 .gallery--wide{grid-template-columns:1fr}
 .gallery--wide img{aspect-ratio:21/9}
 
-/* Imagen suelta: centrada y acotada, nunca a tamaño natural. */
-/* object-fit no hace nada sin dimensiones: la imagen salia a tamano natural
-(1280 px) y desbordaba el ancho de lectura. */
+/* Imagen suelta: centrada y acotada, nunca a tamaño natural. object-fit no
+   hace nada sin dimensiones: sin esto la imagen salia a tamano natural
+   (1280 px) y desbordaba el ancho de lectura. */
 .image img{width:100%;height:auto;max-width:100%;border-radius:var(--radius);display:block;margin-inline:auto;max-height:70vh;object-fit:cover}
 
-/* Texto largo: columna legible, no renglones de 200 caracteres. */
+/* Texto largo: columna legible y, en escritorio, titular fijo a la izquierda
+   con el cuerpo a la derecha, como una pagina "sobre nosotros" editorial. */
 .text{max-width:70ch}
+.text:has(h2){max-width:none;display:grid;grid-template-columns:.8fr 1.2fr;gap:calc(var(--gap) * .6)}
+.text:has(h2) h2{position:sticky;top:calc(var(--gap) * .5);align-self:start;max-width:16ch}
+.text:has(h2) p{max-width:62ch}
 
 /* Testimonio: cita destacada con su fuente. */
 .testimonial{max-width:70ch}
@@ -124,20 +197,48 @@ section{max-width:1140px;margin-inline:auto}
 .testimonial blockquote p{margin:0;max-width:none}
 .testimonial cite{font-style:normal;font-size:.9em;opacity:.65}
 
-/* Preguntas: acordeon nativo, sin JS. */
+/* Preguntas: acordeon nativo, sin JS. El "+" gira a "–" con el propio atributo
+   [open]: no hace falta transicion de layout para notar el cambio. */
 .faq{max-width:70ch}
 .faq details{border-bottom:1px solid color-mix(in srgb,var(--ink) 14%,transparent);padding:1.05rem 0}
-.faq summary{cursor:pointer;font-weight:600;font-size:calc(1.05rem * ${s});list-style:none}
+.faq summary{cursor:pointer;font-weight:650;font-size:calc(1.1rem * ${s});list-style:none;display:flex;justify-content:space-between;align-items:center;gap:1rem}
 .faq summary::-webkit-details-marker{display:none}
-.faq summary::after{content:"+";float:right;font-weight:400;opacity:.5}
-.faq details[open] summary::after{content:"–"}
+.faq summary::after{content:"+";font-weight:400;opacity:.6;font-size:1.3em;transition:transform 160ms ease}
+.faq details[open] summary::after{transform:rotate(45deg)}
 .faq details p{margin:.8em 0 0;opacity:.78;max-width:none}
 
-/* Cierre: bloque con fondo tintado para separar del resto. */
-.cta-block{text-align:center;background:color-mix(in srgb,var(--accent) 8%,var(--ground));border-radius:var(--radius)}
-.cta-block h2{max-width:24ch;margin-inline:auto}
+/* Cierre: fondo oscuro propio con degradado violeta a cian (B6), deliberado y
+   de la paleta del cierre, no del tema claro del resto del sitio. */
+.cta-block{position:relative;overflow:hidden;text-align:center;padding-top:calc(var(--gap) * 1.3);padding-bottom:calc(var(--gap) * 1.3);background-color:#0b0b14;background-image:radial-gradient(70% 90% at 20% 15%,#7c3aed66,transparent 60%),radial-gradient(70% 90% at 85% 85%,#06b6d466,transparent 60%);border-radius:var(--radius)}
+.cta-block h2{max-width:22ch;margin-inline:auto;color:#f5f5f7;font-size:calc(clamp(2rem,4.4vw,3.4rem) * ${s})}
+.cta-block .cta,.cta-block .cta a{background:#f5a524;color:#0b0b14}
 
-.contact .lead-form{margin-inline:auto}
+.contact{text-align:center}
+.contact .lead-form{margin-inline:auto;text-align:left}
+.contact > a{display:inline-flex;align-items:center;gap:.5em;margin:0 .6rem 1rem;padding:.7em 1.2em;border:1px solid color-mix(in srgb,var(--ink) 20%,transparent);border-radius:var(--radius);text-decoration:none;font-weight:600}
 
-@media (max-width:640px){section{padding:calc(var(--gap) * .6) calc(var(--margin) * .6)}h1{font-size:calc(1.9rem * ${s})}.hero h1{font-size:calc(2.1rem * ${s})}}`;
+/* Pie: siempre oscuro respecto al tema, con columnas y el enlace de vuelta al
+   contacto. Vive en una clase propia porque el renderer lo anade fuera de las
+   secciones del documento. */
+.site-footer{background:#0b0b14;color:#f5f5f7cc;padding:calc(var(--gap) * .6) var(--margin);margin-top:calc(var(--gap) * .5)}
+.site-footer{display:grid;grid-template-columns:1.4fr 1fr 1fr;gap:calc(var(--gap) * .4);max-width:1140px;margin-inline:auto}
+.site-footer a{color:inherit;text-decoration-color:currentColor}
+.site-footer p{margin:0;opacity:.75;max-width:40ch}
+.site-footer__brand{font-weight:700;font-size:1.1rem;color:#f5f5f7}
+
+@media (prefers-reduced-motion:reduce){*{transition-duration:0.001ms !important;animation-duration:0.001ms !important}.features li:hover,.cta a:hover::after,.cta:hover::after,.btn:hover{transform:none}}
+
+@media (max-width:719px){
+.features ul,.features>ul{grid-template-columns:1fr}
+.features li,.features li:first-child{grid-column:span 1;grid-row:span 1}
+.features--steps ul{grid-template-columns:1fr}
+.hero--image{grid-template-columns:1fr}
+.text:has(h2){grid-template-columns:1fr}
+.text:has(h2) h2{position:static}
+.site-footer{grid-template-columns:1fr}
+section{padding:calc(var(--gap) * .6) calc(var(--margin) * .6)}
+h1{font-size:calc(1.9rem * ${s})}
+.hero h1{font-size:calc(2.1rem * ${s})}
+}
+`;
 }

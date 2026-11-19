@@ -17,22 +17,6 @@ type EditorAsset = { id: string; kind: string; bytes: number; mime?: string; pat
 const api = (path: string, init?: RequestInit) => fetch(path, { credentials: "same-origin", ...init });
 const go = (path: string) => { history.pushState({}, "", path); window.dispatchEvent(new PopStateEvent("popstate")); };
 
-// Un documento necesita estilo cuando la pagina de inicio no tiene contenido
-// propio: o no hay secciones, o solo hay una con texto de relleno.
-function needsStyle(doc: unknown): boolean {
-  const pages = (doc as { pages?: Array<{ sections?: Array<{ type?: string; props?: unknown }> }> })?.pages ?? [];
-  if (pages.length === 0) return true;
-  const home = pages[0];
-  const sections = home?.sections ?? [];
-  if (sections.length === 0) return true;
-  // El borrador inicial trae un unico hero con el titular por defecto.
-  // Se compara con ese texto exacto, no con la longitud: un titular corto y
-  // real ({"headline":"Panadería Luna"}) es contenido legitimo del dueno.
-  const props = JSON.stringify(sections[0]?.props ?? {});
-  const isPlaceholder = props === "{}" || /Tu titular aquí|Una línea que explica/.test(props);
-  return sections.length === 1 && isPlaceholder;
-}
-
 function Brand() { return <div className="brand"><span className="brand-mark">Z</span><span>Zottaweb</span></div>; }
 
 // El agente deja escrito "pendiente de confirmar" donde no tenia el dato: no
@@ -80,22 +64,25 @@ function Dashboard({ sites, refresh }: { sites: Site[]; refresh: () => void }) {
   /**
    * Crea el sitio y abre su editor con el prompt que escribio el dueno.
    *
-   * El prompt no cabe con holgura en la URL (hasta 500 caracteres) y no debe
-   * quedar en el historial: viaja por sessionStorage y el editor lo lee una
-   * vez para arrancar el chat con esa frase. Se borra al leerlo.
+   * La idea se guarda en el servidor (doc.design.idea, hasta 500 caracteres)
+   * en vez de en sessionStorage: asi sobrevive a una recarga o a volver mas
+   * tarde. El editor la lee de doc.design.idea para arrancar el chat.
    */
   async function start(prompt: string): Promise<void> {
     setError("");
     const r = await api("/api/sites", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      // El nombre del sitio sale de la primera linea del prompt: es lo que el
-      // dueno reconoceria en su lista, no un "Mi sitio" generico.
-      body: JSON.stringify({ name: prompt.split(/[.\n]/)[0]?.slice(0, 80) ?? prompt.slice(0, 80) }),
+      // Nombre provisional: recortar aquí el prompt a 80 caracteres rompía el
+      // esquema (meta.name<=80 y seo.title<=70 se validan sobre el recorte
+      // crudo, sin límite de palabra) y dejaba el sitio creado sin borrador.
+      // El servidor recorta con seguridad (cutWords, api.ts); el agente pone
+      // el nombre real en meta.name a partir de brief.name una vez conversa
+      // con el dueño (agents/design/src/brief.ts:125-127).
+      body: JSON.stringify({ name: "Mi sitio", prompt }),
     });
     if (!r.ok) { setError("No se pudo crear el sitio."); throw new Error("create_failed"); }
     const d = await r.json() as { id: string };
-    try { sessionStorage.setItem(`design-prompt:${d.id}`, prompt); } catch { /* modo privado: se abre sin el prompt */ }
     go(`/app?site=${d.id}`);
   }
 
@@ -328,15 +315,10 @@ function Editor({ siteId }: { siteId: string }) {
   const [chatCollapsed, setChatCollapsed] = useState(false);
   const [mobileView, setMobileView] = useState<"chat" | "site">("chat");
   const [designing, setDesigning] = useState(false);
-  // El prompt con el que el dueno creo el sitio desde BuilderHome viaja por
-  // sessionStorage (no por la URL: puede tener hasta 500 caracteres) y se lee
-  // una sola vez para arrancar el chat con esa frase.
-  const [initialPrompt, setInitialPrompt] = useState("");
-  useEffect(() => {
-    const key = `design-prompt:${siteId}`;
-    const stored = sessionStorage.getItem(key);
-    if (stored) { setInitialPrompt(stored); sessionStorage.removeItem(key); }
-  }, [siteId]);
+  // El prompt con el que el dueno creo el sitio desde BuilderHome viaja en el
+  // documento (doc.design.idea), no en sessionStorage: sobrevive a una
+  // recarga o a volver mas tarde al mismo sitio.
+  const initialPrompt = ((doc as { design?: { idea?: string } } | null)?.design?.idea ?? "").trim();
   async function refreshAssets() { try { const r = await api(`/api/sites/${siteId}/assets`); if (!r.ok) return; const body = await r.json() as { assets?: EditorAsset[] }; setAssets(Array.isArray(body.assets) ? body.assets : []); } catch { setAssets([]); } }
   async function removeAsset(id: string) { if (!confirm("¿Eliminar esta imagen?")) return; const r = await api(`/api/sites/${siteId}/assets?id=${encodeURIComponent(id)}`, { method: "DELETE" }); if (r.ok) { await refreshAssets(); setStatus("Imagen eliminada"); } }
   async function upload(file: File) { setUploading(true); const r = await api(`/api/sites/${siteId}/assets?kind=image`, { method: "POST", headers: { "content-type": file.type }, body: file }); setUploading(false); if (r.ok) { await refreshAssets(); setStatus("Imagen subida. Copia su ID en el bloque Imagen."); } else {
@@ -356,21 +338,11 @@ function Editor({ siteId }: { siteId: string }) {
   useEffect(() => { api(`/api/sites/${siteId}/leads`).then(async r => { if (!r.ok) return; const d = await r.json() as { newCount?: number }; setNewLeads(Number(d.newCount ?? 0)); }).catch(() => {}); }, [siteId, showInbox]);
   useEffect(() => { api(`/api/sites/${siteId}/draft`).then(async r => { if (r.status === 401) return go("/app"); if (!r.ok) throw new Error("No se pudo cargar"); const d = await r.json() as Draft; docRef.current = d.doc; revRef.current = d.rev; setDoc(d.doc); setRev(d.rev); setStatus("Listo para crear"); }).catch(() => setStatus("No se pudo cargar el editor")); }, [siteId]);
   if (!doc) return <div className="loading"><Brand/><p>{status}</p></div>;
-  // Pantalla de inicio: solo si el sitio no tiene contenido propio todavia.
-  // `start=0` la desactiva cuando el dueno elige empezar en blanco.
   async function reloadDraft() {
     const r = await api(`/api/sites/${siteId}/draft`);
     if (!r.ok) return;
     const d = await r.json() as Draft;
     docRef.current = d.doc; revRef.current = d.rev; setDoc(d.doc); setRev(d.rev);
-  }
-  if (needsStyle(doc) && new URLSearchParams(location.search).get("start") !== "0") {
-    return <StyleStart
-      siteId={siteId}
-      expectedRev={rev}
-      onApplied={() => { void reloadDraft(); }}
-      onSkip={() => go(`/app?site=${siteId}&start=0`)}
-    />;
   } const save = async (data: any) => { lastData.current = data; pending.current = data; if (saving.current) return; saving.current = true; while (pending.current) { const current = pending.current; pending.current = null; const next = mergeEditedPage(docRef.current ?? doc, puckToDocument({ content: current.content, root: current.root }, PAGE)); setStatus("Guardando…"); const r = await api(`/api/sites/${siteId}/draft`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ doc: next, expectedRev: revRef.current }) }); if (r.status === 409) { setStatus("Otro cambio fue guardado. Recargando…"); const d = await (await api(`/api/sites/${siteId}/draft`)).json() as Draft; docRef.current = d.doc; revRef.current = d.rev; setDoc(d.doc); setRev(d.rev); continue; } if (!r.ok) { setStatus("No se pudo guardar"); continue; } const d = await r.json() as { rev: number }; docRef.current = next; revRef.current = d.rev; setDoc(next); setRev(d.rev); setStatus("Guardado"); } saving.current = false; };
   // Publicar devuelve el hostname asignado. Sin el, el dueno no sabe donde
   // esta su sitio: se le muestra en un aviso y queda en el estado.
@@ -551,6 +523,7 @@ function Editor({ siteId }: { siteId: string }) {
         onDraftChanged={() => { void reloadDraft().then(() => setDesignPending(pendingFromDoc(docRef.current))); }}
         onRunningChange={setDesigning}
         pending={designPending}
+        onAskLogo={() => setShowAssets(true)}
       />
 
       <section className="builder-canvas" aria-label="Tu sitio">

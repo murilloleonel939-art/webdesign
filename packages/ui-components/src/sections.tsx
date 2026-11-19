@@ -26,15 +26,25 @@ function Cta(props: { cta?: { label?: unknown; href?: unknown } | undefined; edi
   );
 }
 
-export function HeroSection({ section, editing }: SectionProps) {
-  const p = section.props as { headline?: unknown; subline?: unknown; cta?: { label?: string; href?: string } };
+export function HeroSection({ section, editing, resolveAsset }: SectionProps & { resolveAsset?: (id: string) => { src: string; alt: string } | undefined }) {
+  const p = section.props as { headline?: unknown; subline?: unknown; cta?: { label?: string; href?: string }; image?: unknown };
   const headline = typeof p.headline === "string" ? p.headline : "";
   const subline = typeof p.subline === "string" ? p.subline : undefined;
+  // B3: con imagen, el hero pasa a dos columnas (texto + foto); sin imagen,
+  // el degradado generado por CSS es todo el fondo. `image` guarda un id de
+  // asset, igual que `ImageSection`: sin resolver no hay URL que inventar.
+  const assetId = typeof p.image === "string" ? p.image : undefined;
+  const resolved = assetId ? resolveAsset?.(assetId) : undefined;
+  const variant = section.variant ?? "default";
+  const className = resolved ? `hero hero--${variant} hero--image` : `hero hero--${variant}`;
   return (
-    <section className={`hero hero--${section.variant ?? "default"}`} data-section-id={section.id}>
-      <h1>{headline}</h1>
-      {subline ? <p>{subline}</p> : null}
-      <Cta cta={p.cta} editing={editing} />
+    <section className={className} data-section-id={section.id}>
+      <div>
+        <h1>{headline}</h1>
+        {subline ? <p>{subline}</p> : null}
+        <Cta cta={p.cta} editing={editing} />
+      </div>
+      {resolved ? <img src={resolved.src} alt={resolved.alt} loading="lazy" decoding="async" /> : null}
     </section>
   );
 }
@@ -85,8 +95,13 @@ export function FeaturesSection({ section }: SectionProps) {
   const p = section.props as { heading?: unknown; items?: unknown };
   const heading = typeof p.heading === "string" && p.heading.trim() ? p.heading : undefined;
   const items = Array.isArray(p.items) ? (p.items as { title: string; body: string }[]) : [];
+  // B5: un proceso ("como trabajamos") se distingue por el id de la seccion
+  // (`s_process...`), no por una variante nueva en el esquema. El CSS de
+  // `features--steps` dibuja el numero con `counter()`, no en el marcado.
+  const isProcess = section.id.startsWith("s_process");
+  const className = isProcess ? "features features--steps" : "features";
   return (
-    <section className="features" data-section-id={section.id}>
+    <section className={className} data-section-id={section.id}>
       {heading ? <h2>{heading}</h2> : null}
       <ul>
         {items.map((it, i) => (

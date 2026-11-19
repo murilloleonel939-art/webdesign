@@ -5,7 +5,8 @@ import { lintSite, type LintFinding } from "@webdesign/linter";
 import { lintHtml } from "@webdesign/lint-visual";
 import { renderPage } from "@webdesign/renderer";
 import type { SiteDocument } from "@webdesign/site-schema";
-import { FIELD_LABEL, briefDescriptionContext, hasBriefData, normalizeBrief, quickBriefSchema, type BriefField } from "./brief.js";
+import { FIELD_LABEL, briefDescriptionContext, hasBriefData, normalizeBrief, quickBriefSchema, type BriefField, type QuickBrief } from "./brief.js";
+import { copyPrompt, guardCopy, siteCopySchema, type SiteCopy } from "./copy.js";
 import { draftSite, type Preset } from "./draft.js";
 import { inventory, planSections, type Inventory, type Plan } from "./plan.js";
 import { createStore, saveCheckpoint } from "./store.js";
@@ -20,14 +21,15 @@ import { makeDesignTools } from "./tools.js";
 
 /** Presupuesto del modo rápido (14.1: 1 ronda y tope de tokens de la Fase 4). */
 export const FAST_BUDGET = {
-  maxTokens: 20_000,
+  // Antes 20 000 y 0,35: cabia UNA llamada (el resumen). Ahora el modo rapido
+  // hace dos (los textos del sitio y el resumen), asi que ambos topes se doblan
+  // en lo justo: 20 000 -> 40 000 tokens y 0,35 -> 0,70 USD. Al precio del
+  // modelo `design` (0,000003 USD entrada / 0,000015 salida) dos llamadas de
+  // 2 048 tokens de salida son ~0,07 USD; el margen cubre el prompt del copy.
+  maxTokens: 40_000,
   maxToolCalls: 8,
-  // El tope de coste tiene que cubrir el tope de tokens al precio del modelo
-  // `design`: 20 000 tokens × 0,000015 USD (salida, el más caro) = 0,30 USD.
-  // Con 0,02 la primera ronda ya no cabía (2 048 de salida = 0,031 USD): el
-  // presupuesto se agotaba antes de que el modelo escribiera el resumen.
-  maxCostUsd: 0.35,
-  timeoutMs: 30_000,
+  maxCostUsd: 0.7,
+  timeoutMs: 45_000,
 } as const;
 
 export const designAgent: AgentDefinition = {
@@ -127,12 +129,17 @@ export async function runFastDesign(deps: FastDesignDeps): Promise<FastDesignRes
     }
   }
 
+  // 2b. Textos del sitio (9.1, `generate_copy`): el modelo los redacta ANTES del
+  // borrador, porque el borrador ya los necesita. La guardia `guardCopy` es
+  // determinista: aunque el modelo desobedezca, no se publica un dato inventado.
+  const copy = await generateCopy(brief, client, warnings);
+
   // 3. Borrador definitivo: `draftSite` ya valida contra `site-schema`.
-  const doc = draftSite(brief, preset);
+  const doc = draftSite(brief, preset, copy);
 
   // 3b. Inventario y plan: decisiones en datos, antes de escribir nada.
   const inv = inventory(brief);
-  const plan = planSections(brief, preset);
+  const plan = planSections(brief, preset, copy);
 
   // 4. Checkpoint antes de tocar nada (spec 9.1, paso 5).
   const store = createStore(doc);
@@ -212,4 +219,62 @@ export async function runFastDesign(deps: FastDesignDeps): Promise<FastDesignRes
     warnings,
     checkpointId: checkpoint.id,
   };
+}
+
+/**
+ * Extrae el objeto JSON de la respuesta del modelo.
+ *
+ * Los modelos envuelven el JSON en ```json con harta frecuencia, y a veces
+ * saludan antes. Se busca el primer `{` y el último `}`: lo que haya fuera no es
+ * del contrato y se descarta sin intentar interpretarlo.
+ */
+function parseJsonBlock(text: string): unknown {
+  const fenced = text.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/, "").trim();
+  const start = fenced.indexOf("{");
+  const end = fenced.lastIndexOf("}");
+  if (start === -1 || end <= start) return undefined;
+  try {
+    return JSON.parse(fenced.slice(start, end + 1)) as unknown;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Una llamada al modelo para los textos del sitio (9.1, `generate_copy`).
+ *
+ * Usa el mismo `client` que el resumen: el `LlmClient` ya lleva el `tracker`
+ * dentro, asi que el gasto del copy entra en el presupuesto de la ejecucion y se
+ * para por las mismas reglas (tokens, coste, tiempo y cortacircuitos).
+ * Un fallo NO rompe el diseno: el agente sigue con el borrador de marcadores, que
+ * es el comportamiento de antes. Se avisa con `copy_fallback` y se explica por que.
+ */
+async function generateCopy(
+  brief: QuickBrief,
+  client: LlmClient,
+  warnings: string[],
+): Promise<SiteCopy | undefined> {
+  const out = await client.complete({
+    model: designAgent.model,
+    messages: [{ role: "user", content: copyPrompt(brief) }],
+    // El JSON completo del esquema ronda los 1 500 tokens: 2 048 llega y no
+    // dispara el coste de una salida larga que no se va a usar.
+    maxOutputTokens: 2_048,
+    temperature: 0.4,
+  });
+  if (!out.ok) {
+    warnings.push("copy_fallback");
+    return undefined;
+  }
+  const raw = parseJsonBlock(out.result.text);
+  const parsed = siteCopySchema.safeParse(raw);
+  if (!parsed.success) {
+    warnings.push("copy_fallback");
+    return undefined;
+  }
+  const guarded = guardCopy(parsed.data, brief);
+  // Lo podado viaja al panel: el dueno ve que texto se descarto y por que, sin
+  // que se le haya publicado nada inventado.
+  if (guarded.dropped.length > 0) warnings.push(`copy_guard: ${guarded.dropped.join(", ")}`);
+  return guarded.copy;
 }

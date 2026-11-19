@@ -134,6 +134,20 @@ export function pollDelay(elapsedMs: number): number {
   return elapsedMs < 90000 ? 2000 : 4000;
 }
 
+/**
+ * Decide si el chat debe lanzar el diseño solo, sin preguntar nada, al
+ * terminar de comprobar si hubo una ejecucion previa (punto D).
+ *
+ * Regla del producto: si el dueno ya conto su idea al crear el sitio, no se
+ * le pregunta nada. Solo se autoarranca cuando hay un `initialPrompt` no
+ * vacio Y nunca se ha diseñado antes para este sitio (sin ejecucion previa).
+ * Si ya hubo una, el chat retoma esa (resumeFrom se encarga) en vez de lanzar
+ * otra.
+ */
+export function shouldAutoStart(initialPrompt: string, latestFound: boolean): boolean {
+  return initialPrompt.trim().length > 0 && !latestFound;
+}
+
 /** El resultado de deshacer un diseño, ya traducido a algo que se lee. */
 export function undoMessage(status: number, body: { error?: string }): { kind: "ok" | "confirm" | "gone" | "retry"; text: string } {
   if (status === 200) {

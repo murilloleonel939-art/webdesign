@@ -150,7 +150,12 @@ test("runFastDesign: una ronda, sin invenciones y con checkpoint", async () => {
     ctx: CTX("r1"),
   });
 
-  assert.equal(transport.calls, 1, "el modo rápido gasta una sola ronda");
+  // Dos llamadas: los textos del sitio (9.1, generate_copy) y el resumen. Sigue
+  // siendo UNA ronda del bucle del agente: el copy va antes del borrador.
+  assert.equal(transport.calls, 2, "el modo rapido hace dos llamadas en una sola ronda");
+  // El texto devuelto no es JSON, asi que el copy cae a marcadores: es el camino
+  // previsto y el motivo queda en `warnings` para el panel.
+  assert.ok(out.warnings.includes("copy_fallback"));
   assert.equal(out.presetId, PRESET.id);
   assert.deepEqual(out.pending, ["service", "contact"]);
   assert.equal(siteDocumentSchema.safeParse(out.doc).success, true);

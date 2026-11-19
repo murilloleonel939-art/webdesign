@@ -101,6 +101,21 @@ export interface RegisterAssetOptions {
   sourceUrl?: string | undefined;
   creditText?: string | undefined;
   source: "own" | "generated" | "open-collection";
+  /**
+   * Derechos de un material de coleccion abierta, en un solo objeto.
+   *
+   * Existe para que quien sube una foto de un banco (Pexels, por ejemplo) no
+   * tenga que acordarse de rellenar `license`, `author` y `sourceUrl` por
+   * separado y se le olvide uno: con `rights` van los tres a la vez a
+   * `assets.license`, `assets.author` y `assets.credit_text` (columnas de
+   * 0003:84-87). `sourceUrl` ademas va a `assets.source_url`, que es lo que
+   * permite no volver a usar la misma foto dos veces en el mismo sitio.
+   *
+   * Es OPCIONAL y no cambia nada existente: el default sigue siendo
+   * `source: "own"`, los campos sueltos siguen valiendo y la validacion de mime
+   * no se toca. Si llega, manda sobre `license`/`author`/`sourceUrl`.
+   */
+  rights?: { license: string; author: string; sourceUrl: string } | undefined;
   sitesRoot: string;
 }
 
@@ -120,6 +135,17 @@ export async function registerAsset(pool: Pool, opts: RegisterAssetOptions): Pro
   const mime = sniffed;
 
   const id = randomUUID();
+  // `rights` manda sobre los campos sueltos cuando viene: es la forma corta de
+  // decir "esto es de una coleccion abierta" y la que evita olvidar uno de los
+  // tres datos. Sin `rights`, todo sigue exactamente igual que antes.
+  const license = opts.rights?.license ?? opts.license;
+  const author = opts.rights?.author ?? opts.author;
+  const sourceUrl = opts.rights?.sourceUrl ?? opts.sourceUrl;
+  // `credit_text` es la columna de atribucion de 0003:87. Con derechos de
+  // coleccion abierta se deriva de autor + licencia, que es lo unico que la
+  // licencia pide conservar junto a la imagen, sin pintarlo en la pagina.
+  const creditText = opts.creditText
+    ?? (opts.rights ? `${opts.rights.author} · ${opts.rights.license} · ${opts.rights.sourceUrl}` : undefined);
   const rel = assetRelativePath(id, opts.kind, extensionFor(opts.kind, mime), opts.content);
   // Solo se acepta ruta bajo /data/sites/<siteId>/assets.
   const abs = join(opts.sitesRoot, opts.siteId, "assets", rel);
@@ -168,7 +194,7 @@ export async function registerAsset(pool: Pool, opts: RegisterAssetOptions): Pro
           `INSERT INTO assets (id, site_id, path, kind, bytes, mime, source, license, author, source_url, credit_text)
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
           [id, opts.siteId, rel, opts.kind, bytes, mime, opts.source,
-           opts.license ?? null, opts.author ?? null, opts.sourceUrl ?? null, opts.creditText ?? null],
+           license ?? null, author ?? null, sourceUrl ?? null, creditText ?? null],
         );
       } catch (e) {
         // Best-effort y sin tapar el error real. ENOENT es lo esperado en el

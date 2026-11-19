@@ -131,8 +131,9 @@ test("exito: guarda con la revision leida, cierra en ok y revoca el token", asyn
   assert.match(calls.checked[0].label, /antes del diseno con ia/i);
   assert.equal(calls.finished.length, 1);
   assert.equal(calls.finished[0].status, "ok");
-  // El motivo es legible, no un codigo.
-  assert.match(calls.finished[0].stopReason, /estilo|pendiente/i);
+  // El motivo es legible, no un codigo, y NUNCA nombra el preset.
+  assert.match(calls.finished[0].stopReason, /Tu web está lista/i);
+  assert.doesNotMatch(calls.finished[0].stopReason, /editorial/i);
   assert.deepEqual(calls.revoked, [{ runId: RUN, userId: USER }]);
 });
 

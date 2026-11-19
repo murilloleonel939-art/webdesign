@@ -97,6 +97,26 @@ SOFTWARE.
 
 ---
 
+## Imágenes y vídeos: Pexels
+
+El banco de fotos y vídeos de esta plataforma es **Pexels**
+<https://www.pexels.com>. Los archivos que se descargan siguen bajo la
+**Pexels License**; el autor de cada uno y el enlace a su ficha quedan
+registrados en el archivo de fuentes del sitio (`<sitesRoot>/<sitio>/FUENTES.md`)
+y en las columnas `author`, `license`, `source_url` y `credit_text` de la tabla
+`assets`.
+
+La Pexels License **no exige atribución visible**, así que las páginas
+publicadas no muestran créditos de imagen. Que no se muestren en la web no
+significa que no consten: la trazabilidad completa está en `FUENTES.md` y en la
+base de datos, no en el HTML.
+
+Las imágenes de Pexels se cachean en una biblioteca local compartida
+(`<MEDIA_LIBRARY_ROOT>/pexels/`); se conserva autor y licencia en
+`<MEDIA_LIBRARY_ROOT>/pexels/README.md`.
+
+---
+
 ## Dependencias de terceros
 
 Las dependencias de Node se declaran en cada `package.json` y conservan sus

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { QUESTIONS, buildPayload, isSendKey, undoMessage, resumeFrom, pollDecision, pollDelay } from "./design-chat-flow";
+import { QUESTIONS, buildPayload, isSendKey, undoMessage, resumeFrom, pollDecision, pollDelay, shouldAutoStart } from "./design-chat-flow";
 import type { BriefKey, LatestRun, Question } from "./design-chat-flow";
 
 // El constructor conversacional (etapa C).
@@ -58,12 +58,15 @@ export interface DesignChatProps {
   pending?: string[];
   /** El panel decide que hacer al ver el resultado (por ejemplo, ir al lienzo). */
   onShowResult?: () => void;
+  /** Boton secundario "¿Tienes logo?" tras un diseño ok con initialPrompt. Por
+   * ahora abre la biblioteca de imagenes; no hay extraccion de paleta aun. */
+  onAskLogo?: () => void;
 }
 
 /** El estado de la burbuja de deshacer, ya traducido a texto. Sin codigos crudos. */
 type UndoState = { kind: "ok" | "confirm" | "gone" | "retry"; text: string };
 
-export function DesignChat({ siteId, initialPrompt, collapsed = false, onDraftChanged, onRunningChange, pending, onShowResult }: DesignChatProps) {
+export function DesignChat({ siteId, initialPrompt, collapsed = false, onDraftChanged, onRunningChange, pending, onShowResult, onAskLogo }: DesignChatProps) {
   const [answers, setAnswers] = useState<Partial<Record<BriefKey, string>>>({});
   const [index, setIndex] = useState(0);
   const [phase, setPhase] = useState<Phase>("asking");
@@ -90,6 +93,10 @@ export function DesignChat({ siteId, initialPrompt, collapsed = false, onDraftCh
   // Se esta mirando si habia una ejecucion previa (punto D): mientras tanto,
   // no se pregunta nada, para no interrogar de nuevo a quien ya respondio.
   const [resuming, setResuming] = useState(true);
+  // El dueno ya conto su idea al crear el sitio: no se le pregunta nada, se
+  // diseña ya. Este ref evita relanzar el diseño en un segundo render del
+  // mismo montaje (p.ej. StrictMode o un cambio de otra prop).
+  const autoStarted = useRef(false);
 
   // El sondeo se para al cerrar o al desmontar: sin esto, salir del editor
   // dejaria una peticion cada 1,5 s hasta el final de la ejecucion.
@@ -122,6 +129,13 @@ export function DesignChat({ siteId, initialPrompt, collapsed = false, onDraftCh
         setElapsed(resumed.elapsed);
         setMessage(phaseText({ status: resumed.status, stopReason: resumed.stopReason }));
         onDraftChanged();
+      }
+      // Regla del producto: si el dueno ya conto su idea (initialPrompt) y
+      // nunca se ha diseñado antes (sin ejecucion previa), se diseña ya, sin
+      // tarjetas de preguntas. `autoStarted` asegura una sola vez por montaje.
+      if (!cancelled && shouldAutoStart(initialPrompt ?? "", latest !== null) && !autoStarted.current) {
+        autoStarted.current = true;
+        void design();
       }
       setResuming(false);
     })();
@@ -365,7 +379,9 @@ export function DesignChat({ siteId, initialPrompt, collapsed = false, onDraftCh
     <div className="builder-chat-log" role="log" aria-live="polite" aria-relevant="additions text">
       {(initialPrompt ?? "").trim() && <div className="builder-msg builder-msg--user"><p>{initialPrompt}</p></div>}
       <div className="builder-msg builder-msg--assistant">
-        <p>Cuéntame tu proyecto y lo voy montando. Te hago unas preguntas cortas primero.</p>
+        <p>{(initialPrompt ?? "").trim()
+          ? "Entendido. Empiezo a diseñar con lo que me contaste; lo que falte lo marco como pendiente y lo cambias cuando quieras."
+          : "Cuéntame tu proyecto y lo voy montando. Te hago unas preguntas cortas primero."}</p>
       </div>
       {resuming && <div className="builder-msg builder-msg--assistant">
         <p>Recuperando la conversación…</p>
@@ -405,6 +421,7 @@ export function DesignChat({ siteId, initialPrompt, collapsed = false, onDraftCh
           >Ver resultado</button>
           <button type="button" className="builder-opt" onClick={() => void undo(false)}>Deshacer</button>
           <button type="button" className="builder-opt" onClick={resetToAsking}>Diseñar de nuevo</button>
+          {(initialPrompt ?? "").trim() && onAskLogo && <button type="button" className="builder-opt" onClick={onAskLogo}>¿Tienes logo?</button>}
         </div>}
         {!runOk && <div className="builder-run-actions">
           <button

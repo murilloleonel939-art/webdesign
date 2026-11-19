@@ -192,8 +192,12 @@ test("f) sin ownerRequested, el error 6.5 tampoco bloquea: entrega con aviso", a
   assert.equal(validateSiteDocument(out.doc).ok, true);
 });
 
-// g) Modo rápido: el modelo se llama como mucho una vez.
-test("g) modo rapido: el modelo se llama como mucho 1 vez, aunque pida mas herramientas", async () => {
+// g) Modo rápido: el BUCLE del agente se llama como mucho una vez.
+//
+// El transporte recibe dos llamadas: la primera es el copy (9.1, generate_copy),
+// que va ANTES del borrador y fuera del bucle; la segunda es la única ronda del
+// agente. Lo que este test protege es lo de dentro del bucle, no el total.
+test("g) modo rapido: el modelo se llama como mucho 1 vez en el bucle, aunque pida mas herramientas", async () => {
   const transport = scripted([
     toolCall("add_section", { pageId: "p_home", section: { id: "s_x", type: "text", props: { body: PENDING_MARKER } } }),
     toolCall("add_section", { pageId: "p_home", section: { id: "s_y", type: "text", props: { body: PENDING_MARKER } } }),
@@ -207,6 +211,7 @@ test("g) modo rapido: el modelo se llama como mucho 1 vez, aunque pida mas herra
     tracker,
     ctx: CTX,
   });
-  assert.ok(transport.calls <= 1, `el modelo se llamo ${transport.calls} veces`);
+  // Dos como mucho: el copy y la ronda. Nunca una tercera peticion de herramienta.
+  assert.ok(transport.calls <= 2, `el modelo se llamo ${transport.calls} veces`);
   assert.equal(validateSiteDocument(out.doc).ok, true);
 });

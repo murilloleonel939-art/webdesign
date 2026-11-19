@@ -1,5 +1,6 @@
 import { validateSiteDocument, type Section, type SiteDocument } from "@webdesign/site-schema";
 import { PENDING_MARKER, briefSentence, siteName, type QuickBrief } from "./brief.js";
+import type { SiteCopy } from "./copy.js";
 import { plannedTypes, planSections } from "./plan.js";
 
 // Borrador del modo rápido (spec 9.1, paso 6).
@@ -38,9 +39,12 @@ const cut = (s: string, max: number): string => (s.length <= max ? s : s.slice(0
 // recorta sin añadir ningún dato: sigue sin afirmar un precio.
 const PENDING_PRICE = "pendiente";
 const CONTACT_HREF = "#contacto";
+// El plan pide el proceso como bloque `features` aparte, detras de las ventajas:
+// en 6.1 no existe un tipo `process`, y ambas listas tienen la misma forma.
+const PROCESS_ID = "s_process";
 
 /** Titular del hero: solo hechos del brief, nunca una promesa inventada. */
-function heroHeadline(brief: QuickBrief): string {
+export function heroHeadline(brief: QuickBrief): string {
   if (brief.name !== PENDING_MARKER) return cut(brief.name, 120);
   if (brief.businessType !== PENDING_MARKER && brief.city !== PENDING_MARKER) {
     return cut(`${brief.businessType} en ${brief.city}`, 120);
@@ -49,12 +53,63 @@ function heroHeadline(brief: QuickBrief): string {
 }
 
 /**
+ * Sección escrita con el copy del modelo (spec 9.1, `generate_copy`).
+ *
+ * El copy ya pasó por `guardCopy`, así que aquí no hay cifras ni premios
+ * inventados. Testimonio y precio NO se escriben aunque el preset los pida: el
+ * modelo no puede inventarlos y un marcador ahí solo ensucia la página.
+ */
+function copySection(type: string, id: string, brief: QuickBrief, copy: SiteCopy): Section | undefined {
+  switch (type) {
+    case "hero":
+      return {
+        id,
+        type: "hero",
+        props: {
+          headline: copy.heroHeadline,
+          ...(copy.heroSubline ? { subline: copy.heroSubline } : {}),
+          cta: { label: copy.heroCta, href: CONTACT_HREF },
+        },
+      };
+    case "features":
+      return { id, type: "features", props: { heading: copy.servicesHeading, items: copy.services } };
+    case "process":
+      // Misma forma que `features`: en 6.1 no hay tipo propio para el proceso.
+      return { id: PROCESS_ID, type: "features", props: { heading: copy.processHeading, items: copy.process.slice(0, 4) } };
+    case "text":
+      return { id, type: "text", props: { heading: copy.aboutHeading, body: copy.aboutBody } };
+    case "faq":
+      // Menos de dos preguntas no es una sección: se omite entera.
+      if (copy.faq.length < 2) return undefined;
+      return { id, type: "faq", props: { items: copy.faq } };
+    case "cta":
+      return {
+        id,
+        type: "cta",
+        props: { headline: copy.closingHeadline, cta: { label: copy.closingCta, href: CONTACT_HREF } },
+      };
+    case "contact":
+      return { id, type: "contact", props: contactProps(brief) };
+    case "testimonial":
+    case "pricing":
+      // Inventar un testimonio o un precio es justo lo que 9.1 prohíbe.
+      return undefined;
+    case "image":
+    case "gallery":
+      return undefined;
+    default:
+      return { id, type: "text", props: { heading: copy.aboutHeading, body: copy.aboutBody } };
+  }
+}
+
+/**
  * Convierte un tipo del preset en una sección que el borrador puede sostener.
  *
  * `image` y `gallery` se omiten sin assets, y las secciones cuyo contenido solo
  * puede venir de datos que aún no existen se degradan a `text`.
  */
-function draftSection(type: string, id: string, brief: QuickBrief): Section | undefined {
+function draftSection(type: string, id: string, brief: QuickBrief, copy?: SiteCopy): Section | undefined {
+  if (copy !== undefined) return copySection(type, id, brief, copy);
   switch (type) {
     case "hero":
       return {
@@ -102,19 +157,32 @@ function contactProps(brief: QuickBrief): Record<string, unknown> {
 }
 
 /**
+ * Nombre del sitio: el del dueño, el que dedujo el copy o el marcador.
+ *
+ * El orden importa: lo que escribió el dueño manda sobre lo que redactó el
+ * modelo, que a su vez manda sobre el marcador. Nunca al revés.
+ */
+function docName(brief: QuickBrief, copy?: SiteCopy): string {
+  if (brief.name !== PENDING_MARKER) return cut(siteName(brief), 80);
+  const deduced = copy?.businessName?.trim();
+  if (deduced !== undefined && deduced !== "") return cut(deduced, 80);
+  return PENDING_MARKER;
+}
+
+/**
  * Construye y valida un `SiteDocument` a partir del brief y de un preset.
  *
  * Se valida antes de devolver: un borrador que no pasa `site-schema` no sale de
  * esta función, así que el agente nunca muta el sitio con algo inválido.
  */
-export function draftSite(brief: QuickBrief, preset: Preset): SiteDocument {
+export function draftSite(brief: QuickBrief, preset: Preset, copy?: SiteCopy): SiteDocument {
   const sections: Section[] = [];
   const used = new Set<string>();
   const push = (type: string) => {
     let id = `s_${type}`;
     let n = 2;
     while (used.has(id)) id = `s_${type}_${n++}`;
-    const section = draftSection(type, id, brief);
+    const section = draftSection(type, id, brief, copy);
     if (!section) return;
     used.add(id);
     sections.push(section);
@@ -123,11 +191,13 @@ export function draftSite(brief: QuickBrief, preset: Preset): SiteDocument {
   // El plan decide qué se escribe; el borrador no vuelve a decidirlo. Si lo
   // hiciera, `plan` y documento podrían discrepar y el dueño vería un plan que
   // no es el que se aplicó.
-  for (const type of plannedTypes(planSections(brief, preset))) push(type);
+  for (const type of plannedTypes(planSections(brief, preset, copy))) push(type);
 
   const doc = {
     schemaVersion: 1 as const,
-    meta: { name: siteName(brief), lang: "es" as const },
+    // El nombre lo pone el dueño; si no lo dijo, el que dedujo el copy; si
+    // tampoco hay, el marcador. Nunca un nombre inventado por el agente.
+    meta: { name: docName(brief, copy), lang: "es" as const },
     design: {
       brief: briefSentence(brief),
       idea: preset.summary,
@@ -153,8 +223,8 @@ export function draftSite(brief: QuickBrief, preset: Preset): SiteDocument {
         id: "p_home",
         slug: "/",
         seo: {
-          title: cut(siteName(brief), 70),
-          description: cut(`${brief.businessType} en ${brief.city}. ${brief.service}`, 160),
+          title: cut(docName(brief, copy), 70),
+          description: cut(copy?.seoDescription ?? `${brief.businessType} en ${brief.city}. ${brief.service}`, 160),
           noindex: false,
         },
         sections,

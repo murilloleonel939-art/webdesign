@@ -235,11 +235,16 @@ export async function processDesignJob(deps: DesignDeps, job: DesignJob): Promis
   }
 }
 
-/** Texto corto para el dueno: que quedo pendiente de confirmar. */
+/**
+ * Texto corto para el dueño: la web está lista y qué queda por completar.
+ *
+ * Nunca menciona el preset: al dueño no le dice nada el id de un estilo del
+ * catálogo, y el mensaje es la primera cosa que lee al terminar.
+ */
 function summary(result: FastDesignResult): string {
   const pending = result.pending.length;
-  if (pending === 0) return `Diseno aplicado con el estilo ${result.presetId}`;
-  return `Diseno aplicado con el estilo ${result.presetId}. Faltan ${pending} datos por confirmar`;
+  if (pending === 0) return "Tu web está lista. Revisa los textos y cámbialos cuando quieras.";
+  return `Tu web está lista. Hay ${pending} datos que solo tú sabes (marcados como pendientes); cámbialos cuando quieras.`;
 }
 
 function message(e: unknown): string {

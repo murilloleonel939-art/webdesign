@@ -60,6 +60,17 @@ export function renderPage(input: unknown, pageId: string, resolveAsset: AssetRe
     .join("\n");
 
   const title = escapeHtml(page.seo.title || doc.meta.name);
+  const year = new Date().getFullYear();
+  const siteName = escapeHtml(doc.meta.name);
+  // Pie oscuro y con columnas (B7): fuera de las secciones del documento, asi
+  // que no depende de que el dueno anada una seccion "contact" para existir.
+  // El enlace vuelve a `#contacto`, que es el ancla que usa esa seccion si
+  // esta presente; si no lo esta, el navegador simplemente no desplaza nada.
+  const footer =
+    `<footer class="site-footer">` +
+    `<div><p class="site-footer__brand">${siteName}</p><p>© ${year} ${siteName}. Todos los derechos reservados.</p></div>` +
+    `<nav><a href="#contacto">Contacto</a></nav>` +
+    `</footer>`;
   return (
     `<!DOCTYPE html><html lang="${escapeHtml(doc.meta.lang)}"><head>` +
     `<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">` +
@@ -70,6 +81,6 @@ export function renderPage(input: unknown, pageId: string, resolveAsset: AssetRe
     // El CSS se genera del tema del documento: sin esto el sitio sale sin
     // estilos, porque no hay hoja compartida que servir.
     `<style>${themeCss(doc.theme)}</style>` +
-    `</head><body>\n${body}\n</body></html>`
+    `</head><body>\n${body}\n${footer}\n</body></html>`
   );
 }

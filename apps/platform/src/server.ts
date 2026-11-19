@@ -19,11 +19,12 @@ import { listLeads, countNewLeads, setLeadStatus, isLeadStatus } from "./inbox.j
 import { isOperator, listAllSites, summary } from "./operator.js";
 import { handleLead, clientIp, parseLeadForm } from "./lead.js";
 import { ensureHostname, linkHost, unlinkHost } from "./hosting.js";
-import { parseCookies, resolveSession, login, createUser, createSite, deleteSite, listSites, saveDraft, loadDraft, publish, rollbackTo, unpublish, isAnotherSiteActive, activeAssets, SESSION_COOKIE } from "./api.js";
+import { parseCookies, resolveSession, login, createUser, createSite, deleteSite, listSites, saveDraft, loadDraft, publish, rollbackTo, unpublish, isAnotherSiteActive, activeAssets, SESSION_COOKIE, SiteInputError, initialDoc } from "./api.js";
 import { renderPage } from "@webdesign/renderer";
 import { registerAsset, type AssetKind } from "@webdesign/assets";
 import { quickBriefSchema, designAgent, FAST_BUDGET } from "@webdesign/agent-design";
 import { diagnosticsEnabled, tokenMatches, runDiagnostics } from "./diagnose.js";
+import { handleInternalPhotos } from "./internal-photos.js";
 
 // Punto de entrada de `platform`: healthcheck, panel y vista previa aislada.
 // La vista previa vive en su propio subdominio, con su propia cookie (spec 5.5).
@@ -309,6 +310,15 @@ async function handleApi(pool: import("pg").Pool, sitesRoot: string, req: Incomi
     return true;
   }
 
+  // --- API interna de agentes ---
+  // Va ANTES de resolver la sesion: al agente no se le identifica por cookie,
+  // sino por el token de su ejecucion (`Authorization: Bearer <jti>`), el mismo
+  // mecanismo que valida el gateway (apps/llm-gateway/src/server.ts:214). Una
+  // peticion de agente no debe costar una consulta de sesion que no usa.
+  if (url.pathname.startsWith("/api/internal/")) {
+    if (await handleInternalPhotos(pool, sitesRoot, req, res, url)) return true;
+  }
+
   const session = await resolveSession(pool, parseCookies(req.headers.cookie)[SESSION_COOKIE]);
 
   if (req.method === "POST" && url.pathname === "/api/login") {
@@ -328,9 +338,20 @@ async function handleApi(pool: import("pg").Pool, sitesRoot: string, req: Incomi
       json(res, 401, { error: "unauthorized" });
       return true;
     }
-    const body = (await readJson(req)) as { name?: string };
-    const id = await createSite(pool, session.userId, body.name ?? "Mi sitio");
-    json(res, 201, { id });
+    const body = (await readJson(req)) as { name?: unknown; prompt?: unknown };
+    const name = typeof body.name === "string" ? body.name : "Mi sitio";
+    const prompt = typeof body.prompt === "string" ? body.prompt.trim().slice(0, 500) : "";
+    try {
+      const id = await createSite(pool, session.userId, name, prompt);
+      json(res, 201, { id });
+    } catch (e) {
+      if (e instanceof SiteInputError) {
+        json(res, 400, { error: "invalid_name" });
+      } else {
+        console.error("site_create_failed", { error: e instanceof Error ? e.message : String(e) });
+        json(res, 500, { error: "create_failed" });
+      }
+    }
     return true;
   }
 
@@ -609,7 +630,23 @@ async function handleApi(pool: import("pg").Pool, sitesRoot: string, req: Incomi
     if (req.method === "GET") {
       const d = await loadDraft(pool, session.userId, siteId);
       if (!d) {
-        json(res, 404, { error: "no_draft" });
+        // El sitio existe pero quedó sin borrador (fallo pasado al crearlo):
+        // se repara con el mismo documento inicial que usa createSite.
+        const row = await withUser(pool, session.userId, async (tx) => {
+          const r = await tx.query<{ name: string }>("SELECT name FROM sites WHERE id = $1", [siteId]);
+          return r.rows[0];
+        });
+        if (!row) {
+          json(res, 404, { error: "no_draft" });
+          return true;
+        }
+        const { doc } = initialDoc(row.name);
+        const repaired = await saveDraft(pool, { userId: session.userId, siteId, doc, expectedRev: 0, actorType: "user" });
+        if (!repaired.ok) {
+          json(res, 404, { error: "no_draft" });
+          return true;
+        }
+        json(res, 200, { rev: repaired.rev, doc });
         return true;
       }
       json(res, 200, d);

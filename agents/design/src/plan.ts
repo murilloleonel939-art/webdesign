@@ -1,4 +1,5 @@
 import { BRIEF_FIELDS, FIELD_LABEL, PENDING_MARKER, type BriefField, type QuickBrief } from "./brief.js";
+import type { SiteCopy } from "./copy.js";
 import type { Preset } from "./draft.js";
 
 // Inventario y plan (spec 9.1: brief → inventario → recomendación → plan →
@@ -55,9 +56,47 @@ export interface Plan {
  * asset propio. Escribir cualquiera de ellas sería inventar, que es justo lo que
  * 9.1 prohíbe.
  */
-export function planSections(brief: QuickBrief, preset: Preset): Plan {
+export function planSections(brief: QuickBrief, preset: Preset, copy?: SiteCopy): Plan {
   const sections: PlannedSection[] = [];
   for (const s of preset.sections) {
+  if (copy !== undefined) {
+    // Con copy el plan cambia: lo que el modelo puede escribir con datos del
+    // dueno se escribe; lo que solo existe si se inventa (testimonio, precio) se
+    // omite. El plan tiene que decir lo mismo que el documento, o el dueno veria
+    // un plan que no es el que se aplico.
+    switch (s.type) {
+      case "image":
+      case "gallery":
+        sections.push({ type: s.type, as: s.type, action: "omit", reason: "sin_assets_del_dueno" });
+        break;
+      case "features":
+        sections.push({ type: s.type, as: "features", action: "write", reason: "copy_del_dueno" });
+        // El proceso va siempre detras de las ventajas, como bloque propio.
+        if (copy.process.length > 0) {
+          sections.push({ type: "process", as: "process", action: "write", reason: "copy_del_dueno" });
+        }
+        break;
+      case "testimonial":
+        sections.push({ type: s.type, as: s.type, action: "omit", reason: "testimonio_requiere_cliente_real" });
+        break;
+      case "pricing":
+        sections.push({ type: s.type, as: s.type, action: "omit", reason: "precio_requiere_dato_del_dueno" });
+        break;
+      case "faq":
+        sections.push(
+          copy.faq.length >= 2
+            ? { type: s.type, as: "faq", action: "write", reason: "copy_del_dueno" }
+            : { type: s.type, as: s.type, action: "omit", reason: "sin_preguntas_del_dueno" },
+        );
+        break;
+      case "hero":
+        sections.push({ type: s.type, as: "hero", action: "write", reason: "copy_del_dueno" });
+        break;
+      default:
+        sections.push({ type: s.type, as: s.type, action: "write", reason: "copy_del_dueno" });
+    }
+    continue;
+  }
     switch (s.type) {
       case "image":
       case "gallery":
