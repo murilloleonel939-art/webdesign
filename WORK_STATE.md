@@ -638,3 +638,22 @@ Verificador dio rojo; corregido punto por punto:
 - **Validacion**: `tsc` ui y server 0; `turbo run typecheck test --force` 67/67, 0 cached;
   `@webdesign/platform` 36 pass / 0 fail (incluye `test/design-chat-flow.test.mjs`, 7 casos);
   `node build-ui.mjs` OK. **Pendiente de orden de subida.**
+
+## CORTE 11 — 2026-11-21T13:47:04+00:00 — documentación del agente de diseño
+
+Archivos sin commit en este corte: `agents/design/src/agent.ts`, `copy.ts`, `draft.ts`, `plan.ts`,
+`apps/workers/src/design-job.ts`, `pg-store.ts`, `apps/platform/src/api.ts`, `server.ts`, además
+de sus pruebas, `apps/platform/package.json`, `apps/platform/test/licensed-assets.test.mjs` y
+el archivo sin seguimiento `sync-tools.sh.fixed`.
+
+Cambios concretos: el agente genera copy antes del estilo, aplica guardas y reintento de lectura,
+lanzando `CopyUnavailableError` cuando corresponde; el draft/plan incorporan fotos licenciadas.
+Workers persiste checkpoints y eventos; platform resuelve Pexels, caché, `FUENTES.md`, assets,
+preview y el ciclo de borrador bajo acción explícita del dueño.
+
+Resultados conocidos: typecheck limpio; agent-design 40/40; workers 15/15; global 66/67 por scopes.
+`workflow-3` no tiene informe disponible. Una prueba real previa dejó marcador visible.
+
+Despliegue: primero `platform`, después `workers`; workers necesita `DATABASE_URL=app_platform`,
+`PEXELS_API_KEY` y `MEDIA_LIBRARY_ROOT`. Pendientes comerciales bloqueantes: E2E, dominios,
+pagos, backups, seguridad, legal, observabilidad y operador.

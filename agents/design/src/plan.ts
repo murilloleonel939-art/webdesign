@@ -1,6 +1,9 @@
 import { BRIEF_FIELDS, FIELD_LABEL, PENDING_MARKER, type BriefField, type QuickBrief } from "./brief.js";
 import type { SiteCopy } from "./copy.js";
-import type { Preset } from "./draft.js";
+import type { Preset, SitePhotos } from "./draft.js";
+
+/** Mínimo de fotos de la galería para que exista como sección. */
+export const GALLERY_MIN = 3;
 
 // Inventario y plan (spec 9.1: brief → inventario → recomendación → plan →
 // checkpoint → construcción → validación).
@@ -56,8 +59,9 @@ export interface Plan {
  * asset propio. Escribir cualquiera de ellas sería inventar, que es justo lo que
  * 9.1 prohíbe.
  */
-export function planSections(brief: QuickBrief, preset: Preset, copy?: SiteCopy): Plan {
+export function planSections(brief: QuickBrief, preset: Preset, copy?: SiteCopy, photos?: SitePhotos): Plan {
   const sections: PlannedSection[] = [];
+  const galleryPhotos = photos?.gallery.length ?? 0;
   for (const s of preset.sections) {
   if (copy !== undefined) {
     // Con copy el plan cambia: lo que el modelo puede escribir con datos del
@@ -66,15 +70,31 @@ export function planSections(brief: QuickBrief, preset: Preset, copy?: SiteCopy)
     // un plan que no es el que se aplico.
     switch (s.type) {
       case "image":
-      case "gallery":
         sections.push({ type: s.type, as: s.type, action: "omit", reason: "sin_assets_del_dueno" });
         break;
+      case "gallery":
+        sections.push(
+          galleryPhotos >= GALLERY_MIN
+            ? { type: s.type, as: "gallery", action: "write", reason: "fotos_de_la_busqueda" }
+            : { type: s.type, as: s.type, action: "omit", reason: "sin_fotos_suficientes" },
+        );
+        break;
       case "features":
-        sections.push({ type: s.type, as: "features", action: "write", reason: "copy_del_dueno" });
-        // El proceso va siempre detras de las ventajas, como bloque propio.
-        if (copy.process.length > 0) {
-          sections.push({ type: "process", as: "process", action: "write", reason: "copy_del_dueno" });
-        }
+        // Sin servicios validos no hay ventajas que escribir: el borrador omite
+        // la seccion y el plan lo dice igual, o el dueno veria un plan que no es
+        // el que se aplico.
+        sections.push(
+          copy.services.length > 0
+            ? { type: s.type, as: "features", action: "write", reason: "copy_del_dueno" }
+            : { type: s.type, as: s.type, action: "omit", reason: "sin_servicios_del_dueno" },
+        );
+        // El proceso va siempre detras de las ventajas, como bloque propio, y se
+        // omite con la misma regla que el borrador: sin pasos no hay seccion.
+        sections.push(
+          copy.process.length > 0
+            ? { type: "process", as: "process", action: "write", reason: "copy_del_dueno" }
+            : { type: "process", as: "process", action: "omit", reason: "sin_pasos_del_dueno" },
+        );
         break;
       case "testimonial":
         sections.push({ type: s.type, as: s.type, action: "omit", reason: "testimonio_requiere_cliente_real" });
@@ -93,7 +113,14 @@ export function planSections(brief: QuickBrief, preset: Preset, copy?: SiteCopy)
         sections.push({ type: s.type, as: "hero", action: "write", reason: "copy_del_dueno" });
         break;
       default:
-        sections.push({ type: s.type, as: s.type, action: "write", reason: "copy_del_dueno" });
+        // El resto se escribe como `text` con el "sobre el negocio": sin
+        // aboutBody no hay texto y el borrador omite la seccion (draft.ts).
+        // `contact` y `cta` no dependen de aboutBody: llevan sus propios props.
+        sections.push(
+          s.type !== "contact" && s.type !== "cta" && copy.aboutBody === ""
+            ? { type: s.type, as: s.type, action: "omit", reason: "sin_about_del_dueno" }
+            : { type: s.type, as: s.type, action: "write", reason: "copy_del_dueno" },
+        );
     }
     continue;
   }
@@ -125,6 +152,15 @@ export function planSections(brief: QuickBrief, preset: Preset, copy?: SiteCopy)
       default:
         sections.push({ type: s.type, as: s.type, action: "write", reason: "contenido_del_brief" });
     }
+  }
+  // Un preset sin galería no impide las fotos: la galería va tras los servicios y el proceso.
+  const hasGallery = sections.some((s) => s.as === "gallery" && s.action === "write");
+  if (copy !== undefined && galleryPhotos >= GALLERY_MIN && !hasGallery) {
+    let at = 0;
+    sections.forEach((s, i) => {
+      if (s.as === "features" || s.as === "process") at = i + 1;
+    });
+    sections.splice(at, 0, { type: "gallery", as: "gallery", action: "write", reason: "fotos_de_la_busqueda" });
   }
   // Sin hero no hay h1 y 6.5 marca la jerarquía: se antepone uno.
   if (!sections.some((s) => s.type === "hero" && s.action === "write")) {

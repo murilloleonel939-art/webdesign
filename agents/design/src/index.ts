@@ -15,9 +15,9 @@ export {
   type QuickBriefInput,
 } from "./brief.js";
 
-export { draftSite, heroHeadline, type Preset } from "./draft.js";
+export { draftSite, heroHeadline, type PhotoRef, type Preset, type SitePhotos } from "./draft.js";
 
-export { copyPrompt, guardCopy, siteCopySchema, type SiteCopy } from "./copy.js";
+export { copyPrompt, guardCopy, readCopy, retryLine, siteCopySchema, type SiteCopy } from "./copy.js";
 
 export {
   inventory,
@@ -45,6 +45,7 @@ export {
 export { makeDesignTools } from "./tools.js";
 
 export {
+  CopyUnavailableError,
   FAST_BUDGET,
   designAgent,
   runFastDesign,

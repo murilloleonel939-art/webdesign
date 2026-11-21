@@ -150,12 +150,14 @@ test("runFastDesign: una ronda, sin invenciones y con checkpoint", async () => {
     ctx: CTX("r1"),
   });
 
-  // Dos llamadas: los textos del sitio (9.1, generate_copy) y el resumen. Sigue
-  // siendo UNA ronda del bucle del agente: el copy va antes del borrador.
-  assert.equal(transport.calls, 2, "el modo rapido hace dos llamadas en una sola ronda");
+  // Tres llamadas: el texto no es JSON, asi que el copy (9.1, generate_copy)
+  // agota su reintento (2 llamadas) antes de caer a marcadores; la tercera es
+  // el resumen. Sigue siendo UNA ronda del bucle del agente: el copy va antes
+  // del borrador y fuera del bucle.
+  assert.equal(transport.calls, 3, "el copy reintenta una vez y luego va el resumen de la ronda");
   // El texto devuelto no es JSON, asi que el copy cae a marcadores: es el camino
   // previsto y el motivo queda en `warnings` para el panel.
-  assert.ok(out.warnings.includes("copy_fallback"));
+  assert.ok(out.warnings.some((w) => w.startsWith("copy_fallback")), `warnings: ${out.warnings}`);
   assert.equal(out.presetId, PRESET.id);
   assert.deepEqual(out.pending, ["service", "contact"]);
   assert.equal(siteDocumentSchema.safeParse(out.doc).success, true);
@@ -181,6 +183,83 @@ test("runFastDesign: un 6.5 pedido por el dueño se aplica y solo avisa", async 
   // Sin reversión: el documento sigue completo y válido.
   assert.equal(validateSiteDocument(out.doc).ok, true);
   assert.ok(Array.isArray(out.warnings));
+});
+
+/** Copy JSON valido con `photoQueries`, para las pruebas de fotos (B1). */
+function copyWithPhotosJson() {
+  return JSON.stringify({
+    businessType: "cafetería de especialidad",
+    heroHeadline: "Café Aurora en Valencia",
+    heroSubline: "Tueste propio y desayunos cada mañana.",
+    heroCta: "Escríbenos",
+    servicesHeading: "Qué hacemos",
+    services: [
+      { title: "Tueste propio", body: "Tostamos el grano en casa." },
+      { title: "Desayunos", body: "Servimos desayunos hasta mediodía." },
+      { title: "Para llevar", body: "También para llevar." },
+    ],
+    processHeading: "Cómo trabajamos",
+    process: [{ title: "Nos escribes", body: "Cuéntanos qué necesitas." }],
+    aboutHeading: "Quiénes somos",
+    aboutBody: "Cafetería de especialidad en Valencia.",
+    faq: [],
+    closingHeadline: "Hablemos",
+    closingCta: "Escribir",
+    seoDescription: "Cafetería de especialidad en Valencia con tueste propio.",
+    photoQueries: { hero: "coffee shop interior", gallery: "coffee shop details" },
+  });
+}
+
+test("runFastDesign: fetchPhotos con 5 fotos deja hero con imagen y galeria con 4 assetIds", async () => {
+  const { client, tracker } = fakeClient(copyWithPhotosJson());
+  const pool = [1, 2, 3, 4, 5].map((n) => ({ assetId: `ph${n}`, alt: `foto ${n}` }));
+  const fetchPhotos = async ({ count }) => pool.slice(0, count);
+  const out = await runFastDesign({ brief: BRIEF, presets: [PRESET], client, tracker, ctx: CTX("photos-ok"), fetchPhotos });
+
+  assert.equal(validateSiteDocument(out.doc).ok, true);
+  const hero = out.doc.pages[0].sections.find((s) => s.type === "hero");
+  assert.equal(hero.props.image, "ph1");
+  const gallery = out.doc.pages[0].sections.find((s) => s.type === "gallery");
+  assert.ok(gallery, "la galeria existe con fotos suficientes");
+  assert.deepEqual(gallery.props.assetIds, ["ph1", "ph2", "ph3", "ph4"]);
+  assert.equal(out.warnings.includes("photos_unavailable"), false);
+});
+
+test("runFastDesign: fetchPhotos que lanza deja el sitio sin fotos y avisa photos_unavailable", async () => {
+  const { client, tracker } = fakeClient(copyWithPhotosJson());
+  const fetchPhotos = async () => {
+    throw new Error("502 del proveedor de fotos");
+  };
+  const out = await runFastDesign({ brief: BRIEF, presets: [PRESET], client, tracker, ctx: CTX("photos-fail"), fetchPhotos });
+
+  assert.ok(out.warnings.includes("photos_unavailable"));
+  const hero = out.doc.pages[0].sections.find((s) => s.type === "hero");
+  assert.equal(hero.props.image, undefined);
+  assert.equal(out.doc.pages[0].sections.some((s) => s.type === "gallery"), false);
+  assert.equal(validateSiteDocument(out.doc).ok, true);
+});
+
+test("runFastDesign: copy con 2 servicios -> features con 2 items, sin marcador en doc.pages", async () => {
+  const copy = JSON.parse(copyWithPhotosJson());
+  copy.services = copy.services.slice(0, 2);
+  const { client, tracker } = fakeClient(JSON.stringify(copy));
+  const out = await runFastDesign({ brief: BRIEF, presets: [PRESET], client, tracker, ctx: CTX("copy-2") });
+
+  const features = out.doc.pages[0].sections.find((s) => s.id === "s_features");
+  assert.equal(features.props.items.length, 2);
+  assert.doesNotMatch(JSON.stringify(out.doc.pages), /pendiente de confirmar/);
+});
+
+test("runFastDesign: plan y documento coinciden cuando el about se poda", async () => {
+  const copy = JSON.parse(copyWithPhotosJson());
+  copy.aboutBody = "Somos la empresa líder del sector y estamos certificados.";
+  const { client, tracker } = fakeClient(JSON.stringify(copy));
+  const out = await runFastDesign({ brief: BRIEF, presets: [PRESET], client, tracker, ctx: CTX("copy-about") });
+
+  // Podado por la guardia: ni seccion `text` en el documento ni accion `write`.
+  assert.equal(out.doc.pages[0].sections.some((s) => s.type === "text"), false);
+  const textPlan = out.plan.sections.filter((s) => s.as === "text");
+  assert.deepEqual(textPlan.map((s) => [s.action, s.reason]), [["omit", "sin_about_del_dueno"]]);
 });
 
 test("runFastDesign: un brief sin ningún dato se rechaza en vez de inventarlo", async () => {

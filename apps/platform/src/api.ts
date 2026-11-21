@@ -177,8 +177,8 @@ export async function activeAssets(pool: Pool, userId: string, siteId: string, s
   known: Map<string, { id: string; kind: string; path: string }>;
 }> {
   const rows = await withUser(pool, userId, async (tx) =>
-    (await tx.query<{ id: string; path: string; source: string; kind: string; alt: string | null }>(
-      "SELECT id, path, source, kind FROM assets WHERE site_id = $1 AND takedown_status = 'active'",
+    (await tx.query<{ id: string; path: string; source: string; kind: string; license: string | null }>(
+      "SELECT id, path, source, kind, license FROM assets WHERE site_id = $1 AND takedown_status = 'active'",
       [siteId],
     )).rows,
   );
@@ -195,8 +195,17 @@ export async function activeAssets(pool: Pool, userId: string, siteId: string, s
     try { assetFilesById.set(r.id, await readFile(join(sitesRoot, siteId, "assets", r.path))); } catch { /* asset sin archivo */ }
   }
   // `own` es material del propio dueno; `generated` se produjo para el sitio.
-  // Solo `open-collection` exige licencia explicita.
-  const licensedAssetIds = rows.filter((r) => r.source === "own" || r.source === "generated").map((r) => r.id);
+  // `open-collection` (las fotos de Pexels) si vale como licencia cuando trae la
+  // suya en `license` ("Pexels License", packages/assets/src/index.ts): sin
+  // licencia registrada sigue sin contar y el linter 6.4 la marca.
+  const licensedAssetIds = rows
+    .filter(
+      (r) =>
+        r.source === "own" ||
+        r.source === "generated" ||
+        (r.source === "open-collection" && r.license !== null && r.license.trim() !== ""),
+    )
+    .map((r) => r.id);
   const known = new Map(rows.map((r) => [r.id, { id: r.id, kind: r.kind, path: r.path }]));
   return { resolveAssetPath: (id) => byId.get(id), assetFiles, assetFilesById, licensedAssetIds, known };
 }

@@ -173,10 +173,11 @@ test("P06 el run se crea con el agente y el tope de tokens reales", async () => 
       assert.equal(insert.params[5], FAST_BUDGET.maxTokens);
       assert.equal(insert.params[2], USER);
       assert.equal(insert.params[3], SITE);
-      // El token se emite con el scope del gateway y acotado a este sitio.
+      // El token se emite con el scope del gateway y el de escritura del sitio:
+      // la ruta de fotos registra los assets con `site:write`. Acotado a este sitio.
       const token = fake.find(/INSERT INTO agent_tokens/);
       assert.ok(token);
-      assert.deepEqual(token.params[2], ["llm:complete"]);
+      assert.deepEqual(token.params[2], ["llm:complete", "site:write"]);
       assert.equal(token.params[3], SITE);
     });
   } finally {

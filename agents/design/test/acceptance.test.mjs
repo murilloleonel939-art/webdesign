@@ -196,9 +196,28 @@ test("f) sin ownerRequested, el error 6.5 tampoco bloquea: entrega con aviso", a
 //
 // El transporte recibe dos llamadas: la primera es el copy (9.1, generate_copy),
 // que va ANTES del borrador y fuera del bucle; la segunda es la única ronda del
-// agente. Lo que este test protege es lo de dentro del bucle, no el total.
+// agente. El copy tiene que leerse a la primera (JSON válido) para no gastar su
+// reintento y así dejar las dos peticiones de herramienta solo para el bucle.
+// Lo que este test protege es lo de dentro del bucle, no el total.
+const COPY_JSON = JSON.stringify({
+  businessType: "cafetería de especialidad",
+  heroHeadline: "Café Aurora en Valencia",
+  heroSubline: "",
+  heroCta: "Escribir",
+  servicesHeading: "Servicios",
+  services: [{ title: "Tueste propio", body: "Tostamos el grano en casa." }],
+  processHeading: "Cómo trabajamos",
+  process: [{ title: "Nos escribes", body: "Cuéntanos qué necesitas." }],
+  aboutHeading: "Quiénes somos",
+  aboutBody: "Cafetería de especialidad en Valencia.",
+  faq: [],
+  closingHeadline: "Hablemos",
+  closingCta: "Escribir",
+  seoDescription: "Cafetería de especialidad en Valencia.",
+});
 test("g) modo rapido: el modelo se llama como mucho 1 vez en el bucle, aunque pida mas herramientas", async () => {
   const transport = scripted([
+    { text: COPY_JSON, toolCalls: [], finishReason: "stop" },
     toolCall("add_section", { pageId: "p_home", section: { id: "s_x", type: "text", props: { body: PENDING_MARKER } } }),
     toolCall("add_section", { pageId: "p_home", section: { id: "s_y", type: "text", props: { body: PENDING_MARKER } } }),
     STOP,
@@ -211,7 +230,8 @@ test("g) modo rapido: el modelo se llama como mucho 1 vez en el bucle, aunque pi
     tracker,
     ctx: CTX,
   });
-  // Dos como mucho: el copy y la ronda. Nunca una tercera peticion de herramienta.
+  // Dos como mucho: el copy (JSON válido a la primera) y la ronda. Nunca una
+  // tercera peticion de herramienta.
   assert.ok(transport.calls <= 2, `el modelo se llamo ${transport.calls} veces`);
   assert.equal(validateSiteDocument(out.doc).ok, true);
 });

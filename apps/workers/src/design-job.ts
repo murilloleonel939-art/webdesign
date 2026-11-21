@@ -1,5 +1,5 @@
 import { budgetSchema, type BudgetTracker, type LlmClient } from "@webdesign/llm";
-import { FAST_BUDGET, runFastDesign, type FastDesignResult, type Preset } from "@webdesign/agent-design";
+import { CopyUnavailableError, FAST_BUDGET, runFastDesign, type FastDesignDeps, type FastDesignResult, type Preset } from "@webdesign/agent-design";
 
 // Job del agente de diseño (spec 9.1, Fase 4; punto C).
 //
@@ -44,6 +44,12 @@ export interface DesignClient {
   apiBaseUrl: string;
 }
 
+/** Foto devuelta por la ruta interna de fotos, ya mapeada para el agente. */
+export interface DesignPhoto {
+  assetId: string;
+  alt: string;
+}
+
 export interface DesignDeps {
   /** Borrador actual del sitio, o `undefined` si no hay ninguno. */
   loadDraft(userId: string, siteId: string): Promise<{ rev: number; doc: unknown } | undefined>;
@@ -79,6 +85,11 @@ export interface DesignDeps {
   revokeToken(runId: string, userId: string): Promise<void>;
   /** Arma el cliente del gateway y su presupuesto. `undefined` si no se puede. */
   makeClient(job: DesignJob): Promise<DesignClient | undefined>;
+  /**
+   * `fetch` para la ruta interna de fotos. Se inyecta para poder probar el job
+   * sin red: sin el, se usa el global.
+   */
+  fetch?: typeof globalThis.fetch;
 }
 
 /** Etiqueta del checkpoint previo: el dueno la ve en el historial del editor. */
@@ -179,6 +190,9 @@ export async function processDesignJob(deps: DesignDeps, job: DesignJob): Promis
     }
 
     let result: FastDesignResult;
+    // Recuento de lo que devolvio la ruta de fotos: se registra despues, con el
+    // run ya identificado, y nunca con la query ni URLs.
+    const photosTally = { hero: false, gallery: 0 };
     try {
       result = await runFastDesign({
         brief: job.brief,
@@ -194,12 +208,32 @@ export async function processDesignJob(deps: DesignDeps, job: DesignJob): Promis
           locale: "es",
           apiBaseUrl: made.apiBaseUrl,
         },
+        fetchPhotos: makeFetchPhotos(deps.fetch ?? globalThis.fetch, made.apiBaseUrl, made.token, job.siteId, photosTally),
       });
     } catch (e) {
+      if (e instanceof CopyUnavailableError) {
+        // El dueno SI escribio una descripcion: sin textos no hay sitio que
+        // enseñar. No se guarda nada, igual que cualquier otro fallo de
+        // `runFastDesign` (misma rama que el catch generico de abajo).
+        console.warn("design_copy_fallback", { runId: job.runId, reason: e.reason });
+        return await finish(
+          deps, job, "error",
+          "No pude escribir los textos de tu web. Pulsa «Diseñar de nuevo» para reintentarlo.",
+        );
+      }
       // Un 6.4 con error, un brief invalido o un fallo del modelo: no se guarda
       // nada. El borrador del dueno queda como estaba.
       return await finish(deps, job, "error", `No se pudo completar el diseno: ${message(e)}`);
     }
+
+    const copyFallback = result.warnings.find((w) => w.startsWith("copy_fallback: "));
+    if (copyFallback !== undefined) {
+      console.warn("design_copy_fallback", { runId: job.runId, reason: copyFallback.slice("copy_fallback: ".length) });
+    } else {
+      console.info("design_copy_ok", { runId: job.runId, sections: result.plan.sections.length });
+    }
+
+    console.info("design_photos", { runId: job.runId, hero: photosTally.hero, gallery: photosTally.gallery });
 
     const limit = budgetLimit(result);
     if (limit !== undefined) {
@@ -245,6 +279,48 @@ function summary(result: FastDesignResult): string {
   const pending = result.pending.length;
   if (pending === 0) return "Tu web está lista. Revisa los textos y cámbialos cuando quieras.";
   return `Tu web está lista. Hay ${pending} datos que solo tú sabes (marcados como pendientes); cámbialos cuando quieras.`;
+}
+
+/**
+ * Construye la busqueda de fotos del agente contra la ruta interna del sitio.
+ *
+ * La red vive aqui, no en `@webdesign/agent-design`: ese paquete solo pide y
+ * recibe `{assetId, alt}`. El token del run viaja en la cabecera Authorization
+ * y nunca se registra. Cualquier respuesta que no sea 2xx devuelve `[]`: sin
+ * fotos el sitio sale igual, con las secciones de imagen omitidas.
+ */
+function makeFetchPhotos(
+  fetchImpl: typeof globalThis.fetch,
+  apiBaseUrl: string,
+  token: string,
+  siteId: string,
+  tally: { hero: boolean; gallery: number },
+): NonNullable<FastDesignDeps["fetchPhotos"]> {
+  return async ({ query, orientation, count }) => {
+    try {
+      const res = await fetchImpl(`${apiBaseUrl}/api/internal/sites/${siteId}/photos`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+        body: JSON.stringify({ query, orientation, count }),
+        signal: AbortSignal.timeout(20_000),
+      });
+      if (!res.ok) return [];
+      const raw = (await res.json()) as { photos?: unknown };
+      if (!Array.isArray(raw.photos)) return [];
+      const photos: DesignPhoto[] = [];
+      for (const item of raw.photos) {
+        const p = item as { assetId?: unknown; alt?: unknown };
+        if (typeof p.assetId !== "string") continue;
+        photos.push({ assetId: p.assetId, alt: typeof p.alt === "string" ? p.alt : "" });
+      }
+      if (orientation === "landscape") tally.hero = photos.length > 0;
+      else tally.gallery += photos.length;
+      return photos;
+    } catch {
+      // Corte de 20 s, DNS o JSON roto: el diseno sigue sin fotos.
+      return [];
+    }
+  };
 }
 
 function message(e: unknown): string {

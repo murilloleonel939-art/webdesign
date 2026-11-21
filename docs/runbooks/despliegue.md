@@ -107,6 +107,18 @@ docker exec plataforma cat /data/biblioteca/pexels/README.md
 2. `platform`, que publica la ruta nueva.
 3. `workers` y `llm-gateway`, que no dependen de la ruta nueva.
 
+## Checklist actual de Fase 1
+
+- [ ] Confirmar migraciones `0021`, `0022` y `0023` aplicadas antes de arrancar jobs.
+- [ ] Desplegar y comprobar `platform` primero: ruta interna de fotos, Pexels, caché,
+  `FUENTES.md` y preview disponibles.
+- [ ] Desplegar `workers` después, con `DATABASE_URL` apuntando a `app_platform`, además de
+  `PEXELS_API_KEY` y `MEDIA_LIBRARY_ROOT`.
+- [ ] Confirmar que las claves del proveedor LLM siguen exclusivamente en `llm-gateway`.
+- [ ] Ejecutar E2E autenticada: `prompt -> copy -> photos -> draft -> preview -> publish`.
+- [ ] Confirmar publicación explícita del dueño y que `FUENTES.md` no entra en release ni HTTP.
+- [ ] Registrar resultados sin copiar texto de usuario, tokens, claves ni respuestas completas.
+
 ## Comprobaciones después del redeploy
 
 ```sh

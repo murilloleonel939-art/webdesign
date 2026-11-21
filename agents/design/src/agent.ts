@@ -5,9 +5,9 @@ import { lintSite, type LintFinding } from "@webdesign/linter";
 import { lintHtml } from "@webdesign/lint-visual";
 import { renderPage } from "@webdesign/renderer";
 import type { SiteDocument } from "@webdesign/site-schema";
-import { FIELD_LABEL, briefDescriptionContext, hasBriefData, normalizeBrief, quickBriefSchema, type BriefField, type QuickBrief } from "./brief.js";
-import { copyPrompt, guardCopy, siteCopySchema, type SiteCopy } from "./copy.js";
-import { draftSite, type Preset } from "./draft.js";
+import { FIELD_LABEL, PENDING_MARKER, briefDescriptionContext, hasBriefData, normalizeBrief, quickBriefSchema, type BriefField, type QuickBrief } from "./brief.js";
+import { copyPrompt, guardCopy, readCopy, retryLine, type SiteCopy } from "./copy.js";
+import { draftSite, type PhotoRef, type Preset, type SitePhotos } from "./draft.js";
 import { inventory, planSections, type Inventory, type Plan } from "./plan.js";
 import { createStore, saveCheckpoint } from "./store.js";
 import { makeDesignTools } from "./tools.js";
@@ -21,14 +21,14 @@ import { makeDesignTools } from "./tools.js";
 
 /** Presupuesto del modo rápido (14.1: 1 ronda y tope de tokens de la Fase 4). */
 export const FAST_BUDGET = {
-  // Antes 20 000 y 0,35: cabia UNA llamada (el resumen). Ahora el modo rapido
-  // hace dos (los textos del sitio y el resumen), asi que ambos topes se doblan
-  // en lo justo: 20 000 -> 40 000 tokens y 0,35 -> 0,70 USD. Al precio del
-  // modelo `design` (0,000003 USD entrada / 0,000015 salida) dos llamadas de
-  // 2 048 tokens de salida son ~0,07 USD; el margen cubre el prompt del copy.
-  maxTokens: 40_000,
+  // Antes 40 000 y 0,70: cabian DOS llamadas (copy y resumen) de 2 048 tokens de
+  // salida. Ahora el copy puede ir dos veces (primer intento y reintento con
+  // retryLine) a 4 096 tokens de salida cada una, asi que el tope sube en la
+  // misma proporcion: 40 000 -> 60 000 tokens y 0,70 -> 1,05 USD, que es el 1,5
+  // por tres llamadas frente a las dos de antes.
+  maxTokens: 60_000,
   maxToolCalls: 8,
-  maxCostUsd: 0.7,
+  maxCostUsd: 1.05,
   timeoutMs: 45_000,
 } as const;
 
@@ -67,6 +67,24 @@ export interface FastDesignDeps {
   ctx: RunContext;
   /** El dueño pidió el cambio a mano: un `error` de 6.5 se aplica y solo avisa. */
   ownerRequested?: boolean;
+  /**
+   * Busqueda de fotos, inyectada por el llamador: este paquete NO hace fetch ni
+   * conoce ningun proveedor de imagenes. Sin ella, el sitio sale sin fotos.
+   */
+  fetchPhotos?: (req: { query: string; orientation: "landscape" | "square"; count: number }) => Promise<PhotoRef[]>;
+}
+
+/**
+ * El copy no se pudo leer tras el reintento y el dueño SI habia escrito una
+ * descripcion: sin textos no hay sitio que enseñar, asi que la ejecucion para.
+ * `reason` es un motivo cerrado (`json_parse`, `truncated`, `schema:...`,
+ * `empty_text`, `transport_<kind>`): nunca lleva texto del dueño.
+ */
+export class CopyUnavailableError extends Error {
+  constructor(readonly reason: string) {
+    super(`copy no disponible: ${reason}`);
+    this.name = "CopyUnavailableError";
+  }
 }
 
 export interface FastDesignResult {
@@ -111,9 +129,27 @@ export async function runFastDesign(deps: FastDesignDeps): Promise<FastDesignRes
 
   const warnings: string[] = [];
 
-  // 2. Recomendación: la elige la herramienta, no el modelo.
+  // 2. Textos del sitio (9.1, `generate_copy`): el modelo los redacta ANTES de la
+  // recomendacion, porque el tipo de negocio que deduce el copy sirve para
+  // recomendar el preset. La guardia `guardCopy` es determinista: aunque el
+  // modelo desobedezca, no se publica un dato inventado.
+  const copyOutcome = await generateCopy(brief, client, warnings);
+  // Con descripcion del dueño, quedarse sin textos es un fallo de la ejecucion:
+  // el brief se comprometio a algo que no se puede escribir sin inventar.
+  if ("reason" in copyOutcome) {
+    if (brief.description !== undefined) throw new CopyUnavailableError(copyOutcome.reason);
+    warnings.push(`copy_fallback: ${copyOutcome.reason}`);
+  }
+  const copy = "copy" in copyOutcome ? copyOutcome.copy : undefined;
+
+  // 2b. Fotos del sitio: las pide el llamador con las busquedas del copy.
+  const photos = await loadPhotos(copy, deps.fetchPhotos, warnings);
+
+  // 2c. Recomendación: la elige la herramienta, no el modelo. El tipo de negocio
+  // del dueño manda; si esta pendiente, vale el que dedujo el copy; si no hay ni
+  // eso, "negocio", que es lo unico que se sabe sin inventar.
   const recommended = await callTool(recommendDesignSystem, ctx, {
-    businessType: brief.businessType === "pendiente de confirmar" ? "negocio" : brief.businessType,
+    businessType: brief.businessType !== PENDING_MARKER ? brief.businessType : copy?.businessType ?? "negocio",
     candidates: presets.map((p) => ({ id: p.id, name: p.name, summary: p.summary, keywords: p.keywords ?? [] })),
   });
   const first = presets[0]!;
@@ -129,24 +165,25 @@ export async function runFastDesign(deps: FastDesignDeps): Promise<FastDesignRes
     }
   }
 
-  // 2b. Textos del sitio (9.1, `generate_copy`): el modelo los redacta ANTES del
-  // borrador, porque el borrador ya los necesita. La guardia `guardCopy` es
-  // determinista: aunque el modelo desobedezca, no se publica un dato inventado.
-  const copy = await generateCopy(brief, client, warnings);
-
   // 3. Borrador definitivo: `draftSite` ya valida contra `site-schema`.
-  const doc = draftSite(brief, preset, copy);
+  const doc = draftSite(brief, preset, copy, photos);
 
   // 3b. Inventario y plan: decisiones en datos, antes de escribir nada.
   const inv = inventory(brief);
-  const plan = planSections(brief, preset, copy);
+  const plan = planSections(brief, preset, copy, photos);
 
   // 4. Checkpoint antes de tocar nada (spec 9.1, paso 5).
   const store = createStore(doc);
   const checkpoint = saveCheckpoint(store, "chk_fast");
 
   // 5. Linter de contenido (6.4). Un `error` bloquea: no se aplica nada.
-  const findings6_4 = lintSite(doc);
+  // Las fotos de `photos` ya vienen licenciadas por `fetchPhotos` (la API interna
+  // solo devuelve activos con `license` registrado); sin esto, 6.4 marcaba
+  // IMAGE_LICENSE_MISSING en todo sitio con foto, aunque la licencia constara.
+  const licensedAssetIds = photos !== undefined
+    ? [photos.hero?.assetId, ...photos.gallery.map((p) => p.assetId)].filter((id): id is string => id !== undefined)
+    : [];
+  const findings6_4 = lintSite(doc, { licensedAssetIds });
   if (hasError(findings6_4)) {
     throw new Error(`lint 6.4: ${findings6_4.filter((f) => f.severity === "error").map((f) => f.code).join(", ")}`);
   }
@@ -221,24 +258,8 @@ export async function runFastDesign(deps: FastDesignDeps): Promise<FastDesignRes
   };
 }
 
-/**
- * Extrae el objeto JSON de la respuesta del modelo.
- *
- * Los modelos envuelven el JSON en ```json con harta frecuencia, y a veces
- * saludan antes. Se busca el primer `{` y el último `}`: lo que haya fuera no es
- * del contrato y se descarta sin intentar interpretarlo.
- */
-function parseJsonBlock(text: string): unknown {
-  const fenced = text.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/, "").trim();
-  const start = fenced.indexOf("{");
-  const end = fenced.lastIndexOf("}");
-  if (start === -1 || end <= start) return undefined;
-  try {
-    return JSON.parse(fenced.slice(start, end + 1)) as unknown;
-  } catch {
-    return undefined;
-  }
-}
+/** Lo que devuelve `generateCopy`: el copy listo o el motivo cerrado del fallo. */
+type CopyOutcome = { copy: SiteCopy } | { reason: string };
 
 /**
  * Una llamada al modelo para los textos del sitio (9.1, `generate_copy`).
@@ -246,35 +267,93 @@ function parseJsonBlock(text: string): unknown {
  * Usa el mismo `client` que el resumen: el `LlmClient` ya lleva el `tracker`
  * dentro, asi que el gasto del copy entra en el presupuesto de la ejecucion y se
  * para por las mismas reglas (tokens, coste, tiempo y cortacircuitos).
- * Un fallo NO rompe el diseno: el agente sigue con el borrador de marcadores, que
- * es el comportamiento de antes. Se avisa con `copy_fallback` y se explica por que.
+ *
+ * La lectura la hace `readCopy`, que devuelve el motivo cerrado del fallo. Si el
+ * fallo es de lectura (json, truncado o esquema) se reintenta UNA vez con el
+ * mismo prompt mas la linea que lo explica; un fallo de transporte no se
+ * reintenta cuando el corte es de presupuesto, porque no queda saldo para otra
+ * llamada. Los motivos nunca llevan texto del dueño.
  */
 async function generateCopy(
   brief: QuickBrief,
   client: LlmClient,
   warnings: string[],
-): Promise<SiteCopy | undefined> {
-  const out = await client.complete({
-    model: designAgent.model,
-    messages: [{ role: "user", content: copyPrompt(brief) }],
-    // El JSON completo del esquema ronda los 1 500 tokens: 2 048 llega y no
-    // dispara el coste de una salida larga que no se va a usar.
-    maxOutputTokens: 2_048,
-    temperature: 0.4,
-  });
-  if (!out.ok) {
-    warnings.push("copy_fallback");
-    return undefined;
-  }
-  const raw = parseJsonBlock(out.result.text);
-  const parsed = siteCopySchema.safeParse(raw);
-  if (!parsed.success) {
-    warnings.push("copy_fallback");
-    return undefined;
-  }
-  const guarded = guardCopy(parsed.data, brief);
+): Promise<CopyOutcome> {
+  const prompt = copyPrompt(brief);
+  const ask = (content: string) =>
+    client.complete({
+      model: designAgent.model,
+      messages: [{ role: "user", content }],
+      // El JSON completo del esquema ronda los 1 500 tokens; 4 096 deja sitio a
+      // un copy detallado sin disparar el coste de una salida que no se usa.
+      maxOutputTokens: 4_096,
+      temperature: 0.4,
+    });
+
+  const read = (out: Awaited<ReturnType<typeof ask>>): CopyOutcome => {
+    if (!out.ok) {
+      // `stop.kind` es "done" o "budget": el sufijo dice cual, sin texto libre.
+      return { reason: `transport_${out.stop.kind}` };
+    }
+    const result = readCopy(out.result.text, out.result.finishReason);
+    return result.ok ? { copy: result.copy } : { reason: result.reason };
+  };
+
+  const first = read(await ask(prompt));
+  if ("copy" in first) return finishCopy(first.copy, brief, warnings);
+
+  // El reintento es solo para motivos de LECTURA. Un fallo de transporte se
+  // devuelve tal cual: si el corte es de presupuesto (`transport_budget`) no
+  // queda saldo, y reintentar seria pedir una llamada que ya se sabe que no se
+  // puede pagar.
+  if (first.reason.startsWith("transport_")) return first;
+
+  const second = read(await ask(`${prompt}\n\n${retryLine(first.reason)}`));
+  if ("copy" in second) return finishCopy(second.copy, brief, warnings);
+  return second;
+}
+
+/** Guardia determinista + avisos: no se publica lo que parece inventado. */
+function finishCopy(copy: SiteCopy, brief: QuickBrief, warnings: string[]): CopyOutcome {
+  const guarded = guardCopy(copy, brief);
   // Lo podado viaja al panel: el dueno ve que texto se descarto y por que, sin
   // que se le haya publicado nada inventado.
   if (guarded.dropped.length > 0) warnings.push(`copy_guard: ${guarded.dropped.join(", ")}`);
-  return guarded.copy;
+  // Sin ningun servicio valido el copy no sirve: la seccion `features` se
+  // omite y el sitio se quedaria sin lo que el dueno pidio. Se trata como copy
+  // no disponible: entra en el reintento como motivo de lectura (`empty_services`
+  // no empieza por `transport_`) y, si tampoco sale, acaba en CopyUnavailableError.
+  if (guarded.copy.services.length === 0) return { reason: "empty_services" };
+  return { copy: guarded.copy };
+}
+
+/**
+ * Fotos del sitio (B1): las busca el llamador con las consultas del copy.
+ *
+ * Este paquete no hace fetch ni conoce ningun proveedor: `fetchPhotos` llega
+ * inyectado. Un fallo o una lista vacia NO rompe el diseño: se avisa con
+ * `photos_unavailable` y el sitio sale sin fotos, que es lo que habia antes.
+ */
+async function loadPhotos(
+  copy: SiteCopy | undefined,
+  fetchPhotos: FastDesignDeps["fetchPhotos"],
+  warnings: string[],
+): Promise<SitePhotos | undefined> {
+  const queries = copy?.photoQueries;
+  if (queries === undefined || fetchPhotos === undefined) return undefined;
+  try {
+    const [hero, gallery] = await Promise.all([
+      fetchPhotos({ query: queries.hero, orientation: "landscape", count: 1 }),
+      fetchPhotos({ query: queries.gallery, orientation: "square", count: 4 }),
+    ]);
+    const heroPhoto = hero[0];
+    if (heroPhoto === undefined || gallery.length === 0) {
+      warnings.push("photos_unavailable");
+      return undefined;
+    }
+    return { hero: heroPhoto, gallery };
+  } catch {
+    warnings.push("photos_unavailable");
+    return undefined;
+  }
 }

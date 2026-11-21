@@ -272,3 +272,53 @@ test("presupuesto agotado con conflicto: no dice que guardo lo que no guardo", a
   assert.equal(r.rev, undefined);
   assert.equal(calls.revoked.length, 1);
 });
+
+test("CopyUnavailableError (brief con descripcion y dos intentos rotos) deja el run fallido y no guarda", async () => {
+  // Texto sin "{": los dos intentos de `readCopy` fallan con `json_parse`, y
+  // con `description` presente `runFastDesign` lanza `CopyUnavailableError`.
+  const { deps, calls } = fakeDeps({ transport: fakeTransport({ text: "no hay json aqui" }) });
+  const brief = { ...BRIEF, description: "Abrimos de 8 a 20, tueste propio cada semana." };
+  const r = await processDesignJob(deps, { ...JOB, brief });
+
+  assert.equal(r.status, "error");
+  assert.match(r.stopReason, /no pude escribir los textos/i);
+  assert.equal(calls.saved.length, 0, "sin copy no se guarda ningun borrador");
+  assert.equal(calls.finished.length, 1);
+  assert.equal(calls.finished[0].status, "error");
+  assert.equal(calls.revoked.length, 1);
+});
+
+test("fetchPhotos pide la ruta interna con Bearer y un 503 no rompe el diseno", async () => {
+  // Copy valido con `photoQueries`: sin el, `loadPhotos` no llega a llamar a
+  // `fetchPhotos` y la prueba no comprobaria nada.
+  const copyJson = JSON.stringify({
+    businessType: "cafetería de especialidad", heroHeadline: "Café Aurora en Valencia",
+    heroSubline: "Tueste propio y desayunos cada mañana.", heroCta: "Escríbenos",
+    servicesHeading: "Qué hacemos",
+    services: [
+      { title: "Tueste propio", body: "Tostamos el grano en casa." },
+      { title: "Desayunos", body: "Servimos desayunos hasta mediodía." },
+      { title: "Para llevar", body: "También para llevar." },
+    ],
+    processHeading: "Cómo trabajamos", process: [{ title: "Nos escribes", body: "Cuéntanos qué necesitas." }],
+    aboutHeading: "Quiénes somos", aboutBody: "Cafetería de especialidad en Valencia.", faq: [],
+    closingHeadline: "Hablemos", closingCta: "Escribir",
+    seoDescription: "Cafetería de especialidad en Valencia con tueste propio.",
+    photoQueries: { hero: "coffee shop interior", gallery: "coffee shop details" },
+  });
+  const fetchCalls = [];
+  const fetchFalso = async (url, init) => {
+    fetchCalls.push({ url, authorization: init?.headers?.authorization });
+    return { ok: false, status: 503, json: async () => ({ photos: [] }) };
+  };
+  const { deps, calls } = fakeDeps({ transport: fakeTransport({ text: copyJson }) });
+  const r = await processDesignJob({ ...deps, fetch: fetchFalso }, JOB);
+
+  assert.equal(r.status, "ok");
+  assert.equal(calls.saved.length, 1, "el 503 en fotos no impide guardar el diseno");
+  assert.ok(fetchCalls.length >= 1);
+  for (const c of fetchCalls) {
+    assert.equal(c.url, `http://x/api/internal/sites/${SITE}/photos`);
+    assert.equal(c.authorization, "Bearer jti");
+  }
+});

@@ -154,6 +154,27 @@ GRANT sin condicional y falla en voz alta con
 aplicar dos veces. Al final verifica con `has_table_privilege` y lanza excepción nombrando la
 tabla que siga sin permiso.
 
+## Eventos del agente de diseño sin exponer contenido
+
+Buscar únicamente los nombres y el resultado mínimo en los logs de `workers` o en la tabla de
+uso; no imprimir el prompt, el copy, respuestas del modelo, tokens, cabeceras ni variables.
+
+```sh
+docker logs workers 2>&1 | grep -E 'design_copy_fallback|design_copy_ok|design_photos'
+```
+
+- `design_copy_ok`: el copy pasó lectura y guardas; no implica que el sitio se haya publicado.
+- `design_copy_fallback`: copy no disponible y el flujo continuó con fallback permitido. Si había
+  descripción del dueño y tampoco funcionó el reintento, buscar `CopyUnavailableError`: el job
+  debe cerrar sin sobrescribir el borrador.
+- `design_photos`: indica resultado agregado de la búsqueda; no muestra consultas ni texto.
+  `pexels_not_configured` significa que falta `PEXELS_API_KEY` y debe distinguirse de un fallo
+  de transporte de Pexels. Un `budget` o `transport_budget` significa presupuesto agotado; no
+  se debe reintentar a ciegas ni confundirlo con una caída de red.
+
+No usar `grep -i .` ni volcar JSON completo de eventos: el diagnóstico operativo debe conservar
+solo códigos, estado, identificador de ejecución y recuentos.
+
 ## Retirar el diagnóstico
 
 Borrar `DIAGNOSTIC_TOKEN` del entorno y redeploy. La ruta vuelve a dar 404. No hay nada

@@ -1009,7 +1009,10 @@ async function handleApi(pool: import("pg").Pool, sitesRoot: string, req: Incomi
       await tx.query(
         `INSERT INTO agent_tokens (jti, run_id, scopes, site_id, expires_at)
          VALUES ($1, $2, $3, $4, now() + interval '15 minutes')`,
-        [jti, runId, ["llm:complete"], siteId],
+        // `llm:complete` para el gateway; `site:write` porque las herramientas
+        // del agente y la ruta interna de fotos (internal-photos.ts:29) exigen
+        // el mismo scope que escribe en el sitio.
+        [jti, runId, ["llm:complete", "site:write"], siteId],
       );
     });
 

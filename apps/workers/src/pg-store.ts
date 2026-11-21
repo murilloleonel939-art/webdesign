@@ -130,8 +130,30 @@ async function loadPresets(pool: pg.Pool): Promise<Preset[]> {
   });
 }
 
-/** Cierra la ejecucion. `UPDATE ... AND status = 'running'` evita reescribirla. */
-async function finishRun(
+/**
+ * Assets del sitio con licencia registrada.
+ *
+ * El linter 6.4 exige licencia a todo asset de coleccion abierta
+ * (`IMAGE_LICENSE_MISSING`, packages/linter/src/index.ts:94): las fotos de
+ * Pexels se registran con `source = 'open-collection'` y su
+ * `license = 'Pexels License'` (internal-photos.ts:238-240, via
+ * `registerAsset`), asi que la consulta de aqui es la misma regla que usa el
+ * publicador en apps/platform/src/api.ts:199 (activeAssets): cuentan `own`,
+ * `generated` y `open-collection` con licencia no nula y no vacia.
+ */
+async function licensedAssetIds(pool: pg.Pool, userId: string, siteId: string): Promise<string[]> {
+  return withUser(pool, userId, async (tx) => {
+    const r = await tx.query<{ id: string }>(
+      `SELECT id FROM assets
+       WHERE site_id = $1
+         AND (source IN ('own', 'generated') OR (source = 'open-collection' AND license IS NOT NULL AND license <> ''))`,
+      [siteId],
+    );
+    return r.rows.map((row) => row.id);
+  });
+}
+
+/** Cierra la ejecucion. `UPDATE ... AND status = 'running'` evita reescribirla. */async function finishRun(
   pool: pg.Pool,
   userId: string,
   runId: string,
@@ -249,7 +271,11 @@ export function pgDesignDeps(pool: pg.Pool, opts: PgDesignOptions): DesignDeps {
     async saveDraft({ userId, siteId, doc, expectedRev }): Promise<DesignSaveResult> {
       // `actorType: 'agent'`: el `audit_log` distingue lo que escribio el agente
       // de lo que escribio el dueno sin mirar el `updated_by`.
-      const r = await saveDraft(pool, { userId, siteId, doc, expectedRev, actorType: "agent" });
+      // `licensedAssetIds` va siempre: sin el, las fotos que acaba de registrar
+      // la ruta interna salen como `IMAGE_LICENSE_MISSING` (error de 6.4) en el
+      // guardado y el borrador se rechaza.
+      const licensed = await licensedAssetIds(pool, userId, siteId);
+      const r = await saveDraft(pool, { userId, siteId, doc, expectedRev, actorType: "agent", licensedAssetIds: licensed });
       if (r.ok) return { ok: true, rev: r.rev };
       if (r.reason === "conflict") return { ok: false, reason: "conflict", currentRev: r.currentRev };
       return { ok: false, reason: "invalid", errors: r.errors };

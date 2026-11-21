@@ -1,7 +1,7 @@
 import { validateSiteDocument, type Section, type SiteDocument } from "@webdesign/site-schema";
 import { PENDING_MARKER, briefSentence, siteName, type QuickBrief } from "./brief.js";
 import type { SiteCopy } from "./copy.js";
-import { plannedTypes, planSections } from "./plan.js";
+import { GALLERY_MIN, plannedTypes, planSections } from "./plan.js";
 
 // Borrador del modo rápido (spec 9.1, paso 6).
 //
@@ -26,6 +26,18 @@ export interface Preset {
   /** Tipos de sección del preset, en su orden. */
   sections: Array<{ type: string; variant?: string }>;
   dials?: { variance: number; motion: number; density: number };
+}
+
+/** Una foto ya registrada en la biblioteca del sitio (`assetId` de la API). */
+export interface PhotoRef {
+  assetId: string;
+  alt: string;
+}
+
+/** Fotos del borrador: hero opcional y galería de 3 a 4 (si no, no hay galería). */
+export interface SitePhotos {
+  hero?: PhotoRef;
+  gallery: PhotoRef[];
 }
 
 const clamp = (n: unknown, min: number, max: number, fallback: number): number => {
@@ -59,7 +71,7 @@ export function heroHeadline(brief: QuickBrief): string {
  * inventados. Testimonio y precio NO se escriben aunque el preset los pida: el
  * modelo no puede inventarlos y un marcador ahí solo ensucia la página.
  */
-function copySection(type: string, id: string, brief: QuickBrief, copy: SiteCopy): Section | undefined {
+function copySection(type: string, id: string, brief: QuickBrief, copy: SiteCopy, photos: SitePhotos): Section | undefined {
   switch (type) {
     case "hero":
       return {
@@ -69,14 +81,25 @@ function copySection(type: string, id: string, brief: QuickBrief, copy: SiteCopy
           headline: copy.heroHeadline,
           ...(copy.heroSubline ? { subline: copy.heroSubline } : {}),
           cta: { label: copy.heroCta, href: CONTACT_HREF },
+          ...(photos.hero ? { image: photos.hero.assetId } : {}),
         },
       };
+    case "gallery":
+      // La galería solo existe con fotos suficientes; si no, se omite entera.
+      if (photos.gallery.length < GALLERY_MIN) return undefined;
+      return { id, type: "gallery", props: { assetIds: photos.gallery.map((p) => p.assetId) } };
     case "features":
+      // Sin servicios validos no hay tarjetas que escribir: la seccion se omite
+      // en vez de rellenarse con el par "pendiente de confirmar".
+      if (copy.services.length === 0) return undefined;
       return { id, type: "features", props: { heading: copy.servicesHeading, items: copy.services } };
     case "process":
       // Misma forma que `features`: en 6.1 no hay tipo propio para el proceso.
+      if (copy.process.length === 0) return undefined;
       return { id: PROCESS_ID, type: "features", props: { heading: copy.processHeading, items: copy.process.slice(0, 4) } };
     case "text":
+      // `about` sin texto propio: no se publica un parrafo vacio ni el marcador.
+      if (copy.aboutBody === "") return undefined;
       return { id, type: "text", props: { heading: copy.aboutHeading, body: copy.aboutBody } };
     case "faq":
       // Menos de dos preguntas no es una sección: se omite entera.
@@ -95,9 +118,11 @@ function copySection(type: string, id: string, brief: QuickBrief, copy: SiteCopy
       // Inventar un testimonio o un precio es justo lo que 9.1 prohíbe.
       return undefined;
     case "image":
-    case "gallery":
       return undefined;
     default:
+      // Cualquier otro tipo se escribe como `text` con el "sobre el negocio";
+      // sin aboutBody no hay nada que escribir.
+      if (copy.aboutBody === "") return undefined;
       return { id, type: "text", props: { heading: copy.aboutHeading, body: copy.aboutBody } };
   }
 }
@@ -108,8 +133,8 @@ function copySection(type: string, id: string, brief: QuickBrief, copy: SiteCopy
  * `image` y `gallery` se omiten sin assets, y las secciones cuyo contenido solo
  * puede venir de datos que aún no existen se degradan a `text`.
  */
-function draftSection(type: string, id: string, brief: QuickBrief, copy?: SiteCopy): Section | undefined {
-  if (copy !== undefined) return copySection(type, id, brief, copy);
+function draftSection(type: string, id: string, brief: QuickBrief, copy?: SiteCopy, photos?: SitePhotos): Section | undefined {
+  if (copy !== undefined) return copySection(type, id, brief, copy, photos ?? { gallery: [] });
   switch (type) {
     case "hero":
       return {
@@ -175,14 +200,14 @@ function docName(brief: QuickBrief, copy?: SiteCopy): string {
  * Se valida antes de devolver: un borrador que no pasa `site-schema` no sale de
  * esta función, así que el agente nunca muta el sitio con algo inválido.
  */
-export function draftSite(brief: QuickBrief, preset: Preset, copy?: SiteCopy): SiteDocument {
+export function draftSite(brief: QuickBrief, preset: Preset, copy?: SiteCopy, photos?: SitePhotos): SiteDocument {
   const sections: Section[] = [];
   const used = new Set<string>();
   const push = (type: string) => {
     let id = `s_${type}`;
     let n = 2;
     while (used.has(id)) id = `s_${type}_${n++}`;
-    const section = draftSection(type, id, brief, copy);
+    const section = draftSection(type, id, brief, copy, photos);
     if (!section) return;
     used.add(id);
     sections.push(section);
@@ -191,7 +216,13 @@ export function draftSite(brief: QuickBrief, preset: Preset, copy?: SiteCopy): S
   // El plan decide qué se escribe; el borrador no vuelve a decidirlo. Si lo
   // hiciera, `plan` y documento podrían discrepar y el dueño vería un plan que
   // no es el que se aplicó.
-  for (const type of plannedTypes(planSections(brief, preset, copy))) push(type);
+  for (const type of plannedTypes(planSections(brief, preset, copy, photos))) push(type);
+
+  // Solo las fotos que el documento usa quedan registradas como assets.
+  // El hero siempre lleva la foto cuando hay una (copySection la escribe).
+  const usedPhotos: PhotoRef[] = [];
+  if (photos?.hero && sections.some((s) => s.type === "hero")) usedPhotos.push(photos.hero);
+  if (sections.some((s) => s.type === "gallery")) usedPhotos.push(...(photos?.gallery ?? []));
 
   const doc = {
     schemaVersion: 1 as const,
@@ -230,7 +261,7 @@ export function draftSite(brief: QuickBrief, preset: Preset, copy?: SiteCopy): S
         sections,
       },
     ],
-    assets: [],
+    assets: usedPhotos.map((p) => ({ id: p.assetId, alt: p.alt })),
   };
 
   const check = validateSiteDocument(doc);
