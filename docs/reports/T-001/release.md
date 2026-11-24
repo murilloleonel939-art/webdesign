@@ -81,3 +81,25 @@ que no hay PR como puerta.
 1. Configurar `PATEWAY2GPT_API_KEY` en el shim de `127.0.0.1:37778` (el proceso no lo pudo resolver desde aquí: `ps` y `pgrep` no están instalados).
 2. Ejecutar `npx claude-mem install` para corregir el launcher y el último error de instalación. Antes, `npx claude-mem stop` o `kill 46225`, si ese PID sigue vivo.
 3. Reiniciar el worker (`http://localhost:37700/restart`) y comprobar que la siguiente observación se guarda sin 400.
+
+## Cierre
+
+- Fecha: 2026-11-24 (13:05 UTC aprox.)
+- Resultado: **BLOCKED** (solo por la verificación de memoria; el grafo está confirmado)
+
+**Grafo: CONFIRMADO**
+- `graphify explain "generateCopy"` responde correctamente.
+- `graphify-out/graph.json` y `GRAPH_REPORT.md`: 2026-11-24T12:14:21Z. Posterior al commit de código `d9c8295` (12:00:16Z).
+- Estado final: 3128 nodos, 5025 aristas, 212 comunidades.
+
+**Memoria: NO CONFIRMADA del todo**
+- Los 400 de sintaxis del shim dejaron de aparecer tras el arreglo del shim (`infra-shim.md`), y el observador tiene `consecutiveFailures: 0`.
+- Sí quedan errores dentro de las dos últimas horas: 400 `Unsupported value: 'temperature' does not support 0.3` hasta las 12:46:38 (riesgo intermitente que describe `infra-shim.md`), y `Missing last_assistant_message in session for summary prompt` hasta las 12:52:34.
+- Desde las 12:48 hay 53 líneas `STORED` o `CHROMA_SYNC`, y una observación de prueba guardada a las 13:02:00 (id 812).
+- Conclusión: captura activa, pero con errores recientes. No cumple la condición «sin errores nuevos en 2 horas», así que no se declara la memoria como verificada.
+
+**Reporte de infra:** [infra-shim.md](docs/reports/T-001/infra-shim.md) revisado. Sin valores de claves (solo patrones y nombres). Se añade al commit.
+
+**Pendientes:** shim sin `temperature` no soportado; revisar el error `last_assistant_message`; commit y redeploy de `deploy-work/entrypoint.sh`; `Hook launcher` en rojo en doctor.
+
+No se ha repetido la línea `TAREA COMPLETADA` por el criterio de verificación.
