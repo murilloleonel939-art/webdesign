@@ -299,18 +299,27 @@ async function generateCopy(
     return result.ok ? { copy: result.copy } : { reason: result.reason };
   };
 
-  const first = read(await ask(prompt));
-  if ("copy" in first) return finishCopy(first.copy, brief, warnings);
+  // Lectura + guardia en un solo paso: si el copy se lee, pasa por `finishCopy`
+  // y su `reason` (p. ej. `empty_services`) cuenta igual que un motivo de
+  // lectura. Asi la poda de la guardia entra en el reintento (ADR 0002).
+  const settle = (out: Awaited<ReturnType<typeof ask>>): CopyOutcome => {
+    const outcome = read(out);
+    return "copy" in outcome ? finishCopy(outcome.copy, brief, warnings) : outcome;
+  };
 
-  // El reintento es solo para motivos de LECTURA. Un fallo de transporte se
-  // devuelve tal cual: si el corte es de presupuesto (`transport_budget`) no
-  // queda saldo, y reintentar seria pedir una llamada que ya se sabe que no se
-  // puede pagar.
+  const first = settle(await ask(prompt));
+  if ("copy" in first) return first;
+
+  // El reintento es solo para motivos de LECTURA (y de la guardia). Un fallo de
+  // transporte se devuelve tal cual: si el corte es de presupuesto
+  // (`transport_budget`) no queda saldo, y reintentar seria pedir una llamada
+  // que ya se sabe que no se puede pagar.
   if (first.reason.startsWith("transport_")) return first;
 
-  const second = read(await ask(`${prompt}\n\n${retryLine(first.reason)}`));
-  if ("copy" in second) return finishCopy(second.copy, brief, warnings);
-  return second;
+  // Segundo y ultimo intento: lo que salga (copy, motivo de lectura, motivo de
+  // la guardia o de transporte) es el final; un `reason` acaba en
+  // CopyUnavailableError en el llamador.
+  return settle(await ask(`${prompt}\n\n${retryLine(first.reason)}`));
 }
 
 /** Guardia determinista + avisos: no se publica lo que parece inventado. */

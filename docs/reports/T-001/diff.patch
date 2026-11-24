@@ -1,0 +1,71 @@
+diff --git a/agents/design/src/agent.ts b/agents/design/src/agent.ts
+index 813c889..f3f3e35 100644
+--- a/agents/design/src/agent.ts
++++ b/agents/design/src/agent.ts
+@@ -299,18 +299,27 @@ async function generateCopy(
+     return result.ok ? { copy: result.copy } : { reason: result.reason };
+   };
+ 
+-  const first = read(await ask(prompt));
+-  if ("copy" in first) return finishCopy(first.copy, brief, warnings);
++  // Lectura + guardia en un solo paso: si el copy se lee, pasa por `finishCopy`
++  // y su `reason` (p. ej. `empty_services`) cuenta igual que un motivo de
++  // lectura. Asi la poda de la guardia entra en el reintento (ADR 0002).
++  const settle = (out: Awaited<ReturnType<typeof ask>>): CopyOutcome => {
++    const outcome = read(out);
++    return "copy" in outcome ? finishCopy(outcome.copy, brief, warnings) : outcome;
++  };
++
++  const first = settle(await ask(prompt));
++  if ("copy" in first) return first;
+ 
+-  // El reintento es solo para motivos de LECTURA. Un fallo de transporte se
+-  // devuelve tal cual: si el corte es de presupuesto (`transport_budget`) no
+-  // queda saldo, y reintentar seria pedir una llamada que ya se sabe que no se
+-  // puede pagar.
++  // El reintento es solo para motivos de LECTURA (y de la guardia). Un fallo de
++  // transporte se devuelve tal cual: si el corte es de presupuesto
++  // (`transport_budget`) no queda saldo, y reintentar seria pedir una llamada
++  // que ya se sabe que no se puede pagar.
+   if (first.reason.startsWith("transport_")) return first;
+ 
+-  const second = read(await ask(`${prompt}\n\n${retryLine(first.reason)}`));
+-  if ("copy" in second) return finishCopy(second.copy, brief, warnings);
+-  return second;
++  // Segundo y ultimo intento: lo que salga (copy, motivo de lectura, motivo de
++  // la guardia o de transporte) es el final; un `reason` acaba en
++  // CopyUnavailableError en el llamador.
++  return settle(await ask(`${prompt}\n\n${retryLine(first.reason)}`));
+ }
+ 
+ /** Guardia determinista + avisos: no se publica lo que parece inventado. */
+diff --git a/agents/design/test/copy.test.mjs b/agents/design/test/copy.test.mjs
+index fd39e3c..513cd92 100644
+--- a/agents/design/test/copy.test.mjs
++++ b/agents/design/test/copy.test.mjs
+@@ -189,12 +189,22 @@ test("copy: una cifra que el dueño escribió se permite", () => {
+ });
+ 
+ test("copy: los reclamos sin cifra también se caen y el about se queda vacío", () => {
+-  const out = guardCopy(validCopy({ aboutBody: "Somos la empresa líder del sector y estamos certificados." }), normalizeBrief(BRIEF));
++  const input = validCopy({ aboutBody: "Somos la empresa líder del sector y estamos certificados." });
++  const out = guardCopy(input, normalizeBrief(BRIEF));
+   // Sin texto propio no se escribe el marcador: cadena vacía y la sección se omite.
+   assert.equal(out.copy.aboutBody, "");
+   assert.equal(out.dropped.includes("aboutBody"), true);
+-  // El SEO no cae al marcador: baja al subtitular del hero, que sí es del copy.
+-  assert.equal(out.copy.seoDescription, out.copy.heroSubline);
++  // El SEO no se recalcula porque el about se pode: la descripcion del modelo
++  // ("Cafeteria de especialidad en Valencia con tueste propio y desayunos") no
++  // lleva ningun invento y se conserva tal cual (ADR 0002, decision 2). Solo cae
++  // al subtitular cuando es la propia `seoDescription` la que se poda.
++  assert.equal(out.copy.seoDescription, input.seoDescription);
++  assert.equal(out.dropped.includes("seoDescription"), false);
++  // No se sustituye por el subtitular cuando no hay nada que podar.
++  assert.notEqual(out.copy.seoDescription, out.copy.heroSubline);
++  // Y en ningun caso queda vacia ni con el marcador.
++  assert.notEqual(out.copy.seoDescription, "");
++  assert.doesNotMatch(out.copy.seoDescription, /pendiente de confirmar/);
+ });
+ 
+ test("copy: con aboutBody podado no hay sección about en el documento", () => {

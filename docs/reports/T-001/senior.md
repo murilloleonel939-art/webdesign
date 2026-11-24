@@ -1,0 +1,34 @@
+# Reporte T-001 — senior (claude-opus-5-5)
+
+- Fecha: 2026-11-24T11:47:46Z
+- Resultado: DONE
+- Qué hice (3 a 5 líneas):
+  - En `agents/design/src/agent.ts` metí lectura y guardia en un solo paso (`settle`): si `readCopy` da copy, se pasa por `finishCopy` y su `reason` se trata igual que un motivo de lectura, así que `empty_services` entra en el reintento en vez de devolverse directo (ADR 0002, decisión 1).
+  - El corte por `transport_` sigue aplicándose en el primer intento y, en el segundo, lo que devuelve `settle` es el final del flujo: un `reason` de guardia o de transporte sube como `CopyUnavailableError` en el llamador, sin tercera llamada.
+  - Corregí la prueba «los reclamos sin cifra también se caen y el about se queda vacío» para que afirme lo que la guardia hace de verdad: `seoDescription` se conserva si el modelo no inventó nada, no se sustituye por el subtitular, y nunca queda vacía ni con el marcador (ADR 0002, decisión 2). No toqué `guardCopy`.
+  - Recompilé el paquete (`pnpm --filter @webdesign/agent-design build`): las pruebas importan `../dist/index.js`, así que sin build el cambio de `src` no se ve.
+  - Verifiqué aparte los cuatro caminos del flujo con un script efímero fuera del repo (no añadí pruebas para no mover el total de 47).
+- Archivos tocados:
+  - `agents/design/src/agent.ts` (solo `generateCopy`; `finishCopy` sin cambios)
+  - `agents/design/test/copy.test.mjs` (una sola prueba, la de `seoDescription`)
+- Decisiones y por qué:
+  - Extraje `settle` en vez de duplicar el `if ("copy" in …)` dos veces: el flujo queda con una sola definición de «lectura + guardia» y el reintento y el final usan la misma regla, que es justo lo que el defecto rompía por estar escrita dos veces.
+  - El corte por `transport_` se mantiene tal cual y en el mismo sitio (después del primer intento, antes del segundo): el ADR lo pide expresamente porque sin presupuesto no tiene sentido gastar otra llamada. Comprobado que un `transport_budget` en el primer intento no gasta ninguna llamada y que un corte en el reintento no lanza una tercera.
+  - No cambié `retryLine`: sigue diciendo «no se pudo leer (empty_services)», que es impreciso para un motivo de guardia, pero `retryLine` vive en `copy.ts`, que está fuera de mi lista cerrada de archivos. Lo dejo anotado como pendiente.
+  - En la prueba preferí comparar contra el `input` del fixture en vez de copiar la cadena esperada a mano, para que el valor viva en un solo sitio; añadí `dropped` sin `seoDescription`, `notEqual` contra el subtitular, no vacío y sin el marcador.
+- Pendientes y riesgos:
+  - **Aviso `copy_guard` de un intento descartado:** `finishCopy` empuja `copy_guard: …` a `warnings` antes de que se sepa si ese copy es el que se publica. Ahora que un primer intento con `empty_services` puede ser descartado y el segundo salvarlo, el panel puede mostrar textos descartados de un intento que no llegó al sitio. No hay ninguna prueba que lo cubra y el encargo no lo menciona, así que no lo toqué; si el panel lo muestra, conviene que el aviso se devuelva junto al copy aceptado en vez de empujarse dentro de `finishCopy`.
+  - `retryLine("empty_services")` dice «no se pudo leer», que no describe el fallo real (la guardia podó todos los servicios). Vive en `copy.ts`, fuera de alcance.
+  - Las suites de base de datos (`packages/db`, `assets`, `publish`, `editor`, `apps/platform`) no se ejercitan: no hay `DB_TEST_URL` y su código registra una prueba `skip: true`. Comprobado en el log que `@webdesign/db` sale con «pass 2, skipped 0» (el runner cuenta los archivos, no la prueba omitida); creo que lo mismo pasa con las demás, no lo revisé una a una. Los 371 incluyen esas, así que lo que depende de base de datos queda **sin verificar** en esta máquina. T-001 no toca nada de base de datos.
+  - Verificación ejecutada:
+    - `pnpm --filter @webdesign/agent-design test` → 47 tests, **47 pass, 0 fail**.
+    - `pnpm turbo run typecheck test --force` → 67 tareas correctas, **371 pass, 0 fail, 0 skipped**.
+    - Script efímero `/tmp/t001-verify.mjs` → 5/5 caminos: `empty_services` reintenta y se salva; `transport_` en el primer intento no reintenta (0 llamadas); corte de presupuesto en el reintento no gasta tercera llamada; dos `empty_services` acaban en `CopyUnavailableError` con `empty_services` en 2 llamadas; dos lecturas rotas siguen en 2 llamadas.
+- Entrego a: testing
+- Referencias:
+  - `docs/spec.md` §8 (T-001)
+  - `docs/adr/0002-reintento-copy-y-seo.md`
+  - `agents/design/src/agent.ts:302-322` (`settle` y el reintento)
+  - `agents/design/src/agent.ts:325-337` (`finishCopy` y `copy_guard`)
+  - `agents/design/test/copy.test.mjs:191-207` (prueba corregida)
+  - `agents/design/test/copy.test.mjs:353-371` (`empty_services` a dos llamadas)

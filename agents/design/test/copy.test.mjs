@@ -189,12 +189,22 @@ test("copy: una cifra que el dueño escribió se permite", () => {
 });
 
 test("copy: los reclamos sin cifra también se caen y el about se queda vacío", () => {
-  const out = guardCopy(validCopy({ aboutBody: "Somos la empresa líder del sector y estamos certificados." }), normalizeBrief(BRIEF));
+  const input = validCopy({ aboutBody: "Somos la empresa líder del sector y estamos certificados." });
+  const out = guardCopy(input, normalizeBrief(BRIEF));
   // Sin texto propio no se escribe el marcador: cadena vacía y la sección se omite.
   assert.equal(out.copy.aboutBody, "");
   assert.equal(out.dropped.includes("aboutBody"), true);
-  // El SEO no cae al marcador: baja al subtitular del hero, que sí es del copy.
-  assert.equal(out.copy.seoDescription, out.copy.heroSubline);
+  // El SEO no se recalcula porque el about se pode: la descripcion del modelo
+  // ("Cafeteria de especialidad en Valencia con tueste propio y desayunos") no
+  // lleva ningun invento y se conserva tal cual (ADR 0002, decision 2). Solo cae
+  // al subtitular cuando es la propia `seoDescription` la que se poda.
+  assert.equal(out.copy.seoDescription, input.seoDescription);
+  assert.equal(out.dropped.includes("seoDescription"), false);
+  // No se sustituye por el subtitular cuando no hay nada que podar.
+  assert.notEqual(out.copy.seoDescription, out.copy.heroSubline);
+  // Y en ningun caso queda vacia ni con el marcador.
+  assert.notEqual(out.copy.seoDescription, "");
+  assert.doesNotMatch(out.copy.seoDescription, /pendiente de confirmar/);
 });
 
 test("copy: con aboutBody podado no hay sección about en el documento", () => {
