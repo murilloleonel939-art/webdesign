@@ -58,3 +58,26 @@ que no hay PR como puerta.
 - `git ls-remote origin refs/heads/main`: `d2d0fe3dcc75f8ddbea4b21d4bd1959eba881e18 refs/heads/main`.
 - Rama remota `feat/t-001-reintento-copy`: no se borró; queda como testigo.
 - No se borró nada, no se reescribió historia y no se tocó `.env`.
+
+## Cierre de infraestructura
+
+**Grafo (graphify): CONFIRMADO**
+- La reconstrucción en segundo plano terminó sin errores. El log no tiene `error` ni `traceback`.
+- `graphify-out/graph.json` se regeneró a las 12:12:35Z. Estado final: 3127 nodos, 5024 aristas, 204 comunidades.
+- `graphify explain "generateCopy"` devuelve el nodo `agent.ts` L277 con sus 11 conexiones.
+- `graphify query "reintento de copy"` devuelve 89 nodos, incluido `copy.ts` y ADR 0002. Se muestran 10 por el presupuesto de tokens.
+- Los 3127 nodos superan la referencia de ~3086, así que el grafo no ha caído.
+- Aviso sin efecto en el resultado: 22 archivos `.sql` no se extraen porque falta `tree_sitter_sql`.
+
+**Memoria (claude-mem): NO RESUELTA**
+- `npx claude-mem doctor` (12:13 UTC) termina con 1 check obligatorio fallando: `Hook launcher`. El launcher no reporta protocolo. Remedio que indica doctor: `npx claude-mem install`.
+- Otros avisos del doctor: `Last install error` (`unknown-install-error`, PID 46225) y la actualización automática a 16.1.1 falló en `installer-exit` el 24/11 a las 02:01.
+- El visor responde en `http://localhost:37700/` con HTTP 200. Worker sano en `127.0.0.1:37700`.
+- Causa del 400, según el log: `OpenRouter bad request (status 400)` con cuerpo `<!DOCTYPE HTML>` y el mensaje `Bad request syntax ('{"model":"gpt-6-luna","messages":[{"role":"system"...`. Es decir, el JSON de la petición llega como línea de petición HTTP mal formada. El primer fallo fue a las 11:45:10.945 (sesión 19). El último, a las 12:12:39.372 (sesión 24), después de un reinicio del worker. El reinicio no lo arregló.
+- Proveedor: `CLAUDE_MEM_OPENROUTER_BASE_URL = http://127.0.0.1:37778/v1`, modelo `gpt-6-luna`. Ese endpoint es un shim local. Hoy responde 502 `{"error":{"message":"shim has no upstream key: PATEWAY2GPT_API_KEY"}}`. Es decir, el shim no tiene la clave de su upstream configurada. Es el dato a revisar. No lo he tocado.
+- No he reiniciado el worker ni cambiado la configuración de proveedor ni claves, porque el aviso pide que lo reinicie el usuario.
+
+**Pendiente para desbloquear la memoria (requiere al humano):**
+1. Configurar `PATEWAY2GPT_API_KEY` en el shim de `127.0.0.1:37778` (el proceso no lo pudo resolver desde aquí: `ps` y `pgrep` no están instalados).
+2. Ejecutar `npx claude-mem install` para corregir el launcher y el último error de instalación. Antes, `npx claude-mem stop` o `kill 46225`, si ese PID sigue vivo.
+3. Reiniciar el worker (`http://localhost:37700/restart`) y comprobar que la siguiente observación se guarda sin 400.
