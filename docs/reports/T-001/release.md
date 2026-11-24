@@ -50,3 +50,11 @@ testigo y no se borra desde aquí.
 Consecuencia: la regla del brief «no mergear sin revisión humana» se cumple igual, porque
 la revisión humana es esta decisión explícita de desplegar desde `main`; lo que cambia es
 que no hay PR como puerta.
+
+## Publicación final
+
+- Fecha: 2026-11-24 (12:11 UTC aprox.)
+- SHA subido a `main`: `d2d0fe3` (`502357a..d2d0fe3`, avance rápido, sin force).
+- `git ls-remote origin refs/heads/main`: `d2d0fe3dcc75f8ddbea4b21d4bd1959eba881e18 refs/heads/main`.
+- Rama remota `feat/t-001-reintento-copy`: no se borró; queda como testigo.
+- No se borró nada, no se reescribió historia y no se tocó `.env`.
