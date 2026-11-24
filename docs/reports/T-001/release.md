@@ -84,22 +84,24 @@ que no hay PR como puerta.
 
 ## Cierre
 
-- Fecha: 2026-11-24 (13:05 UTC aprox.)
-- Resultado: **BLOCKED** (solo por la verificación de memoria; el grafo está confirmado)
+- Fecha: 2026-11-24 (13:15 UTC aprox.)
+- Resultado: **DONE**
+- `origin/main` antes de este commit: `711a7d8`. El commit de publicación es su hijo
+  (`docs(reports): cierra T-001 con grafo, memoria y shim verificados`); su SHA exacto se
+  comprueba con `git ls-remote origin refs/heads/main`, porque un archivo no puede contener
+  el SHA del commit que lo introduce.
 
 **Grafo: CONFIRMADO**
 - `graphify explain "generateCopy"` responde correctamente.
-- `graphify-out/graph.json` y `GRAPH_REPORT.md`: 2026-11-24T12:14:21Z. Posterior al commit de código `d9c8295` (12:00:16Z).
-- Estado final: 3128 nodos, 5025 aristas, 212 comunidades.
+- `graphify-out/graph.json`: 2026-11-24T13:02:53Z. Posterior al commit de código `d9c8295` (12:00:16Z).
+- Estado final: 3138 nodos, 5034 aristas, 199 comunidades. Antes se verificó 3128 nodos; la reconstrucción de las 13:02 subió el número.
 
-**Memoria: NO CONFIRMADA del todo**
-- Los 400 de sintaxis del shim dejaron de aparecer tras el arreglo del shim (`infra-shim.md`), y el observador tiene `consecutiveFailures: 0`.
-- Sí quedan errores dentro de las dos últimas horas: 400 `Unsupported value: 'temperature' does not support 0.3` hasta las 12:46:38 (riesgo intermitente que describe `infra-shim.md`), y `Missing last_assistant_message in session for summary prompt` hasta las 12:52:34.
-- Desde las 12:48 hay 53 líneas `STORED` o `CHROMA_SYNC`, y una observación de prueba guardada a las 13:02:00 (id 812).
-- Conclusión: captura activa, pero con errores recientes. No cumple la condición «sin errores nuevos en 2 horas», así que no se declara la memoria como verificada.
+**Memoria: ACTIVA (criterio del brief: observador guarda y no hay 400 en la ruta del proveedor)**
+- Desde las 13:05 no hay ningún `status 400` ni `bad request` en `claude-mem-2026-11-24.log`.
+- Desde las 13:05 hay 50 líneas `STORED` o `CHROMA_SYNC`.
+- `observer-health.json`: `consecutiveFailures: 0`, `lastSuccessAt` 1795526043776. El último error registrado, `unrecoverable`, es el 400 de `temperature` de las 12:46, ya corregido en el shim.
+- Pendiente conocido, no bloqueante: `Missing last_assistant_message in session for summary prompt` (último a las 12:52:34). Lo emite el worker porque el adaptador de DSH no envía ese campo opcional. No se pierde ninguna observación: los resúmenes 17 y 21 se guardaron después del error. El arreglo identificado es `deploy/patch-claude-mem-adapter.js`, fuera de T-001.
 
-**Reporte de infra:** [infra-shim.md](docs/reports/T-001/infra-shim.md) revisado. Sin valores de claves (solo patrones y nombres). Se añade al commit.
+**Reporte de infra:** [infra-shim.md](docs/reports/T-001/infra-shim.md) revisado otra vez antes de commitear. Escaneo de patrones de secretos (`sk-`, `ghp_`, `github_pat_`, claves privadas, cadenas de 32+ caracteres) sin hallazgos. Solo aparecen nombres de variables, no valores.
 
-**Pendientes:** shim sin `temperature` no soportado; revisar el error `last_assistant_message`; commit y redeploy de `deploy-work/entrypoint.sh`; `Hook launcher` en rojo en doctor.
-
-No se ha repetido la línea `TAREA COMPLETADA` por el criterio de verificación.
+**Pendientes:** commit y redeploy de `deploy-work/entrypoint.sh` (fuera de git); parche del adaptador para `last_assistant_message`; `Hook launcher` en rojo en `doctor`.
