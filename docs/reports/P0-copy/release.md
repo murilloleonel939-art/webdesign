@@ -108,6 +108,15 @@ Dos pruebas afirmaban el aborto. Ahora afirman la entrega correcta:
 - **Release (`subida-p0`, claude-haiku-5-5)**: verificación, reporte y publicación. No escribió ni
   corrigió código.
 
+## Publicación
+
+- **Commit del arreglo:** `751d51f630337371bc8bd8a40b27675c578409c7` (`751d51f`)
+- **`origin/main` tras el push:** `751d51f630337371bc8bd8a40b27675c578409c7` — coincide con `HEAD`
+- **Rama:** `main`, sin PR y sin ramas nuevas. Sin `--force` y sin `reset --hard`.
+- **Archivos del commit:** los cinco previstos, ninguno más. Sin `.env`, claves ni credenciales.
+- **Grafo:** reconstruido desde `751d51f6` con `graphify update .` → **3345 nodos, 5476 aristas,
+  215 comunidades**.
+
 ## Pendiente conocido
 
 - Los commits de este repositorio se firman como **`root`** porque el entorno no tiene
