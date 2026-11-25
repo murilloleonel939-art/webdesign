@@ -4,8 +4,8 @@ import type { BudgetTracker, LlmClient } from "@webdesign/llm";
 import { lintSite, type LintFinding } from "@webdesign/linter";
 import { lintHtml } from "@webdesign/lint-visual";
 import { renderPage } from "@webdesign/renderer";
-import type { SiteDocument } from "@webdesign/site-schema";
-import { FIELD_LABEL, PENDING_MARKER, briefDescriptionContext, hasBriefData, normalizeBrief, quickBriefSchema, type BriefField, type QuickBrief } from "./brief.js";
+import { validateSiteDocument, type SiteDocument } from "@webdesign/site-schema";
+import { FIELD_LABEL, PENDING_MARKER, briefDescriptionContext, containsMarker, hasBriefData, normalizeBrief, quickBriefSchema, type BriefField, type QuickBrief } from "./brief.js";
 import { copyPrompt, guardCopy, readCopy, retryLine, type SiteCopy } from "./copy.js";
 import { draftSite, type PhotoRef, type Preset, type SitePhotos } from "./draft.js";
 import { inventory, planSections, type Inventory, type Plan } from "./plan.js";
@@ -39,8 +39,8 @@ export const designAgent: AgentDefinition = {
   systemPrompt: [
     "Eres el agente de diseño de la plataforma. Trabajas en modo rápido: una sola ronda.",
     "El diseño lo decide el catálogo de presets, no tú. No inventes clientes, cifras,",
-    "testimonios, precios, citas ni certificaciones. Lo que no sepas queda como",
-    "'pendiente de confirmar'. No publicas: no existe herramienta para ello.",
+    "testimonios, precios, citas ni certificaciones. Lo que no sepas no se escribe",
+    "en el sitio: se le pide al dueño. No publicas: no existe herramienta para ello.",
     "Responde en español, en dos o tres frases, diciendo qué preset has aplicado y",
     "qué datos faltan por confirmar.",
   ].join(" "),
@@ -212,11 +212,18 @@ export async function runFastDesign(deps: FastDesignDeps): Promise<FastDesignRes
   // El texto libre del dueño viaja solo aqui: es contexto para el resumen, no
   // una fuente de contenido. `undefined` deja el mensaje como estaba.
   const contextText = briefDescriptionContext(brief);
+  // Instantánea del documento verificado: es lo único que se entrega (Fix B).
+  const verified = structuredClone(store.doc);
+  // El resumen es prosa: no toca el sitio. Solo herramientas que NO mutan
+  // (T-002.7, Fix A). `maxRounds: 1` limita rondas, no llamadas: el bucle del
+  // SDK ejecuta las herramientas de la ronda igualmente, así que pasar aquí las
+  // mutables dejaba al modelo escribir texto que nunca vio la guardia.
+  const readOnlyTools = makeDesignTools(store).filter((tool) => !tool.mutates);
   const run = await runAgent({
     agent: designAgent,
     client,
     tracker,
-    tools: makeDesignTools(store) as never,
+    tools: readOnlyTools as never,
     ctx,
     messages: [
       {
@@ -245,8 +252,18 @@ export async function runFastDesign(deps: FastDesignDeps): Promise<FastDesignRes
     warnings.push(`presupuesto agotado en la ronda rapida: ${run.stop.limit}`);
   }
 
+  // Defensa en profundidad (T-002.7, Fix B): el Fix A cierra el camino conocido,
+  // esto cierra cualquier otro. Si la ronda de resumen cambió el documento, se
+  // descarta: lo entregado es lo que pasó por la guardia, la completitud, la red
+  // del marcador y los linters, no lo que quedó en el store después.
+  if (JSON.stringify(store.doc) !== JSON.stringify(verified)) {
+    warnings.push("resumen_intento_mutar: se descarta el cambio y se entrega el borrador verificado");
+    store.doc = structuredClone(verified);
+  }
+  const delivered = assertDeliverable(store.doc);
+
   return {
-    doc: store.doc,
+    doc: delivered,
     presetId: preset.id,
     inventory: inv,
     plan,
@@ -256,6 +273,20 @@ export async function runFastDesign(deps: FastDesignDeps): Promise<FastDesignRes
     warnings,
     checkpointId: checkpoint.id,
   };
+}
+
+/**
+ * Última comprobación antes de entregar (T-002.7, Fix B.3).
+ *
+ * Las mismas que cierran `draftSite`: el esquema y la red del marcador. Si algo
+ * no las pasa, se lanza un error claro en vez de entregar un documento que no
+ * se ha verificado. No repara: si llega aquí roto, el fallo está antes.
+ */
+function assertDeliverable(doc: SiteDocument): SiteDocument {
+  const check = validateSiteDocument(doc);
+  if (!check.ok) throw new Error(`documento no entregable: ${check.errors.join("; ")}`);
+  if (containsMarker(JSON.stringify(check.doc))) throw new Error("documento no entregable: contiene el marcador pendiente");
+  return check.doc;
 }
 
 /** Lo que devuelve `generateCopy`: el copy listo o el motivo cerrado del fallo. */
@@ -302,38 +333,56 @@ async function generateCopy(
   // Lectura + guardia en un solo paso: si el copy se lee, pasa por `finishCopy`
   // y su `reason` (p. ej. `empty_services`) cuenta igual que un motivo de
   // lectura. Asi la poda de la guardia entra en el reintento (ADR 0002).
-  const settle = (out: Awaited<ReturnType<typeof ask>>): CopyOutcome => {
+  //
+  // Los avisos de la guardia son POR INTENTO: cada `settle` devuelve los suyos
+  // y solo se publican los del intento que gana. Si el primero se descarta y el
+  // segundo salva el copy, el panel no debe enseñar podas de un texto que nunca
+  // llego al sitio (spec §10, deuda de T-001).
+  const settle = (out: Awaited<ReturnType<typeof ask>>): Attempt => {
     const outcome = read(out);
-    return "copy" in outcome ? finishCopy(outcome.copy, brief, warnings) : outcome;
+    return "copy" in outcome ? finishCopy(outcome.copy, brief) : { outcome, warnings: [] };
+  };
+  const win = (attempt: Attempt): CopyOutcome => {
+    // Un intento sin copy no publica sus podas: no hay texto suyo en el sitio,
+    // y el motivo del fallo ya viaja en el `reason` (`copy_fallback` o el error).
+    if ("copy" in attempt.outcome) warnings.push(...attempt.warnings);
+    return attempt.outcome;
   };
 
   const first = settle(await ask(prompt));
-  if ("copy" in first) return first;
+  if ("copy" in first.outcome) return win(first);
 
   // El reintento es solo para motivos de LECTURA (y de la guardia). Un fallo de
   // transporte se devuelve tal cual: si el corte es de presupuesto
   // (`transport_budget`) no queda saldo, y reintentar seria pedir una llamada
   // que ya se sabe que no se puede pagar.
-  if (first.reason.startsWith("transport_")) return first;
+  if (first.outcome.reason.startsWith("transport_")) return win(first);
 
   // Segundo y ultimo intento: lo que salga (copy, motivo de lectura, motivo de
   // la guardia o de transporte) es el final; un `reason` acaba en
-  // CopyUnavailableError en el llamador.
-  return settle(await ask(`${prompt}\n\n${retryLine(first.reason)}`));
+  // CopyUnavailableError en el llamador. Los avisos del primero se descartan.
+  return win(settle(await ask(`${prompt}\n\n${retryLine(first.outcome.reason)}`)));
+}
+
+/** Un intento de copy: su resultado y los avisos de guardia que produjo. */
+interface Attempt {
+  outcome: CopyOutcome;
+  warnings: string[];
 }
 
 /** Guardia determinista + avisos: no se publica lo que parece inventado. */
-function finishCopy(copy: SiteCopy, brief: QuickBrief, warnings: string[]): CopyOutcome {
+function finishCopy(copy: SiteCopy, brief: QuickBrief): Attempt {
   const guarded = guardCopy(copy, brief);
   // Lo podado viaja al panel: el dueno ve que texto se descarto y por que, sin
-  // que se le haya publicado nada inventado.
-  if (guarded.dropped.length > 0) warnings.push(`copy_guard: ${guarded.dropped.join(", ")}`);
+  // que se le haya publicado nada inventado. Se devuelve, no se publica: quien
+  // decide si este intento gana es `generateCopy`.
+  const warnings = guarded.dropped.length > 0 ? [`copy_guard: ${guarded.dropped.join(", ")}`] : [];
   // Sin ningun servicio valido el copy no sirve: la seccion `features` se
   // omite y el sitio se quedaria sin lo que el dueno pidio. Se trata como copy
   // no disponible: entra en el reintento como motivo de lectura (`empty_services`
   // no empieza por `transport_`) y, si tampoco sale, acaba en CopyUnavailableError.
-  if (guarded.copy.services.length === 0) return { reason: "empty_services" };
-  return { copy: guarded.copy };
+  if (guarded.copy.services.length === 0) return { outcome: { reason: "empty_services" }, warnings };
+  return { outcome: { copy: guarded.copy }, warnings };
 }
 
 /**

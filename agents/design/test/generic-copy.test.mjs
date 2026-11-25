@@ -1,0 +1,216 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { PENDING_MARKER, genericCopy, guardCopy, normalizeBrief, siteCopySchema } from "../dist/index.js";
+
+// Copy determinista de respaldo (spec T-002.2).
+//
+// No hay modelo de por medio: `genericCopy` arma un copy completo a partir del
+// brief, sin el marcador y sin nada que la guardia tenga que podar. Lo que se
+// prueba aquí es justo eso: que pase el esquema, que la guardia no caiga ni un
+// campo, que no aparezca el marcador y que ningun literal parezca un dato.
+
+/** Briefs de partida: desde el mas vacio hasta el que trae los cinco campos. */
+const BRIEFS = {
+  "solo description": { description: "somos una tienda de barrio que abre todos los dias" },
+  "businessType, name y city": {
+    businessType: "cafetería de especialidad",
+    name: "Café Aurora",
+    city: "Valencia",
+  },
+  "los cinco campos": {
+    businessType: "cafetería de especialidad",
+    name: "Café Aurora",
+    city: "Valencia",
+    service: "tueste propio y desayunos",
+    contact: "hola@cafeaurora.test",
+  },
+  "con acentos en businessType y city": {
+    businessType: "peluquería canina",
+    city: "Alcalá de Henares",
+  },
+};
+
+// Lo mismo que mira la guardia (`hasInvention`), mas las palabras concretas que
+// el contrato prohibe por su nombre.
+const DIGIT = /\d/;
+const MONEY = /[€$%]/;
+const CLAIM = /clientes satisfechos|años de experiencia|anos de experiencia|premiad|certificad|garantizad|líder|lider/i;
+
+for (const [nombre, entrada] of Object.entries(BRIEFS)) {
+  test(`genericCopy (${nombre}): esquema valido, guardia sin podas y sin marcador`, () => {
+    const brief = normalizeBrief(entrada);
+    const copy = genericCopy(brief);
+
+    // 1. Pasa el esquema tal cual, sin recortes ni normalizacion previa.
+    const parsed = siteCopySchema.safeParse(copy);
+    assert.equal(parsed.success, true, `esquema: ${JSON.stringify(parsed.error?.issues)}`);
+
+    // 2. La guardia no poda nada: el copy no lleva ni un dato inventado.
+    assert.deepEqual(guardCopy(copy, brief).dropped, []);
+
+    // 3. El marcador no aparece en ningun campo.
+    const serializado = JSON.stringify(copy);
+    assert.doesNotMatch(serializado, /pendiente de confirmar/);
+    assert.doesNotMatch(serializado, new RegExp(PENDING_MARKER));
+
+    // 4. Ni cifras, ni simbolos de dinero, ni reclamos.
+    assert.doesNotMatch(serializado, DIGIT);
+    assert.doesNotMatch(serializado, MONEY);
+    assert.doesNotMatch(serializado, CLAIM);
+
+    // 5. Forma completa: tres servicios, tres pasos, tres preguntas y un about.
+    assert.equal(copy.services.length, 3);
+    assert.equal(copy.process.length, 3);
+    assert.equal(copy.faq.length, 3);
+    assert.notEqual(copy.aboutBody, "");
+    // El titular tiene que superar el minimo del esquema (8).
+    assert.ok(copy.heroHeadline.length >= 8, `titular: ${copy.heroHeadline.length}`);
+  });
+}
+
+test("genericCopy: sin ningun dato conocido usa los textos fijos y omite el nombre", () => {
+  const brief = normalizeBrief({ description: "somos una tienda de barrio que abre todos los dias" });
+  const copy = genericCopy(brief);
+  // `businessName` es opcional: si el dueño no lo dio, la clave no se inventa.
+  assert.equal("businessName" in copy, false);
+  assert.equal(copy.businessType, "negocio local");
+  // Sin nombre ni ciudad el titular es el tipo de negocio, que ya cae al fijo
+  // "negocio local": la frase final solo entra cuando eso no llega al minimo.
+  assert.equal(copy.heroHeadline, "negocio local");
+  assert.equal(copy.heroSubline, "Atención cercana y trabajo cuidado, sin complicaciones.");
+  assert.equal(copy.aboutHeading, "Quiénes somos");
+  assert.equal(copy.aboutBody, "negocio local. Trabajamos de cerca con quien nos escribe: lo importante es entender bien lo que necesitas antes de empezar. Si quieres saber si podemos ayudarte, escríbenos y te lo contamos.");
+  assert.equal(copy.seoDescription, "negocio local. Escríbenos y te contamos cómo podemos ayudarte.");
+});
+
+test("genericCopy: los datos conocidos entran tal cual y el resto se compone con ellos", () => {
+  const brief = normalizeBrief({
+    businessType: "cafetería de especialidad",
+    name: "Café Aurora",
+    city: "Valencia",
+    service: "tueste propio y desayunos",
+    contact: "hola@cafeaurora.test",
+  });
+  const copy = genericCopy(brief);
+  assert.equal(copy.businessName, "Café Aurora");
+  assert.equal(copy.businessType, "cafetería de especialidad");
+  // Con nombre, el titular es el nombre; sin ciudad, no se inventa el "en ...".
+  assert.equal(copy.heroHeadline, "Café Aurora");
+  assert.equal(copy.heroSubline, "tueste propio y desayunos");
+  assert.equal(copy.aboutHeading, "cafetería de especialidad");
+  assert.match(copy.aboutBody, /^cafetería de especialidad en Valencia\. /);
+  assert.equal(copy.seoDescription, "cafetería de especialidad en Valencia. Escríbenos y te contamos cómo podemos ayudarte.");
+  // Los fijos del arquitecto, literales.
+  assert.equal(copy.heroCta, "Contactar");
+  assert.equal(copy.servicesHeading, "Qué hacemos");
+  assert.equal(copy.processHeading, "Cómo trabajamos");
+  assert.equal(copy.closingHeadline, "Hablemos de lo que necesitas");
+  assert.equal(copy.closingCta, "Escribir");
+  assert.deepEqual(copy.photoQueries, { hero: "local business storefront", gallery: "small business interior" });
+});
+
+test("genericCopy: sin nombre pero con tipo y ciudad el titular los usa", () => {
+  const brief = normalizeBrief({ businessType: "peluquería canina", city: "Alcalá de Henares" });
+  const copy = genericCopy(brief);
+  assert.equal(copy.heroHeadline, "peluquería canina en Alcalá de Henares");
+  assert.equal("businessName" in copy, false);
+  // Los acentos del brief no se normalizan ni se pierden.
+  assert.match(copy.aboutBody, /Alcalá de Henares/);
+  assert.match(copy.seoDescription, /peluquería canina en Alcalá de Henares/);
+});
+
+test("genericCopy: sin nombre ni ciudad cae al tipo de negocio, y sin tipo al fijo 'negocio local'", () => {
+  const conTipo = genericCopy(normalizeBrief({ businessType: "panadería artesanal" }));
+  assert.equal(conTipo.heroHeadline, "panadería artesanal");
+  const sinNada = genericCopy(normalizeBrief({ description: "abrimos todos los dias" }));
+  assert.equal(sinNada.heroHeadline, "negocio local");
+});
+
+test("genericCopy: con un tipo de negocio demasiado corto el titular llega al minimo del esquema", () => {
+  // "bar" no llega a los 8 caracteres que exige `heroHeadline`: se usa el fijo
+  // en vez de devolver un copy que el esquema iba a rechazar.
+  const copy = genericCopy(normalizeBrief({ businessType: "bar" }));
+  assert.equal(copy.heroHeadline, "Tu negocio, más cerca");
+  assert.equal(siteCopySchema.safeParse(copy).success, true);
+});
+
+test("genericCopy: es determinista, no comparte estructuras y no toca el brief", () => {
+  const brief = normalizeBrief({ businessType: "cafetería de especialidad", city: "Valencia" });
+  const primero = genericCopy(brief);
+  const segundo = genericCopy(brief);
+  assert.deepEqual(primero, segundo);
+  // Mutar una copia no cambia la otra: los servicios no se comparten por referencia.
+  primero.services[0].title = "otra cosa";
+  assert.equal(segundo.services[0].title, "Atención directa");
+  assert.equal(brief.businessType, "cafetería de especialidad");
+});
+
+// --- T-002.9: Fix 2 — sin recortes que creen números parciales -----------------
+
+test("T-002.9: tipo con año no produce número parcial en seoDescription ni aboutBody", () => {
+  // «Negocio con 2019 locales» es un brief real que antes producía «20» suelto
+  // al recortar seoDescription: el límite caía en mitad de «2019».
+  // Con `safeCompose` se elige la variante que cabe sin recortar.
+  const brief = normalizeBrief({ businessType: "Negocio con 2019 locales", city: "A".repeat(80) });
+  const copy = genericCopy(brief);
+  const serializado = JSON.stringify(copy);
+  // Ningún número del brief debe aparecer parcialmente: «2019» sí; «20» suelto, no.
+  assert.doesNotMatch(serializado, /(?<!\d)20(?!\d|19)/,
+    "ningun campo contiene el número 2019 partido en «20»");
+  assert.ok(copy.seoDescription.length <= 155, `seoDescription ${copy.seoDescription.length} > 155`);
+  assert.ok(copy.aboutBody.length <= 700, `aboutBody ${copy.aboutBody.length} > 700`);
+  assert.equal(siteCopySchema.safeParse(copy).success, true);
+});
+
+test("T-002.9: nombre de 80 caracteres hace que businessName se omita, copy sigue válido", () => {
+  // businessName máx 60; un nombre de 80 no cabe. Se omite entero en vez de
+  // recortarse (un nombre a medias es peor que ninguno: T-002.9, Fix 2).
+  const nombre80 = "A".repeat(80);
+  const copy = genericCopy(normalizeBrief({ name: nombre80 }));
+  assert.equal("businessName" in copy, false, "businessName omitido cuando name > 60");
+  assert.equal(siteCopySchema.safeParse(copy).success, true);
+});
+
+test("T-002.9: todos los campos del brief al máximo simultáneamente pasan el esquema", () => {
+  // Verifica que safeCompose cubre también el peor caso combinado.
+  const brief = normalizeBrief({
+    businessType: "Á".repeat(120),
+    name: "N".repeat(80),
+    city: "C".repeat(80),
+    service: "S".repeat(200),
+    contact: "hola@test.es",
+    description: "Á".repeat(500),
+  });
+  const copy = genericCopy(brief);
+  const parsed = siteCopySchema.safeParse(copy);
+  assert.equal(parsed.success, true, JSON.stringify(parsed.success ? [] : parsed.error.issues));
+  assert.ok(copy.seoDescription.length <= 155);
+  assert.ok(copy.aboutBody.length <= 700);
+  assert.ok(copy.heroHeadline.length >= 8 && copy.heroHeadline.length <= 90);
+});
+
+test("T-002.9: emoji en el punto de corte de heroHeadline no produce sustituto suelto", () => {
+  // heroHeadline máx 90; «a» + 44 emojis = 89 unidades UTF-16 (cabe); con una
+  // más serían 91 (no cabe). safeCompose cae a la variante siguiente sin cortar.
+  const brief = normalizeBrief({ name: "a" + "😀".repeat(45) }); // 1+90=91 unidades
+  const copy = genericCopy(brief);
+  assert.doesNotMatch(
+    JSON.stringify(copy),
+    /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/,
+    "ningun campo del copy contiene un sustituto suelto",
+  );
+  assert.ok(copy.heroHeadline.length <= 90);
+  assert.equal(siteCopySchema.safeParse(copy).success, true);
+});
+
+test("T-002.9: un texto que cabe en su límite se conserva íntegro", () => {
+  // safeCompose no debe tocar nada cuando la variante larga ya cabe.
+  const brief = normalizeBrief({
+    businessType: "cafetería de especialidad",
+    city: "Valencia",
+  });
+  const copy = genericCopy(brief);
+  // La composición «cafetería de especialidad en Valencia» cabe en seoDescription (155).
+  assert.equal(copy.seoDescription, "cafetería de especialidad en Valencia. Escríbenos y te contamos cómo podemos ayudarte.");
+  assert.match(copy.aboutBody, /^cafetería de especialidad en Valencia\./);
+});

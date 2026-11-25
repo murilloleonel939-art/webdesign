@@ -1,15 +1,20 @@
 import { validateSiteDocument, type Section, type SiteDocument } from "@webdesign/site-schema";
-import { PENDING_MARKER, briefSentence, siteName, type QuickBrief } from "./brief.js";
+import { PENDING_MARKER, containsMarker, siteName, type QuickBrief } from "./brief.js";
 import type { SiteCopy } from "./copy.js";
-import { GALLERY_MIN, plannedTypes, planSections } from "./plan.js";
+import { briefValueOk } from "./copy.js";
+import { genericCopy } from "./generic-copy.js";
+import { GALLERY_MIN, completeCopy, ownerContact, plannedTypes, planSections } from "./plan.js";
 
 // Borrador del modo rápido (spec 9.1, paso 6).
 //
 // El preset llega como DATO: no se consulta el catálogo ni se importa `platform`.
-// Todo el contenido nace del brief del dueño. Lo que el brief no trae se queda
-// con el marcador; lo que solo podría nacer de una invención (testimonios,
-// ventajas, precios, preguntas frecuentes) NO se escribe: la sección se degrada
-// a texto con el marcador, igual que hace `apps/platform/src/catalog.ts`.
+// El contenido sale SIEMPRE de un copy: el del modelo (ya pasado por la guardia)
+// o, si no lo hay, `genericCopy(brief)`, que solo dice lo que el brief sabe y
+// rellena el resto con frases que no afirman ningún hecho del negocio (T-002.3).
+// Ningún camino escribe el marcador `pendiente de confirmar` en el documento:
+// lo que falta lo pide el panel a partir de `pending`, no la página publicada.
+// Testimonio y precio se siguen omitiendo: no hay forma de escribirlos sin
+// inventar, y un precio inventado es peor que no tener sección.
 
 /** Preset del catálogo tal como lo entrega el llamador. */
 export const PRESET_SHAPE = "id,name,summary,keywords?,colors,typography,spacing,radius,sections";
@@ -47,21 +52,31 @@ const clamp = (n: unknown, min: number, max: number, fallback: number): number =
 
 const cut = (s: string, max: number): string => (s.length <= max ? s : s.slice(0, max).trimEnd());
 
-// El marcador completo no cabe en `price` (máximo 20 caracteres en 6.1). Se
-// recorta sin añadir ningún dato: sigue sin afirmar un precio.
-const PENDING_PRICE = "pendiente";
+/** ¿El dueño dio este dato, o el brief lo dejo con el marcador? */
+const known = (value: string): boolean => value !== PENDING_MARKER && value.trim() !== "";
+
 const CONTACT_HREF = "#contacto";
 // El plan pide el proceso como bloque `features` aparte, detras de las ventajas:
 // en 6.1 no existe un tipo `process`, y ambas listas tienen la misma forma.
 const PROCESS_ID = "s_process";
 
-/** Titular del hero: solo hechos del brief, nunca una promesa inventada. */
+/**
+ * Titular del hero: solo hechos del brief, nunca una promesa inventada.
+ *
+ * El nombre del dueño manda tal cual, aunque sea corto. Si no lo hay, el tipo
+ * con la ciudad. Si tampoco, el titular de `genericCopy`, que baja por los
+ * textos fijados en el contrato de T-002.2 y nunca devuelve el marcador.
+ */
 export function heroHeadline(brief: QuickBrief): string {
-  if (brief.name !== PENDING_MARKER) return cut(brief.name, 120);
-  if (brief.businessType !== PENDING_MARKER && brief.city !== PENDING_MARKER) {
+  // El predicado de la guardia se aplica ANTES de interpolar (T-002.4, Fix D):
+  // esta función es el respaldo del titular en `guardCopy`, y sin el filtro
+  // restauraba el reclamo que la guardia acababa de podar ("taller certificado
+  // en Bilbao" volvía al hero por esta vía).
+  if (briefValueOk(brief.name, brief)) return cut(brief.name, 120);
+  if (briefValueOk(brief.businessType, brief) && briefValueOk(brief.city, brief)) {
     return cut(`${brief.businessType} en ${brief.city}`, 120);
   }
-  return PENDING_MARKER;
+  return cut(genericCopy(brief).heroHeadline, 120);
 }
 
 /**
@@ -71,14 +86,17 @@ export function heroHeadline(brief: QuickBrief): string {
  * inventados. Testimonio y precio NO se escriben aunque el preset los pida: el
  * modelo no puede inventarlos y un marcador ahí solo ensucia la página.
  */
-function copySection(type: string, id: string, brief: QuickBrief, copy: SiteCopy, photos: SitePhotos): Section | undefined {
+function buildSection(type: string, id: string, brief: QuickBrief, copy: SiteCopy, photos: SitePhotos): Section | undefined {
   switch (type) {
     case "hero":
       return {
         id,
         type: "hero",
         props: {
-          headline: copy.heroHeadline,
+          // Recorte al máximo de la sección (T-002.7, Fix E): un titular compuesto
+          // por tipo y ciudad largos superaba los 120 del esquema y abortaba la
+          // ejecución entera. `cut` no puede bajar del mínimo de 8 del copy.
+          headline: cut(copy.heroHeadline, 120),
           ...(copy.heroSubline ? { subline: copy.heroSubline } : {}),
           cta: { label: copy.heroCta, href: CONTACT_HREF },
           ...(photos.hero ? { image: photos.hero.assetId } : {}),
@@ -89,8 +107,8 @@ function copySection(type: string, id: string, brief: QuickBrief, copy: SiteCopy
       if (photos.gallery.length < GALLERY_MIN) return undefined;
       return { id, type: "gallery", props: { assetIds: photos.gallery.map((p) => p.assetId) } };
     case "features":
-      // Sin servicios validos no hay tarjetas que escribir: la seccion se omite
-      // en vez de rellenarse con el par "pendiente de confirmar".
+      // `completeCopy` ya garantiza el mínimo; la guarda queda por si alguien
+      // llama a `copySection` con un copy sin completar.
       if (copy.services.length === 0) return undefined;
       return { id, type: "features", props: { heading: copy.servicesHeading, items: copy.services } };
     case "process":
@@ -128,70 +146,89 @@ function copySection(type: string, id: string, brief: QuickBrief, copy: SiteCopy
 }
 
 /**
- * Convierte un tipo del preset en una sección que el borrador puede sostener.
+ * Red final del marcador (T-002.4, Fix A): ningún texto del documento lo lleva.
  *
- * `image` y `gallery` se omiten sin assets, y las secciones cuyo contenido solo
- * puede venir de datos que aún no existen se degradan a `text`.
+ * Las capas anteriores ya lo filtran (`normalizeBrief`, `guardCopy`,
+ * `briefValueOk`), pero confiar solo en ellas fue justo el fallo: un
+ * `aboutBody` con "Horario pendiente de confirmar." atravesaba la guardia porque
+ * no era el valor exacto. Aquí, pase lo que pase antes, la sección que lo
+ * contuviera se rehace entera con el copy genérico, y si tampoco así queda
+ * limpia, se omite. No se publica nunca.
  */
-function draftSection(type: string, id: string, brief: QuickBrief, copy?: SiteCopy, photos?: SitePhotos): Section | undefined {
-  if (copy !== undefined) return copySection(type, id, brief, copy, photos ?? { gallery: [] });
-  switch (type) {
-    case "hero":
-      return {
-        id,
-        type: "hero",
-        props: {
-          headline: heroHeadline(brief),
-          ...(brief.service !== PENDING_MARKER ? { subline: cut(brief.service, 240) } : {}),
-          cta: { label: "Contactar", href: CONTACT_HREF },
-        },
-      };
-    case "text":
-      return { id, type: "text", props: { heading: brief.businessType, body: PENDING_MARKER } };
-    case "pricing":
-      // Nunca se heredan los precios del preset: no son del dueño.
-      return {
-        id,
-        type: "pricing",
-        props: { plans: [{ name: PENDING_MARKER, price: PENDING_PRICE, features: [] }] },
-      };
-    case "contact":
-      return { id, type: "contact", props: contactProps(brief) };
-    case "cta":
-      return { id, type: "cta", props: { headline: PENDING_MARKER, cta: { label: "Contactar", href: CONTACT_HREF } } };
-    case "features":
-    case "testimonial":
-    case "faq":
-      // Ventajas, testimonios y preguntas: inventarlos es fabricar datos.
-      return { id, type: "text", props: { heading: PENDING_MARKER, body: PENDING_MARKER } };
-    case "image":
-    case "gallery":
-      return undefined; // sin assets propios no hay imagen que publicar
-    default:
-      return { id, type: "text", props: { body: PENDING_MARKER } };
-  }
+function copySection(type: string, id: string, brief: QuickBrief, copy: SiteCopy, photos: SitePhotos): Section | undefined {
+  const direct = buildSection(type, id, brief, copy, photos);
+  if (direct === undefined || !hasMarker(direct)) return direct;
+  const fallback = buildSection(type, id, brief, genericCopy(brief), photos);
+  if (fallback === undefined || hasMarker(fallback)) return undefined;
+  return fallback;
 }
 
-/** Contacto: solo se rellena con lo que el dueño escribió, tal cual. */
+/** ¿Algún texto de esta sección contiene el marcador? */
+function hasMarker(section: Section): boolean {
+  return containsMarker(JSON.stringify(section.props));
+}
+
+/** Texto publicable: si contiene el marcador, se cae al respaldo neutro. */
+function safeText(value: string, fallback: string): string {
+  return containsMarker(value) ? fallback : value;
+}
+
+/**
+ * Contacto: solo se rellena con lo que el dueño escribió, tal cual.
+ *
+ * La validación vive en `ownerContact` (plan.ts) porque el plan necesita el
+ * mismo juicio para decidir el `origin` (T-002.8). Una sola definición: si aquí
+ * y allí discreparan, el panel diría «contacto del dueño» sobre una sección que
+ * sale sin datos.
+ */
 function contactProps(brief: QuickBrief): Record<string, unknown> {
-  const raw = brief.contact;
   const props: Record<string, unknown> = { cta: { label: "Escribir", href: CONTACT_HREF } };
-  if (raw !== PENDING_MARKER && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(raw)) props["email"] = raw;
-  else if (raw !== PENDING_MARKER && /^[+\d][\d\s().-]{5,}$/.test(raw)) props["phone"] = cut(raw, 30);
+  const contact = ownerContact(brief);
+  if (contact === undefined) return props;
+  if ("email" in contact) props["email"] = contact.email;
+  else props["phone"] = contact.phone;
   return props;
 }
 
 /**
- * Nombre del sitio: el del dueño, el que dedujo el copy o el marcador.
+ * Nombre del sitio: el del dueño, el que dedujo el copy o el titular.
  *
  * El orden importa: lo que escribió el dueño manda sobre lo que redactó el
- * modelo, que a su vez manda sobre el marcador. Nunca al revés.
+ * modelo, y eso sobre el titular derivado del brief. Nunca al revés. El último
+ * escalón ya no es el marcador: `meta.name` es el título de la pestaña y del
+ * SEO, y "pendiente de confirmar" ahí es justo lo que T-002 quita.
  */
-function docName(brief: QuickBrief, copy?: SiteCopy): string {
-  if (brief.name !== PENDING_MARKER) return cut(siteName(brief), 80);
-  const deduced = copy?.businessName?.trim();
-  if (deduced !== undefined && deduced !== "") return cut(deduced, 80);
-  return PENDING_MARKER;
+function docName(brief: QuickBrief, copy: SiteCopy): string {
+  // El nombre que escribió el dueño se conserva tal cual, aunque lleve un
+  // reclamo: es un dato identificativo, no una afirmación nuestra (decisión del
+  // lead en T-002.5, documentada en un ADR).
+  if (known(brief.name)) return cut(siteName(brief), 80);
+  // El nombre que dedujo el modelo pasa por la misma guardia (T-002.7, Fix C):
+  // si reclama algo ("Café nº1 de Valencia") no se convierte en el nombre
+  // público del sitio. Sin este filtro, el dueño sin nombre veía publicado el
+  // reclamo que la guardia acababa de podar del copy.
+  const deduced = copy.businessName?.trim();
+  if (deduced !== undefined && deduced !== "" && briefValueOk(deduced, brief)) return cut(deduced, 80);
+  return cut(heroHeadline(brief), 80);
+}
+
+/**
+ * Frase del brief que se guarda en `design.brief`: solo lo que el dueño dijo.
+ *
+ * Sustituye aqui a `briefSentence` (brief.ts), que interpola el marcador en
+ * cada hueco ("pendiente de confirmar en pendiente de confirmar"). `design.brief`
+ * viaja dentro del documento entregado, asi que tambien cuenta para B1. Si el
+ * dueño no dio ningun campo, se guarda su descripcion libre o nada.
+ */
+function designBrief(brief: QuickBrief): string {
+  const parts: string[] = [];
+  const place = [brief.businessType, brief.city].filter(known);
+  if (place.length > 0) parts.push(place.join(" en "));
+  if (known(brief.name)) parts.push(`nombre: ${brief.name}`);
+  if (known(brief.service)) parts.push(`servicio: ${brief.service}`);
+  if (known(brief.contact)) parts.push(`contacto: ${brief.contact}`);
+  if (parts.length === 0 && brief.description !== undefined) parts.push(brief.description);
+  return parts.join("; ").slice(0, 500);
 }
 
 /**
@@ -201,13 +238,24 @@ function docName(brief: QuickBrief, copy?: SiteCopy): string {
  * esta función, así que el agente nunca muta el sitio con algo inválido.
  */
 export function draftSite(brief: QuickBrief, preset: Preset, copy?: SiteCopy, photos?: SitePhotos): SiteDocument {
+  // Un preset sin id es un error del llamador (el catálogo siempre lo trae), no
+  // un dato del dueño que se pueda dejar "pendiente". Se corta aquí, en vez de
+  // escribir el marcador en `design.presetId`.
+  if (preset.id.trim() === "") throw new Error("draftSite: preset sin id");
+  // Sin copy del modelo, el copy genérico. Con copy, `completeCopy` repone por
+  // sección lo que la guardia dejó por debajo del mínimo (T-002.3): nunca se
+  // mezcla un texto del modelo con uno de plantilla dentro del mismo bloque.
+  const { copy: text } = completeCopy(copy, brief);
   const sections: Section[] = [];
   const used = new Set<string>();
+  // Respaldo neutro para el nombre: el titular del copy genérico, que ya filtra
+  // cada dato del brief con la guardia y nunca lleva el marcador.
+  const neutralName = cut(genericCopy(brief).heroHeadline, 80);
   const push = (type: string) => {
     let id = `s_${type}`;
     let n = 2;
     while (used.has(id)) id = `s_${type}_${n++}`;
-    const section = draftSection(type, id, brief, copy, photos);
+    const section = copySection(type, id, brief, text, photos ?? { gallery: [] });
     if (!section) return;
     used.add(id);
     sections.push(section);
@@ -227,13 +275,14 @@ export function draftSite(brief: QuickBrief, preset: Preset, copy?: SiteCopy, ph
   const doc = {
     schemaVersion: 1 as const,
     // El nombre lo pone el dueño; si no lo dijo, el que dedujo el copy; si
-    // tampoco hay, el marcador. Nunca un nombre inventado por el agente.
-    meta: { name: docName(brief, copy), lang: "es" as const },
+    // tampoco hay, el titular del brief. Nunca un nombre inventado por el agente.
+    // Red final (Fix A): con el marcador dentro, el titular genérico.
+    meta: { name: safeText(docName(brief, text), neutralName), lang: "es" as const },
     design: {
-      brief: briefSentence(brief),
-      idea: preset.summary,
-      // Un preset inventado no existe: si el id viene vacío se marca como pendiente.
-      presetId: preset.id || PENDING_MARKER,
+      // Con el marcador dentro no se guarda: es un campo libre y vacío es válido.
+      brief: safeText(designBrief(brief), ""),
+      idea: safeText(preset.summary, ""),
+      presetId: preset.id,
       dials: {
         variance: clamp(preset.dials?.variance, 0, 10, 4),
         motion: clamp(preset.dials?.motion, 0, 10, 4),
@@ -254,17 +303,22 @@ export function draftSite(brief: QuickBrief, preset: Preset, copy?: SiteCopy, ph
         id: "p_home",
         slug: "/",
         seo: {
-          title: cut(docName(brief, copy), 70),
-          description: cut(copy?.seoDescription ?? `${brief.businessType} en ${brief.city}. ${brief.service}`, 160),
+          title: cut(safeText(docName(brief, text), neutralName), 70),
+          description: cut(safeText(text.seoDescription, genericCopy(brief).seoDescription), 160),
           noindex: false,
         },
         sections,
       },
     ],
-    assets: usedPhotos.map((p) => ({ id: p.assetId, alt: p.alt })),
+    // El `alt` llega del proveedor de fotos: con el marcador dentro se omite (es
+    // opcional en 6.1), no se publica.
+    assets: usedPhotos.map((p) => (containsMarker(p.alt) ? { id: p.assetId } : { id: p.assetId, alt: p.alt })),
   };
 
   const check = validateSiteDocument(doc);
   if (!check.ok) throw new Error(`borrador invalido: ${check.errors.join("; ")}`);
+  // Última comprobación, sin excepciones: si algo se escapó de todo lo anterior,
+  // el borrador no sale. Fallar aquí es preferible a entregar el marcador (B1).
+  if (containsMarker(JSON.stringify(check.doc))) throw new Error("borrador invalido: contiene el marcador pendiente");
   return check.doc;
 }

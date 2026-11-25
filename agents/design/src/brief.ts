@@ -11,6 +11,17 @@ import { z } from "zod";
 /** Marcador visible que el dueño ve en el borrador y en el panel. */
 export const PENDING_MARKER = "pendiente de confirmar";
 
+/**
+ * ¿El texto contiene el marcador? Por subcadena y sin distinguir mayúsculas.
+ *
+ * Vive aquí, junto al marcador, porque lo necesitan `brief`, `copy` y `draft`:
+ * el marcador no se publica en ninguna capa, aunque venga dentro de una frase
+ * más larga.
+ */
+export function containsMarker(value: string): boolean {
+  return value.toLowerCase().includes(PENDING_MARKER.toLowerCase());
+}
+
 const text = (max: number) => z.string().trim().min(1).max(max);
 
 /**
@@ -95,8 +106,13 @@ export function normalizeBrief(input: unknown): QuickBrief {
   }
   // El texto libre no es un sexto dato: no entra en `pending` ni cambia ningún
   // campo. Solo viaja al resumen, y vacío se omite igual que los demás.
+  //
+  // Si CONTIENE el marcador no se da por aportado (T-002.4, Fix A): "Horario
+  // pendiente de confirmar" no es una descripción del negocio, es el propio
+  // marcador colado en el texto. Antes bastaba con que no fuera igual para que
+  // pasara, y acababa en el documento entregado.
   const description = parsed.success ? parsed.data.description?.trim() : undefined;
-  if (description && description.toLowerCase() !== PENDING_MARKER) out.description = description;
+  if (description && !containsMarker(description)) out.description = description;
   return out;
 }
 

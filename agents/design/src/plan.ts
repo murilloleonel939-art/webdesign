@@ -1,9 +1,21 @@
 import { BRIEF_FIELDS, FIELD_LABEL, PENDING_MARKER, type BriefField, type QuickBrief } from "./brief.js";
 import type { SiteCopy } from "./copy.js";
 import type { Preset, SitePhotos } from "./draft.js";
+import { genericCopy } from "./generic-copy.js";
 
 /** Mínimo de fotos de la galería para que exista como sección. */
 export const GALLERY_MIN = 3;
+/**
+ * Las secciones de contenido que la página necesita sí o sí, en su orden
+ * canónico (T-002.6). El preset decide estilo y orden preferido, no qué
+ * contenido existe: si el copy lo sostiene, la sección va, haya hueco o no.
+ */
+const CANONICAL = ["features", "text", "process", "faq"] as const;
+
+/** Mínimos de una sección publicable (criterio B2). */
+export const MIN_SERVICES = 3;
+export const MIN_PROCESS = 3;
+export const MIN_FAQ = 2;
 
 // Inventario y plan (spec 9.1: brief → inventario → recomendación → plan →
 // checkpoint → construcción → validación).
@@ -23,6 +35,79 @@ export interface Inventory {
   missing: Missing[];
 }
 
+/**
+ * Resultado de completar el copy (T-002.9).
+ *
+ * Separa el copy ya completo de las claves que vinieron de la plantilla y no del
+ * modelo: `substituted` se consulta para asignar `origin` sin comparar textos,
+ * que es lo que producía falsos `copy_generico` cuando el modelo coincidía por
+ * casualidad con la plantilla (p. ej. CTA «Contactar»).
+ */
+export interface CompletedCopy {
+  copy: SiteCopy;
+  /** Claves de SiteCopy que vinieron de la plantilla y no del modelo. */
+  substituted: ReadonlySet<keyof SiteCopy>;
+}
+
+/**
+ * Completa por sección el copy del modelo con el genérico (T-002.3, criterio B2).
+ *
+ * El producto promete una página terminada, no una a medias. Si la guardia podó
+ * tanto que una sección se queda por debajo del mínimo, la sección **entera** se
+ * sustituye por la de `genericCopy`: nunca se mezcla un texto del modelo con uno
+ * de plantilla dentro del mismo bloque. Una sección dicha mitad por el modelo y
+ * mitad por plantilla se nota, y el visitante no sabría qué está leyendo.
+ *
+ * Mínimos: 3 servicios, 3 pasos de proceso, `aboutBody` no vacío y 2 preguntas.
+ * El encabezado va con el cuerpo que lo acompaña: si los servicios (o los pasos)
+ * son los genéricos, su encabezado también lo es. Los mínimos son los mismos que usa
+ * `planSections`, así que plan y documento no pueden discrepar.
+ *
+ * Cuando `copy === undefined` se usa el genérico entero: todas las claves que
+ * forman secciones quedan en `substituted`.
+ *
+ * Es idempotente: aplicarla sobre un copy ya completo no cambia nada.
+ */
+export function completeCopy(copy: SiteCopy | undefined, brief: QuickBrief): CompletedCopy {
+  const generic = genericCopy(brief);
+  const substituted = new Set<keyof SiteCopy>();
+
+  if (copy === undefined) {
+    // Sin copy del modelo: todo viene de la plantilla.
+    for (const k of ["services", "servicesHeading", "aboutBody", "aboutHeading", "process", "processHeading", "faq",
+                      "heroHeadline", "heroSubline", "heroCta", "closingHeadline", "closingCta"] as const) {
+      substituted.add(k);
+    }
+    return { copy: generic, substituted };
+  }
+
+  const out: SiteCopy = { ...copy };
+  if (copy.services.length < MIN_SERVICES) {
+    out.services = generic.services;
+    out.servicesHeading = generic.servicesHeading;
+    substituted.add("services");
+    substituted.add("servicesHeading");
+  }
+  // `aboutBody` vacío es lo que deja la guardia al podar: se repone entero.
+  if (copy.aboutBody.trim() === "") {
+    out.aboutBody = generic.aboutBody;
+    out.aboutHeading = generic.aboutHeading;
+    substituted.add("aboutBody");
+    substituted.add("aboutHeading");
+  }
+  if (copy.process.length < MIN_PROCESS) {
+    out.process = generic.process;
+    out.processHeading = generic.processHeading;
+    substituted.add("process");
+    substituted.add("processHeading");
+  }
+  if (copy.faq.length < MIN_FAQ) {
+    out.faq = generic.faq;
+    substituted.add("faq");
+  }
+  return { copy: out, substituted };
+}
+
 /** Inventario del brief: qué sabemos y qué no, sin interpretar. */
 export function inventory(brief: QuickBrief): Inventory {
   const known: Known[] = [];
@@ -38,12 +123,28 @@ export function inventory(brief: QuickBrief): Inventory {
 /** Por qué una sección se escribe, se degrada o se omite. */
 export type PlanAction = "write" | "degrade" | "omit";
 
+/**
+ * De dónde sale el TEXTO de una sección (T-002.8). Solo depende del contenido,
+ * nunca del preset: el mismo texto da el mismo origen con cualquier preset.
+ */
+export type SectionOrigin = "copy_del_dueno" | "copy_generico" | "contacto_del_dueno" | "contacto_generico";
+
 export interface PlannedSection {
   type: string;
   /** Tipo real que se escribirá: `degrade` lo cambia a `text`. */
   as: string;
   action: PlanAction;
+  /**
+   * POR QUÉ la sección está (o no) en la página: `preset`, `completitud_*`,
+   * `cierre_obligatorio`, `h1_obligatorio`, `fotos_de_la_busqueda` o el motivo
+   * de una omisión. No dice de dónde sale el texto: eso es `origin`.
+   */
   reason: string;
+  /**
+   * DE DÓNDE sale su texto. Solo en las secciones que se escriben y llevan texto
+   * del copy o del contacto; la galería (fotos) y las omitidas no lo tienen.
+   */
+  origin?: SectionOrigin;
 }
 
 export interface Plan {
@@ -54,119 +155,186 @@ export interface Plan {
 /**
  * Decide qué hacer con cada sección del preset.
  *
- * Se degradan (`text`) las que solo pueden llenarse con datos que aún no
- * existen: ventajas, testimonios y preguntas. Se omiten las que necesitan un
- * asset propio. Escribir cualquiera de ellas sería inventar, que es justo lo que
- * 9.1 prohíbe.
+ * Siempre hay un copy: el del modelo o, si no llegó, `genericCopy(brief)`, igual
+ * que hace `draftSite`. Así plan y documento no pueden discrepar. El motivo dice
+ * de dónde salió el texto (`copy_del_dueno` o `copy_generico`) para que el panel
+ * no presente un texto genérico como si fuera del dueño.
+ *
+ * Se omiten las secciones que solo existen si se inventan (testimonio y precio)
+ * y las que necesitan un asset propio. Escribir cualquiera de ellas sería
+ * inventar, que es justo lo que 9.1 prohíbe.
  */
 export function planSections(brief: QuickBrief, preset: Preset, copy?: SiteCopy, photos?: SitePhotos): Plan {
   const sections: PlannedSection[] = [];
   const galleryPhotos = photos?.gallery.length ?? 0;
+  // El mismo copy que escribira el borrador: sin copy, el generico; con copy,
+  // completado por seccion. Asi el plan no puede prometer algo distinto.
+  const { copy: text, substituted } = completeCopy(copy, brief);
+  // Una sección escrita: su `reason` (por qué está) y su `origin` (de dónde
+  // sale el texto). El origen se consulta al conjunto `substituted`, no por
+  // comparación de textos: así un CTA genérico que el modelo repitió por
+  // casualidad no oculta que ese campo vino de la plantilla (T-002.9).
+  const write = (type: string, as: string, reason: string): PlannedSection => {
+    const origin = originFromSet(as, substituted, brief);
+    return origin === undefined ? { type, as, action: "write", reason } : { type, as, action: "write", reason, origin };
+  };
+  const omit = (type: string, reason: string): PlannedSection => ({ type, as: type, action: "omit", reason });
+
   for (const s of preset.sections) {
-  if (copy !== undefined) {
-    // Con copy el plan cambia: lo que el modelo puede escribir con datos del
-    // dueno se escribe; lo que solo existe si se inventa (testimonio, precio) se
-    // omite. El plan tiene que decir lo mismo que el documento, o el dueno veria
-    // un plan que no es el que se aplico.
     switch (s.type) {
       case "image":
-        sections.push({ type: s.type, as: s.type, action: "omit", reason: "sin_assets_del_dueno" });
+        sections.push(omit(s.type, "sin_assets_del_dueno"));
         break;
       case "gallery":
-        sections.push(
-          galleryPhotos >= GALLERY_MIN
-            ? { type: s.type, as: "gallery", action: "write", reason: "fotos_de_la_busqueda" }
-            : { type: s.type, as: s.type, action: "omit", reason: "sin_fotos_suficientes" },
-        );
+        sections.push(galleryPhotos >= GALLERY_MIN ? write(s.type, "gallery", "fotos_de_la_busqueda") : omit(s.type, "sin_fotos_suficientes"));
         break;
       case "features":
         // Sin servicios validos no hay ventajas que escribir: el borrador omite
-        // la seccion y el plan lo dice igual, o el dueno veria un plan que no es
-        // el que se aplico.
-        sections.push(
-          copy.services.length > 0
-            ? { type: s.type, as: "features", action: "write", reason: "copy_del_dueno" }
-            : { type: s.type, as: s.type, action: "omit", reason: "sin_servicios_del_dueno" },
-        );
-        // El proceso va siempre detras de las ventajas, como bloque propio, y se
-        // omite con la misma regla que el borrador: sin pasos no hay seccion.
-        sections.push(
-          copy.process.length > 0
-            ? { type: "process", as: "process", action: "write", reason: "copy_del_dueno" }
-            : { type: "process", as: "process", action: "omit", reason: "sin_pasos_del_dueno" },
-        );
+        // la seccion y el plan lo dice igual.
+        sections.push(text.services.length >= MIN_SERVICES ? write(s.type, "features", "preset") : omit(s.type, "sin_servicios_del_dueno"));
+        // El proceso va siempre detras de las ventajas, como bloque propio.
+        sections.push(text.process.length >= MIN_PROCESS ? write("process", "process", "preset") : omit("process", "sin_pasos_del_dueno"));
         break;
       case "testimonial":
-        sections.push({ type: s.type, as: s.type, action: "omit", reason: "testimonio_requiere_cliente_real" });
+        sections.push(omit(s.type, "testimonio_requiere_cliente_real"));
         break;
       case "pricing":
-        sections.push({ type: s.type, as: s.type, action: "omit", reason: "precio_requiere_dato_del_dueno" });
+        sections.push(omit(s.type, "precio_requiere_dato_del_dueno"));
         break;
       case "faq":
-        sections.push(
-          copy.faq.length >= 2
-            ? { type: s.type, as: "faq", action: "write", reason: "copy_del_dueno" }
-            : { type: s.type, as: s.type, action: "omit", reason: "sin_preguntas_del_dueno" },
-        );
+        sections.push(text.faq.length >= MIN_FAQ ? write(s.type, "faq", "preset") : omit(s.type, "sin_preguntas_del_dueno"));
         break;
       case "hero":
-        sections.push({ type: s.type, as: "hero", action: "write", reason: "copy_del_dueno" });
+      case "contact":
+      case "cta":
+        sections.push(write(s.type, s.type, "preset"));
         break;
       default:
         // El resto se escribe como `text` con el "sobre el negocio": sin
         // aboutBody no hay texto y el borrador omite la seccion (draft.ts).
-        // `contact` y `cta` no dependen de aboutBody: llevan sus propios props.
-        sections.push(
-          s.type !== "contact" && s.type !== "cta" && copy.aboutBody === ""
-            ? { type: s.type, as: s.type, action: "omit", reason: "sin_about_del_dueno" }
-            : { type: s.type, as: s.type, action: "write", reason: "copy_del_dueno" },
-        );
-    }
-    continue;
-  }
-    switch (s.type) {
-      case "image":
-      case "gallery":
-        sections.push({ type: s.type, as: s.type, action: "omit", reason: "sin_assets_del_dueno" });
-        break;
-      case "features":
-        sections.push({ type: s.type, as: "text", action: "degrade", reason: "ventajas_requieren_datos_del_dueno" });
-        break;
-      case "testimonial":
-        sections.push({ type: s.type, as: "text", action: "degrade", reason: "testimonio_requiere_cliente_real" });
-        break;
-      case "faq":
-        sections.push({ type: s.type, as: "text", action: "degrade", reason: "preguntas_requieren_datos_del_dueno" });
-        break;
-      case "pricing":
-        sections.push({ type: s.type, as: "pricing", action: "write", reason: "precio_queda_pendiente" });
-        break;
-      case "hero":
-        sections.push({
-          type: s.type,
-          as: "hero",
-          action: "write",
-          reason: brief.name === PENDING_MARKER ? "titular_pendiente" : "titular_del_negocio",
-        });
-        break;
-      default:
-        sections.push({ type: s.type, as: s.type, action: "write", reason: "contenido_del_brief" });
+        sections.push(text.aboutBody === "" ? omit(s.type, "sin_about_del_dueno") : write(s.type, s.type, "preset"));
     }
   }
   // Un preset sin galería no impide las fotos: la galería va tras los servicios y el proceso.
   const hasGallery = sections.some((s) => s.as === "gallery" && s.action === "write");
-  if (copy !== undefined && galleryPhotos >= GALLERY_MIN && !hasGallery) {
+  if (galleryPhotos >= GALLERY_MIN && !hasGallery) {
     let at = 0;
     sections.forEach((s, i) => {
       if (s.as === "features" || s.as === "process") at = i + 1;
     });
-    sections.splice(at, 0, { type: "gallery", as: "gallery", action: "write", reason: "fotos_de_la_busqueda" });
+    sections.splice(at, 0, write("gallery", "gallery", "fotos_de_la_busqueda"));
   }
-  // Sin hero no hay h1 y 6.5 marca la jerarquía: se antepone uno.
-  if (!sections.some((s) => s.type === "hero" && s.action === "write")) {
-    sections.unshift({ type: "hero", as: "hero", action: "write", reason: "h1_obligatorio" });
+  return { presetId: preset.id, sections: closePlan(sections, text, write) };
+}
+
+/**
+ * ¿El copy sostiene esta sección? Sin esto no se añade nada (T-002.6).
+ *
+ * Se pregunta al copy YA completado (`completeCopy`), que es el mismo que verá
+ * el borrador: si dice que hay 3 servicios, hay sección de servicios.
+ */
+function supports(type: string, text: SiteCopy): boolean {
+  switch (type) {
+    case "features":
+      return text.services.length >= MIN_SERVICES;
+    case "text":
+      return text.aboutBody.trim() !== "";
+    case "process":
+      return text.process.length >= MIN_PROCESS;
+    case "faq":
+      return text.faq.length >= MIN_FAQ;
+    default:
+      return false;
   }
-  return { presetId: preset.id, sections };
+}
+
+/**
+ * ¿Qué contacto del dueño se puede publicar? Correo o teléfono, tal cual.
+ *
+ * Una sola definición para el plan (que decide el `origin`) y el borrador (que
+ * escribe la sección): si discreparan, el panel diría «contacto del dueño» sobre
+ * una sección que sale sin datos.
+ */
+export function ownerContact(brief: QuickBrief): { email: string } | { phone: string } | undefined {
+  const raw = brief.contact;
+  if (raw === PENDING_MARKER || raw.trim() === "") return undefined;
+  if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(raw)) return { email: raw };
+  if (/^[+\d][\d\s().-]{5,}$/.test(raw)) return { phone: raw.length <= 30 ? raw : raw.slice(0, 30).trimEnd() };
+  return undefined;
+}
+
+/**
+ * De dónde sale el texto de una sección (T-002.9).
+ *
+ * Se consulta `substituted`, el conjunto que `completeCopy` construyó al saber
+ * exactamente qué claves sustituyó. No se compara texto: comparar producía falsos
+ * `copy_generico` cuando el modelo coincidía por casualidad con la plantilla
+ * (CTA «Contactar», titular corto igual al genérico).
+ *
+ * Hero: solo `copy_generico` si titular, subtítulo Y CTA vinieron todos de la
+ * plantilla; si uno solo vino del modelo → `copy_del_dueno`.
+ */
+function originFromSet(type: string, substituted: ReadonlySet<keyof SiteCopy>, brief: QuickBrief): SectionOrigin | undefined {
+  const sub = (k: keyof SiteCopy) => substituted.has(k);
+  switch (type) {
+    case "features":
+      return sub("services") ? "copy_generico" : "copy_del_dueno";
+    case "text":
+      return sub("aboutBody") ? "copy_generico" : "copy_del_dueno";
+    case "process":
+      return sub("process") ? "copy_generico" : "copy_del_dueno";
+    case "faq":
+      return sub("faq") ? "copy_generico" : "copy_del_dueno";
+    case "hero":
+      // Solo genérico si LOS TRES campos vienen de la plantilla.
+      return sub("heroHeadline") && sub("heroSubline") && sub("heroCta") ? "copy_generico" : "copy_del_dueno";
+    case "cta":
+      return sub("closingHeadline") || sub("closingCta") ? "copy_generico" : "copy_del_dueno";
+    case "contact":
+      return ownerContact(brief) === undefined ? "contacto_generico" : "contacto_del_dueno";
+    default:
+      // La galería lleva fotos, no texto: no tiene origen de texto.
+      return undefined;
+  }
+}
+
+/**
+ * Cierra el plan: hero primero, contenido obligatorio, contacto y cierre al final.
+ *
+ * Es el arreglo de T-002.6. Antes se recorría el preset y solo se garantizaba
+ * `hero`, así que un preset sin `text` entregaba la página sin presentación y
+ * uno sin `features`, sin servicios ni pasos. El catálogo describe estilo; la
+ * completitud no puede depender de que cada fila esté bien escrita.
+ *
+ * Reglas:
+ *   - `hero` siempre primero.
+ *   - Las canónicas que falten se añaden en orden features → text → process → faq
+ *     (los pasos, detrás de los servicios), solo si el copy las sostiene.
+ *   - `contact` y `cta` siempre al final, exista o no el preset.
+ *   - Lo que el preset sí incluye conserva su posición relativa.
+ *
+ * Lo añadido aquí cambia el `reason` (por qué está), nunca el `origin` (de dónde
+ * sale el texto), que `write` calcula igual que para las secciones del preset.
+ */
+function closePlan(
+  sections: PlannedSection[],
+  text: SiteCopy,
+  write: (type: string, as: string, reason: string) => PlannedSection,
+): PlannedSection[] {
+  const hero = sections.find((s) => s.type === "hero" && s.action === "write") ?? write("hero", "hero", "h1_obligatorio");
+  const content = sections.filter((s) => s !== hero && s.type !== "hero" && s.type !== "contact" && s.type !== "cta");
+  const closing = sections.filter((s) => s.type === "contact" || s.type === "cta");
+  const has = (type: string) => content.some((s) => s.type === type && s.action === "write");
+  for (const type of CANONICAL) {
+    if (has(type) || !supports(type, text)) continue;
+    // El `reason` de completitud repite el origen, como pidió el contrato de
+    // T-002.6: el panel lee de un vistazo que se añadió y de dónde sale.
+    const added = write(type, type, "completitud");
+    content.push({ ...added, reason: `completitud_${added.origin === "copy_del_dueno" ? "copy_del_dueno" : "copy_generico"}` });
+  }
+  const contact = closing.find((s) => s.type === "contact") ?? write("contact", "contact", "cierre_obligatorio");
+  const cta = closing.find((s) => s.type === "cta") ?? write("cta", "cta", "cierre_obligatorio");
+  return [hero, ...content, contact, cta];
 }
 
 /** Los tipos que el borrador debe escribir, en orden y ya resueltos. */

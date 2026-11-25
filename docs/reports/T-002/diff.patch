@@ -1,0 +1,2988 @@
+diff --git a/agents/design/src/agent.ts b/agents/design/src/agent.ts
+index f3f3e35..76d396f 100644
+--- a/agents/design/src/agent.ts
++++ b/agents/design/src/agent.ts
+@@ -4,8 +4,8 @@ import type { BudgetTracker, LlmClient } from "@webdesign/llm";
+ import { lintSite, type LintFinding } from "@webdesign/linter";
+ import { lintHtml } from "@webdesign/lint-visual";
+ import { renderPage } from "@webdesign/renderer";
+-import type { SiteDocument } from "@webdesign/site-schema";
+-import { FIELD_LABEL, PENDING_MARKER, briefDescriptionContext, hasBriefData, normalizeBrief, quickBriefSchema, type BriefField, type QuickBrief } from "./brief.js";
++import { validateSiteDocument, type SiteDocument } from "@webdesign/site-schema";
++import { FIELD_LABEL, PENDING_MARKER, briefDescriptionContext, containsMarker, hasBriefData, normalizeBrief, quickBriefSchema, type BriefField, type QuickBrief } from "./brief.js";
+ import { copyPrompt, guardCopy, readCopy, retryLine, type SiteCopy } from "./copy.js";
+ import { draftSite, type PhotoRef, type Preset, type SitePhotos } from "./draft.js";
+ import { inventory, planSections, type Inventory, type Plan } from "./plan.js";
+@@ -39,8 +39,8 @@ export const designAgent: AgentDefinition = {
+   systemPrompt: [
+     "Eres el agente de diseño de la plataforma. Trabajas en modo rápido: una sola ronda.",
+     "El diseño lo decide el catálogo de presets, no tú. No inventes clientes, cifras,",
+-    "testimonios, precios, citas ni certificaciones. Lo que no sepas queda como",
+-    "'pendiente de confirmar'. No publicas: no existe herramienta para ello.",
++    "testimonios, precios, citas ni certificaciones. Lo que no sepas no se escribe",
++    "en el sitio: se le pide al dueño. No publicas: no existe herramienta para ello.",
+     "Responde en español, en dos o tres frases, diciendo qué preset has aplicado y",
+     "qué datos faltan por confirmar.",
+   ].join(" "),
+@@ -212,11 +212,18 @@ export async function runFastDesign(deps: FastDesignDeps): Promise<FastDesignRes
+   // El texto libre del dueño viaja solo aqui: es contexto para el resumen, no
+   // una fuente de contenido. `undefined` deja el mensaje como estaba.
+   const contextText = briefDescriptionContext(brief);
++  // Instantánea del documento verificado: es lo único que se entrega (Fix B).
++  const verified = structuredClone(store.doc);
++  // El resumen es prosa: no toca el sitio. Solo herramientas que NO mutan
++  // (T-002.7, Fix A). `maxRounds: 1` limita rondas, no llamadas: el bucle del
++  // SDK ejecuta las herramientas de la ronda igualmente, así que pasar aquí las
++  // mutables dejaba al modelo escribir texto que nunca vio la guardia.
++  const readOnlyTools = makeDesignTools(store).filter((tool) => !tool.mutates);
+   const run = await runAgent({
+     agent: designAgent,
+     client,
+     tracker,
+-    tools: makeDesignTools(store) as never,
++    tools: readOnlyTools as never,
+     ctx,
+     messages: [
+       {
+@@ -245,8 +252,18 @@ export async function runFastDesign(deps: FastDesignDeps): Promise<FastDesignRes
+     warnings.push(`presupuesto agotado en la ronda rapida: ${run.stop.limit}`);
+   }
+ 
++  // Defensa en profundidad (T-002.7, Fix B): el Fix A cierra el camino conocido,
++  // esto cierra cualquier otro. Si la ronda de resumen cambió el documento, se
++  // descarta: lo entregado es lo que pasó por la guardia, la completitud, la red
++  // del marcador y los linters, no lo que quedó en el store después.
++  if (JSON.stringify(store.doc) !== JSON.stringify(verified)) {
++    warnings.push("resumen_intento_mutar: se descarta el cambio y se entrega el borrador verificado");
++    store.doc = structuredClone(verified);
++  }
++  const delivered = assertDeliverable(store.doc);
++
+   return {
+-    doc: store.doc,
++    doc: delivered,
+     presetId: preset.id,
+     inventory: inv,
+     plan,
+@@ -258,6 +275,20 @@ export async function runFastDesign(deps: FastDesignDeps): Promise<FastDesignRes
+   };
+ }
+ 
++/**
++ * Última comprobación antes de entregar (T-002.7, Fix B.3).
++ *
++ * Las mismas que cierran `draftSite`: el esquema y la red del marcador. Si algo
++ * no las pasa, se lanza un error claro en vez de entregar un documento que no
++ * se ha verificado. No repara: si llega aquí roto, el fallo está antes.
++ */
++function assertDeliverable(doc: SiteDocument): SiteDocument {
++  const check = validateSiteDocument(doc);
++  if (!check.ok) throw new Error(`documento no entregable: ${check.errors.join("; ")}`);
++  if (containsMarker(JSON.stringify(check.doc))) throw new Error("documento no entregable: contiene el marcador pendiente");
++  return check.doc;
++}
++
+ /** Lo que devuelve `generateCopy`: el copy listo o el motivo cerrado del fallo. */
+ type CopyOutcome = { copy: SiteCopy } | { reason: string };
+ 
+@@ -302,38 +333,56 @@ async function generateCopy(
+   // Lectura + guardia en un solo paso: si el copy se lee, pasa por `finishCopy`
+   // y su `reason` (p. ej. `empty_services`) cuenta igual que un motivo de
+   // lectura. Asi la poda de la guardia entra en el reintento (ADR 0002).
+-  const settle = (out: Awaited<ReturnType<typeof ask>>): CopyOutcome => {
++  //
++  // Los avisos de la guardia son POR INTENTO: cada `settle` devuelve los suyos
++  // y solo se publican los del intento que gana. Si el primero se descarta y el
++  // segundo salva el copy, el panel no debe enseñar podas de un texto que nunca
++  // llego al sitio (spec §10, deuda de T-001).
++  const settle = (out: Awaited<ReturnType<typeof ask>>): Attempt => {
+     const outcome = read(out);
+-    return "copy" in outcome ? finishCopy(outcome.copy, brief, warnings) : outcome;
++    return "copy" in outcome ? finishCopy(outcome.copy, brief) : { outcome, warnings: [] };
++  };
++  const win = (attempt: Attempt): CopyOutcome => {
++    // Un intento sin copy no publica sus podas: no hay texto suyo en el sitio,
++    // y el motivo del fallo ya viaja en el `reason` (`copy_fallback` o el error).
++    if ("copy" in attempt.outcome) warnings.push(...attempt.warnings);
++    return attempt.outcome;
+   };
+ 
+   const first = settle(await ask(prompt));
+-  if ("copy" in first) return first;
++  if ("copy" in first.outcome) return win(first);
+ 
+   // El reintento es solo para motivos de LECTURA (y de la guardia). Un fallo de
+   // transporte se devuelve tal cual: si el corte es de presupuesto
+   // (`transport_budget`) no queda saldo, y reintentar seria pedir una llamada
+   // que ya se sabe que no se puede pagar.
+-  if (first.reason.startsWith("transport_")) return first;
++  if (first.outcome.reason.startsWith("transport_")) return win(first);
+ 
+   // Segundo y ultimo intento: lo que salga (copy, motivo de lectura, motivo de
+   // la guardia o de transporte) es el final; un `reason` acaba en
+-  // CopyUnavailableError en el llamador.
+-  return settle(await ask(`${prompt}\n\n${retryLine(first.reason)}`));
++  // CopyUnavailableError en el llamador. Los avisos del primero se descartan.
++  return win(settle(await ask(`${prompt}\n\n${retryLine(first.outcome.reason)}`)));
++}
++
++/** Un intento de copy: su resultado y los avisos de guardia que produjo. */
++interface Attempt {
++  outcome: CopyOutcome;
++  warnings: string[];
+ }
+ 
+ /** Guardia determinista + avisos: no se publica lo que parece inventado. */
+-function finishCopy(copy: SiteCopy, brief: QuickBrief, warnings: string[]): CopyOutcome {
++function finishCopy(copy: SiteCopy, brief: QuickBrief): Attempt {
+   const guarded = guardCopy(copy, brief);
+   // Lo podado viaja al panel: el dueno ve que texto se descarto y por que, sin
+-  // que se le haya publicado nada inventado.
+-  if (guarded.dropped.length > 0) warnings.push(`copy_guard: ${guarded.dropped.join(", ")}`);
++  // que se le haya publicado nada inventado. Se devuelve, no se publica: quien
++  // decide si este intento gana es `generateCopy`.
++  const warnings = guarded.dropped.length > 0 ? [`copy_guard: ${guarded.dropped.join(", ")}`] : [];
+   // Sin ningun servicio valido el copy no sirve: la seccion `features` se
+   // omite y el sitio se quedaria sin lo que el dueno pidio. Se trata como copy
+   // no disponible: entra en el reintento como motivo de lectura (`empty_services`
+   // no empieza por `transport_`) y, si tampoco sale, acaba en CopyUnavailableError.
+-  if (guarded.copy.services.length === 0) return { reason: "empty_services" };
+-  return { copy: guarded.copy };
++  if (guarded.copy.services.length === 0) return { outcome: { reason: "empty_services" }, warnings };
++  return { outcome: { copy: guarded.copy }, warnings };
+ }
+ 
+ /**
+diff --git a/agents/design/src/brief.ts b/agents/design/src/brief.ts
+index 6a5e31e..af300c8 100644
+--- a/agents/design/src/brief.ts
++++ b/agents/design/src/brief.ts
+@@ -11,6 +11,17 @@ import { z } from "zod";
+ /** Marcador visible que el dueño ve en el borrador y en el panel. */
+ export const PENDING_MARKER = "pendiente de confirmar";
+ 
++/**
++ * ¿El texto contiene el marcador? Por subcadena y sin distinguir mayúsculas.
++ *
++ * Vive aquí, junto al marcador, porque lo necesitan `brief`, `copy` y `draft`:
++ * el marcador no se publica en ninguna capa, aunque venga dentro de una frase
++ * más larga.
++ */
++export function containsMarker(value: string): boolean {
++  return value.toLowerCase().includes(PENDING_MARKER.toLowerCase());
++}
++
+ const text = (max: number) => z.string().trim().min(1).max(max);
+ 
+ /**
+@@ -95,8 +106,13 @@ export function normalizeBrief(input: unknown): QuickBrief {
+   }
+   // El texto libre no es un sexto dato: no entra en `pending` ni cambia ningún
+   // campo. Solo viaja al resumen, y vacío se omite igual que los demás.
++  //
++  // Si CONTIENE el marcador no se da por aportado (T-002.4, Fix A): "Horario
++  // pendiente de confirmar" no es una descripción del negocio, es el propio
++  // marcador colado en el texto. Antes bastaba con que no fuera igual para que
++  // pasara, y acababa en el documento entregado.
+   const description = parsed.success ? parsed.data.description?.trim() : undefined;
+-  if (description && description.toLowerCase() !== PENDING_MARKER) out.description = description;
++  if (description && !containsMarker(description)) out.description = description;
+   return out;
+ }
+ 
+diff --git a/agents/design/src/copy.ts b/agents/design/src/copy.ts
+index a35fefb..707c095 100644
+--- a/agents/design/src/copy.ts
++++ b/agents/design/src/copy.ts
+@@ -1,6 +1,7 @@
+ import { z } from "zod";
+-import { PENDING_MARKER, type QuickBrief } from "./brief.js";
++import { PENDING_MARKER, containsMarker, type QuickBrief } from "./brief.js";
+ import { heroHeadline } from "./draft.js";
++import { genericCopy } from "./generic-copy.js";
+ 
+ // Textos del sitio escritos por el modelo (spec 9.1, `generate_copy`).
+ //
+@@ -14,8 +15,9 @@ import { heroHeadline } from "./draft.js";
+ //
+ // La guardia no interpreta: busca dígitos, símbolos de moneda y un puñado de
+ // palabras que solo se dicen con datos detrás. La única excepción es la cifra
+-// que el dueño escribió literalmente en `brief.description`: esa no la inventó
+-// el modelo.
++// que el dueño escribió literalmente en cualquier campo del brief: esa no la
++// inventó el modelo. Reclamos, dinero y el marcador se podan siempre (ver
++// `hasInvention`).
+ 
+ /**
+  * Topes por campo. El esquema los usa tal cual y `normalizeCopy` recorta a ellos
+@@ -255,33 +257,109 @@ export function readCopy(text: string, finishReason: string): CopyReadResult {
+   return { ok: true, copy: parsed.data };
+ }
+ 
+-/** Línea extra del reintento: el motivo del fallo y la orden de ser más corto. */
++/**
++ * Línea extra del reintento: el motivo del fallo y la orden de ser más corto.
++ *
++ * `empty_services` no es un fallo de lectura: la guardia podo todos los
++ * servicios por llevar datos que el dueno no dio. Decirle al modelo "no se
++ * pudo leer" lo hace reintentar a ciegas y repetir la misma cifra inventada,
++ * asi que esa familia recibe un texto propio que nombra los datos prohibidos
++ * en vez de la causa falsa. El resto (motivos de esquema y cualquier otro) no
++ * se toca: no se afirma una causa que no se conoce.
++ */
+ export function retryLine(reason: string): string {
++  if (reason === "empty_services") {
++    return "Los servicios anteriores se descartaron porque llevaban datos que el dueno no dio (cifras, anos, porcentajes, premios, certificaciones, precios o testimonios). Escribe servicios nuevos sin nada de eso. Responde SOLO el objeto JSON, mas corto: frases breves y listas de 3 a 4 elementos como mucho.";
++  }
+   return `Tu respuesta anterior no se pudo leer (${reason}). Responde SOLO el objeto JSON, mas corto: frases breves y listas de 3 a 4 elementos como mucho.`;
+ }
+ 
+ // --- Guardia determinista ---------------------------------------------------
+ 
+-/** Un titular que solo se escribe con datos detrás. */
+-const CLAIM = /\b(clientes satisfechos|años de experiencia|anos de experiencia|premiad|certificad|garantizad|n[ºo°]\s*1|líder|lider)\b/i;
++/**
++ * Un titular que solo se escribe con datos detrás (T-002.4, Fix C).
++ *
++ * Cada familia lleva sus flexiones EXPLÍCITAS y `\b` a los dos lados. La
++ * versión anterior quitaba el `\b` final para cubrir los plurales, y con eso
++ * podaba "liderar" o "liderazgo" (actividades, no reclamos) y seguía dejando
++ * pasar "certificaciones". Aquí no hay raíces abiertas: o es una de estas
++ * formas, o no es un reclamo.
++ *
++ * La política (T-002.5) es una sola frase: **se podan las afirmaciones de
++ * estado** (sustantivos y participios que presumen algo del negocio) y **se
++ * conservan las actividades** (verbos que describen lo que se hace).
++ *
++ *   - Se podan: premiado/a/os/as, certificado/a/os/as, certificación/es,
++ *     garantizado/a/os/as, líder/es, liderazgo/s, nº 1, clientes satisfechos y
++ *     años de experiencia.
++ *   - No se podan: "liderar", "coliderar", "liderando" (actividades) ni
++ *     "certificar" (describe un trámite, no afirma que el negocio lo tenga).
++ *
++ * "liderazgo" es un sustantivo que presume posición, no una actividad: entra
++ * con `azgos?`, para que el plural quede cubierto igual que en las demás
++ * familias.
++ */
++const CLAIM = /\b(clientes satisfechos|años de experiencia|anos de experiencia|premiad[oa]s?|certificad[oa]s?|certificaci[oó]n(es)?|garantizad[oa]s?|l[íi]der(azgos?|es)?|n[ºo°]\s*1)\b/i;
+ const DIGIT = /\d/;
+ const MONEY = /[€$%]/;
++/** Cifra completa: la misma regex para el texto del modelo y para el corpus del dueño. */
++const NUMBER = /\d+([.,]\d+)?/g;
++
++/**
++ * Las cifras que escribió el dueño, como tokens completos.
++ *
++ * El corpus son los campos donde el dueño describe su negocio (T-002.3):
++ * `description`, `name`, `businessType`, `city` y `service`. Un campo que
++ * contiene el marcador no es un dato suyo y no avala nada.
++ *
++ * `contact` queda FUERA (T-002.5, hallazgo 1 de seguridad): un teléfono o un
++ * correo no autorizan cifras. Con el contacto dentro, un "24" del número
++ * validaba "Entrega en 24 horas", un plazo que el dueño nunca dio. El contacto
++ * se sigue publicando tal cual en la sección de contacto, que es donde tiene
++ * sentido; lo que no hace es acreditar afirmaciones del texto.
++ *
++ * Se guardan tokens, no el texto (T-002.4, Fix B): con `includes`, el "19" de
++ * "Tenemos 19 sucursales" quedaba avalado por el "2019" de "Café 2019".
++ */
++function ownerNumbers(brief: QuickBrief): Set<string> {
++  const corpus = [brief.description, brief.name, brief.businessType, brief.city, brief.service]
++    .filter((value): value is string => value !== undefined && value !== PENDING_MARKER && !containsMarker(value))
++    .join("\n");
++  return new Set(corpus.match(NUMBER) ?? []);
++}
+ 
+ /**
+  * ¿El texto lleva un dato que el dueño no dio?
+  *
+- * Una cifra que aparece LITERAL en `brief.description` no cuenta como invento:
+- * la escribió el dueño. Se compara el fragmento numérico, no el texto entero,
+- * porque el modelo puede repetir "3" en otra frase.
++ * Una cifra cuenta como del dueño solo si aparece COMPLETA, como token, en algún
++ * campo del brief: "2019" avala "2019", nunca "19" ni "201".
++ *
++ * `CLAIM` y `MONEY` se podan SIEMPRE, aunque el dueño los haya escrito. No es
++ * desconfianza hacia el dueño: es que la plataforma no puede avalar "líderes del
++ * sector", "premiados" ni un porcentaje. Publicarlo sería poner una afirmación
++ * comercial en boca del producto, y quien tendría que defenderla es quien lo
++ * publica. Mismo criterio para los importes: un precio que el dueño dictó por
++ * chat no es un precio confirmado. Y el marcador tampoco se publica nunca.
+  */
+-function hasInvention(value: string, briefDescription: string | undefined): boolean {
++function hasInvention(value: string, owned: Set<string>): boolean {
++  if (containsMarker(value)) return true;
+   if (!DIGIT.test(value) && !MONEY.test(value) && !CLAIM.test(value)) return false;
+-  const numbers = value.match(/\d+([.,]\d+)?/g) ?? [];
+-  const unsupported = numbers.some((n) => !(briefDescription ?? "").includes(n));
+-  if (unsupported) return true;
+-  // Sin cifras a la vista sigue habiendo reclamos: "premiados", "100 %" (ya
+-  // cubierto por MONEY) o "líderes del sector". Nada de eso sale del brief.
+-  return CLAIM.test(value) || MONEY.test(value);
++  // Los reclamos y el dinero no se ablandan con el corpus: se podan igual.
++  if (CLAIM.test(value) || MONEY.test(value)) return true;
++  return (value.match(NUMBER) ?? []).some((n) => !owned.has(n));
++}
++
++/**
++ * ¿Se puede publicar este valor del brief tal cual? (T-002.4, Fix D)
++ *
++ * Es el MISMO predicado de la guardia, aplicado a lo que el dueño escribió antes
++ * de interpolarlo en un texto de respaldo. Las cifras del propio dueño pasan; un
++ * reclamo, un importe o el marcador no, aunque los haya escrito él. No se sanea
++ * recortando palabras: o el dato pasa entero, o no se usa y se cae al neutro.
++ */
++export function briefValueOk(value: string, brief: QuickBrief): boolean {
++  if (value === PENDING_MARKER || value.trim() === "") return false;
++  return !hasInvention(value, ownerNumbers(brief));
+ }
+ 
+ /**
+@@ -294,21 +372,25 @@ function hasInvention(value: string, briefDescription: string | undefined): bool
+  */
+ export function guardCopy(copy: SiteCopy, brief: QuickBrief): { copy: SiteCopy; dropped: string[] } {
+   const dropped: string[] = [];
+-  const desc = brief.description;
++  // Un solo corpus para toda la guardia: las cifras de los seis campos del dueño.
++  const corpus = ownerNumbers(brief);
+   const headline = heroHeadline(brief);
+ 
+   const keepText = (field: string, value: string, fallback: string): string => {
+-    if (!hasInvention(value, desc)) return value;
++    if (!hasInvention(value, corpus)) return value;
+     dropped.push(field);
+     return fallback;
+   };
+ 
+-  const businessType = keepText("businessType", copy.businessType, brief.businessType);
++  // Los respaldos que antes eran `brief.businessType` podian valer el marcador
++  // si el dueño no dio el tipo: salen del copy generico, que nunca lo lleva.
++  const generic = genericCopy(brief);
++  const businessType = keepText("businessType", copy.businessType, generic.businessType);
+   const heroCta = keepText("heroCta", copy.heroCta, "Contactar");
+   const closingCta = keepText("closingCta", copy.closingCta, "Contactar");
+ 
+   const services = copy.services.filter((item, i) => {
+-    const bad = hasInvention(item.title, desc) || hasInvention(item.body, desc);
++    const bad = hasInvention(item.title, corpus) || hasInvention(item.body, corpus);
+     if (bad) dropped.push(`services[${i}]`);
+     return !bad;
+   });
+@@ -317,13 +399,13 @@ export function guardCopy(copy: SiteCopy, brief: QuickBrief): { copy: SiteCopy;
+   // queda ninguno, en vez de publicar una tarjeta "pendiente de confirmar".
+ 
+   const process = copy.process.filter((item, i) => {
+-    const bad = hasInvention(item.title, desc) || hasInvention(item.body, desc);
++    const bad = hasInvention(item.title, corpus) || hasInvention(item.body, corpus);
+     if (bad) dropped.push(`process[${i}]`);
+     return !bad;
+   });
+ 
+   const faq = copy.faq.filter((item, i) => {
+-    const bad = hasInvention(item.q, desc) || hasInvention(item.a, desc);
++    const bad = hasInvention(item.q, corpus) || hasInvention(item.a, corpus);
+     if (bad) dropped.push(`faq[${i}]`);
+     return !bad;
+   });
+@@ -331,7 +413,9 @@ export function guardCopy(copy: SiteCopy, brief: QuickBrief): { copy: SiteCopy;
+   // Se calculan antes del objeto: el fallback del SEO baja por esta cadena
+   // (subtitular y, si no hay, titular) en vez de caer a un marcador.
+   const heroHeadlineText = keepText("heroHeadline", copy.heroHeadline, headline);
+-  const heroSublineText = keepText("heroSubline", copy.heroSubline, brief.service === PENDING_MARKER ? "" : brief.service);
++  // El respaldo del subtitular es el servicio del dueño, pero solo si pasa la
++  // misma guardia: un respaldo no puede restaurar lo que se acaba de podar.
++  const heroSublineText = keepText("heroSubline", copy.heroSubline, briefValueOk(brief.service, brief) ? brief.service : "");
+   const seoFallback = trimWord(heroSublineText !== "" ? heroSublineText : heroHeadlineText, 160);
+ 
+   const guarded: SiteCopy = {
+@@ -344,7 +428,7 @@ export function guardCopy(copy: SiteCopy, brief: QuickBrief): { copy: SiteCopy;
+     services,
+     processHeading: keepText("processHeading", copy.processHeading, "Como trabajamos"),
+     process,
+-    aboutHeading: keepText("aboutHeading", copy.aboutHeading, brief.businessType),
++    aboutHeading: keepText("aboutHeading", copy.aboutHeading, generic.aboutHeading),
+     // Sin texto propio no se escribe un parrafo de relleno: el vacio hace que el
+     // borrador omita la seccion `about` entera (draft.ts).
+     aboutBody: keepText("aboutBody", copy.aboutBody, ""),
+diff --git a/agents/design/src/draft.ts b/agents/design/src/draft.ts
+index 1cc64a9..a1ea8c5 100644
+--- a/agents/design/src/draft.ts
++++ b/agents/design/src/draft.ts
+@@ -1,15 +1,20 @@
+ import { validateSiteDocument, type Section, type SiteDocument } from "@webdesign/site-schema";
+-import { PENDING_MARKER, briefSentence, siteName, type QuickBrief } from "./brief.js";
++import { PENDING_MARKER, containsMarker, siteName, type QuickBrief } from "./brief.js";
+ import type { SiteCopy } from "./copy.js";
+-import { GALLERY_MIN, plannedTypes, planSections } from "./plan.js";
++import { briefValueOk } from "./copy.js";
++import { genericCopy } from "./generic-copy.js";
++import { GALLERY_MIN, completeCopy, ownerContact, plannedTypes, planSections } from "./plan.js";
+ 
+ // Borrador del modo rápido (spec 9.1, paso 6).
+ //
+ // El preset llega como DATO: no se consulta el catálogo ni se importa `platform`.
+-// Todo el contenido nace del brief del dueño. Lo que el brief no trae se queda
+-// con el marcador; lo que solo podría nacer de una invención (testimonios,
+-// ventajas, precios, preguntas frecuentes) NO se escribe: la sección se degrada
+-// a texto con el marcador, igual que hace `apps/platform/src/catalog.ts`.
++// El contenido sale SIEMPRE de un copy: el del modelo (ya pasado por la guardia)
++// o, si no lo hay, `genericCopy(brief)`, que solo dice lo que el brief sabe y
++// rellena el resto con frases que no afirman ningún hecho del negocio (T-002.3).
++// Ningún camino escribe el marcador `pendiente de confirmar` en el documento:
++// lo que falta lo pide el panel a partir de `pending`, no la página publicada.
++// Testimonio y precio se siguen omitiendo: no hay forma de escribirlos sin
++// inventar, y un precio inventado es peor que no tener sección.
+ 
+ /** Preset del catálogo tal como lo entrega el llamador. */
+ export const PRESET_SHAPE = "id,name,summary,keywords?,colors,typography,spacing,radius,sections";
+@@ -47,21 +52,31 @@ const clamp = (n: unknown, min: number, max: number, fallback: number): number =
+ 
+ const cut = (s: string, max: number): string => (s.length <= max ? s : s.slice(0, max).trimEnd());
+ 
+-// El marcador completo no cabe en `price` (máximo 20 caracteres en 6.1). Se
+-// recorta sin añadir ningún dato: sigue sin afirmar un precio.
+-const PENDING_PRICE = "pendiente";
++/** ¿El dueño dio este dato, o el brief lo dejo con el marcador? */
++const known = (value: string): boolean => value !== PENDING_MARKER && value.trim() !== "";
++
+ const CONTACT_HREF = "#contacto";
+ // El plan pide el proceso como bloque `features` aparte, detras de las ventajas:
+ // en 6.1 no existe un tipo `process`, y ambas listas tienen la misma forma.
+ const PROCESS_ID = "s_process";
+ 
+-/** Titular del hero: solo hechos del brief, nunca una promesa inventada. */
++/**
++ * Titular del hero: solo hechos del brief, nunca una promesa inventada.
++ *
++ * El nombre del dueño manda tal cual, aunque sea corto. Si no lo hay, el tipo
++ * con la ciudad. Si tampoco, el titular de `genericCopy`, que baja por los
++ * textos fijados en el contrato de T-002.2 y nunca devuelve el marcador.
++ */
+ export function heroHeadline(brief: QuickBrief): string {
+-  if (brief.name !== PENDING_MARKER) return cut(brief.name, 120);
+-  if (brief.businessType !== PENDING_MARKER && brief.city !== PENDING_MARKER) {
++  // El predicado de la guardia se aplica ANTES de interpolar (T-002.4, Fix D):
++  // esta función es el respaldo del titular en `guardCopy`, y sin el filtro
++  // restauraba el reclamo que la guardia acababa de podar ("taller certificado
++  // en Bilbao" volvía al hero por esta vía).
++  if (briefValueOk(brief.name, brief)) return cut(brief.name, 120);
++  if (briefValueOk(brief.businessType, brief) && briefValueOk(brief.city, brief)) {
+     return cut(`${brief.businessType} en ${brief.city}`, 120);
+   }
+-  return PENDING_MARKER;
++  return cut(genericCopy(brief).heroHeadline, 120);
+ }
+ 
+ /**
+@@ -71,14 +86,17 @@ export function heroHeadline(brief: QuickBrief): string {
+  * inventados. Testimonio y precio NO se escriben aunque el preset los pida: el
+  * modelo no puede inventarlos y un marcador ahí solo ensucia la página.
+  */
+-function copySection(type: string, id: string, brief: QuickBrief, copy: SiteCopy, photos: SitePhotos): Section | undefined {
++function buildSection(type: string, id: string, brief: QuickBrief, copy: SiteCopy, photos: SitePhotos): Section | undefined {
+   switch (type) {
+     case "hero":
+       return {
+         id,
+         type: "hero",
+         props: {
+-          headline: copy.heroHeadline,
++          // Recorte al máximo de la sección (T-002.7, Fix E): un titular compuesto
++          // por tipo y ciudad largos superaba los 120 del esquema y abortaba la
++          // ejecución entera. `cut` no puede bajar del mínimo de 8 del copy.
++          headline: cut(copy.heroHeadline, 120),
+           ...(copy.heroSubline ? { subline: copy.heroSubline } : {}),
+           cta: { label: copy.heroCta, href: CONTACT_HREF },
+           ...(photos.hero ? { image: photos.hero.assetId } : {}),
+@@ -89,8 +107,8 @@ function copySection(type: string, id: string, brief: QuickBrief, copy: SiteCopy
+       if (photos.gallery.length < GALLERY_MIN) return undefined;
+       return { id, type: "gallery", props: { assetIds: photos.gallery.map((p) => p.assetId) } };
+     case "features":
+-      // Sin servicios validos no hay tarjetas que escribir: la seccion se omite
+-      // en vez de rellenarse con el par "pendiente de confirmar".
++      // `completeCopy` ya garantiza el mínimo; la guarda queda por si alguien
++      // llama a `copySection` con un copy sin completar.
+       if (copy.services.length === 0) return undefined;
+       return { id, type: "features", props: { heading: copy.servicesHeading, items: copy.services } };
+     case "process":
+@@ -128,70 +146,89 @@ function copySection(type: string, id: string, brief: QuickBrief, copy: SiteCopy
+ }
+ 
+ /**
+- * Convierte un tipo del preset en una sección que el borrador puede sostener.
++ * Red final del marcador (T-002.4, Fix A): ningún texto del documento lo lleva.
+  *
+- * `image` y `gallery` se omiten sin assets, y las secciones cuyo contenido solo
+- * puede venir de datos que aún no existen se degradan a `text`.
++ * Las capas anteriores ya lo filtran (`normalizeBrief`, `guardCopy`,
++ * `briefValueOk`), pero confiar solo en ellas fue justo el fallo: un
++ * `aboutBody` con "Horario pendiente de confirmar." atravesaba la guardia porque
++ * no era el valor exacto. Aquí, pase lo que pase antes, la sección que lo
++ * contuviera se rehace entera con el copy genérico, y si tampoco así queda
++ * limpia, se omite. No se publica nunca.
+  */
+-function draftSection(type: string, id: string, brief: QuickBrief, copy?: SiteCopy, photos?: SitePhotos): Section | undefined {
+-  if (copy !== undefined) return copySection(type, id, brief, copy, photos ?? { gallery: [] });
+-  switch (type) {
+-    case "hero":
+-      return {
+-        id,
+-        type: "hero",
+-        props: {
+-          headline: heroHeadline(brief),
+-          ...(brief.service !== PENDING_MARKER ? { subline: cut(brief.service, 240) } : {}),
+-          cta: { label: "Contactar", href: CONTACT_HREF },
+-        },
+-      };
+-    case "text":
+-      return { id, type: "text", props: { heading: brief.businessType, body: PENDING_MARKER } };
+-    case "pricing":
+-      // Nunca se heredan los precios del preset: no son del dueño.
+-      return {
+-        id,
+-        type: "pricing",
+-        props: { plans: [{ name: PENDING_MARKER, price: PENDING_PRICE, features: [] }] },
+-      };
+-    case "contact":
+-      return { id, type: "contact", props: contactProps(brief) };
+-    case "cta":
+-      return { id, type: "cta", props: { headline: PENDING_MARKER, cta: { label: "Contactar", href: CONTACT_HREF } } };
+-    case "features":
+-    case "testimonial":
+-    case "faq":
+-      // Ventajas, testimonios y preguntas: inventarlos es fabricar datos.
+-      return { id, type: "text", props: { heading: PENDING_MARKER, body: PENDING_MARKER } };
+-    case "image":
+-    case "gallery":
+-      return undefined; // sin assets propios no hay imagen que publicar
+-    default:
+-      return { id, type: "text", props: { body: PENDING_MARKER } };
+-  }
++function copySection(type: string, id: string, brief: QuickBrief, copy: SiteCopy, photos: SitePhotos): Section | undefined {
++  const direct = buildSection(type, id, brief, copy, photos);
++  if (direct === undefined || !hasMarker(direct)) return direct;
++  const fallback = buildSection(type, id, brief, genericCopy(brief), photos);
++  if (fallback === undefined || hasMarker(fallback)) return undefined;
++  return fallback;
++}
++
++/** ¿Algún texto de esta sección contiene el marcador? */
++function hasMarker(section: Section): boolean {
++  return containsMarker(JSON.stringify(section.props));
+ }
+ 
+-/** Contacto: solo se rellena con lo que el dueño escribió, tal cual. */
++/** Texto publicable: si contiene el marcador, se cae al respaldo neutro. */
++function safeText(value: string, fallback: string): string {
++  return containsMarker(value) ? fallback : value;
++}
++
++/**
++ * Contacto: solo se rellena con lo que el dueño escribió, tal cual.
++ *
++ * La validación vive en `ownerContact` (plan.ts) porque el plan necesita el
++ * mismo juicio para decidir el `origin` (T-002.8). Una sola definición: si aquí
++ * y allí discreparan, el panel diría «contacto del dueño» sobre una sección que
++ * sale sin datos.
++ */
+ function contactProps(brief: QuickBrief): Record<string, unknown> {
+-  const raw = brief.contact;
+   const props: Record<string, unknown> = { cta: { label: "Escribir", href: CONTACT_HREF } };
+-  if (raw !== PENDING_MARKER && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(raw)) props["email"] = raw;
+-  else if (raw !== PENDING_MARKER && /^[+\d][\d\s().-]{5,}$/.test(raw)) props["phone"] = cut(raw, 30);
++  const contact = ownerContact(brief);
++  if (contact === undefined) return props;
++  if ("email" in contact) props["email"] = contact.email;
++  else props["phone"] = contact.phone;
+   return props;
+ }
+ 
+ /**
+- * Nombre del sitio: el del dueño, el que dedujo el copy o el marcador.
++ * Nombre del sitio: el del dueño, el que dedujo el copy o el titular.
+  *
+  * El orden importa: lo que escribió el dueño manda sobre lo que redactó el
+- * modelo, que a su vez manda sobre el marcador. Nunca al revés.
++ * modelo, y eso sobre el titular derivado del brief. Nunca al revés. El último
++ * escalón ya no es el marcador: `meta.name` es el título de la pestaña y del
++ * SEO, y "pendiente de confirmar" ahí es justo lo que T-002 quita.
++ */
++function docName(brief: QuickBrief, copy: SiteCopy): string {
++  // El nombre que escribió el dueño se conserva tal cual, aunque lleve un
++  // reclamo: es un dato identificativo, no una afirmación nuestra (decisión del
++  // lead en T-002.5, documentada en un ADR).
++  if (known(brief.name)) return cut(siteName(brief), 80);
++  // El nombre que dedujo el modelo pasa por la misma guardia (T-002.7, Fix C):
++  // si reclama algo ("Café nº1 de Valencia") no se convierte en el nombre
++  // público del sitio. Sin este filtro, el dueño sin nombre veía publicado el
++  // reclamo que la guardia acababa de podar del copy.
++  const deduced = copy.businessName?.trim();
++  if (deduced !== undefined && deduced !== "" && briefValueOk(deduced, brief)) return cut(deduced, 80);
++  return cut(heroHeadline(brief), 80);
++}
++
++/**
++ * Frase del brief que se guarda en `design.brief`: solo lo que el dueño dijo.
++ *
++ * Sustituye aqui a `briefSentence` (brief.ts), que interpola el marcador en
++ * cada hueco ("pendiente de confirmar en pendiente de confirmar"). `design.brief`
++ * viaja dentro del documento entregado, asi que tambien cuenta para B1. Si el
++ * dueño no dio ningun campo, se guarda su descripcion libre o nada.
+  */
+-function docName(brief: QuickBrief, copy?: SiteCopy): string {
+-  if (brief.name !== PENDING_MARKER) return cut(siteName(brief), 80);
+-  const deduced = copy?.businessName?.trim();
+-  if (deduced !== undefined && deduced !== "") return cut(deduced, 80);
+-  return PENDING_MARKER;
++function designBrief(brief: QuickBrief): string {
++  const parts: string[] = [];
++  const place = [brief.businessType, brief.city].filter(known);
++  if (place.length > 0) parts.push(place.join(" en "));
++  if (known(brief.name)) parts.push(`nombre: ${brief.name}`);
++  if (known(brief.service)) parts.push(`servicio: ${brief.service}`);
++  if (known(brief.contact)) parts.push(`contacto: ${brief.contact}`);
++  if (parts.length === 0 && brief.description !== undefined) parts.push(brief.description);
++  return parts.join("; ").slice(0, 500);
+ }
+ 
+ /**
+@@ -201,13 +238,24 @@ function docName(brief: QuickBrief, copy?: SiteCopy): string {
+  * esta función, así que el agente nunca muta el sitio con algo inválido.
+  */
+ export function draftSite(brief: QuickBrief, preset: Preset, copy?: SiteCopy, photos?: SitePhotos): SiteDocument {
++  // Un preset sin id es un error del llamador (el catálogo siempre lo trae), no
++  // un dato del dueño que se pueda dejar "pendiente". Se corta aquí, en vez de
++  // escribir el marcador en `design.presetId`.
++  if (preset.id.trim() === "") throw new Error("draftSite: preset sin id");
++  // Sin copy del modelo, el copy genérico. Con copy, `completeCopy` repone por
++  // sección lo que la guardia dejó por debajo del mínimo (T-002.3): nunca se
++  // mezcla un texto del modelo con uno de plantilla dentro del mismo bloque.
++  const { copy: text } = completeCopy(copy, brief);
+   const sections: Section[] = [];
+   const used = new Set<string>();
++  // Respaldo neutro para el nombre: el titular del copy genérico, que ya filtra
++  // cada dato del brief con la guardia y nunca lleva el marcador.
++  const neutralName = cut(genericCopy(brief).heroHeadline, 80);
+   const push = (type: string) => {
+     let id = `s_${type}`;
+     let n = 2;
+     while (used.has(id)) id = `s_${type}_${n++}`;
+-    const section = draftSection(type, id, brief, copy, photos);
++    const section = copySection(type, id, brief, text, photos ?? { gallery: [] });
+     if (!section) return;
+     used.add(id);
+     sections.push(section);
+@@ -227,13 +275,14 @@ export function draftSite(brief: QuickBrief, preset: Preset, copy?: SiteCopy, ph
+   const doc = {
+     schemaVersion: 1 as const,
+     // El nombre lo pone el dueño; si no lo dijo, el que dedujo el copy; si
+-    // tampoco hay, el marcador. Nunca un nombre inventado por el agente.
+-    meta: { name: docName(brief, copy), lang: "es" as const },
++    // tampoco hay, el titular del brief. Nunca un nombre inventado por el agente.
++    // Red final (Fix A): con el marcador dentro, el titular genérico.
++    meta: { name: safeText(docName(brief, text), neutralName), lang: "es" as const },
+     design: {
+-      brief: briefSentence(brief),
+-      idea: preset.summary,
+-      // Un preset inventado no existe: si el id viene vacío se marca como pendiente.
+-      presetId: preset.id || PENDING_MARKER,
++      // Con el marcador dentro no se guarda: es un campo libre y vacío es válido.
++      brief: safeText(designBrief(brief), ""),
++      idea: safeText(preset.summary, ""),
++      presetId: preset.id,
+       dials: {
+         variance: clamp(preset.dials?.variance, 0, 10, 4),
+         motion: clamp(preset.dials?.motion, 0, 10, 4),
+@@ -254,17 +303,22 @@ export function draftSite(brief: QuickBrief, preset: Preset, copy?: SiteCopy, ph
+         id: "p_home",
+         slug: "/",
+         seo: {
+-          title: cut(docName(brief, copy), 70),
+-          description: cut(copy?.seoDescription ?? `${brief.businessType} en ${brief.city}. ${brief.service}`, 160),
++          title: cut(safeText(docName(brief, text), neutralName), 70),
++          description: cut(safeText(text.seoDescription, genericCopy(brief).seoDescription), 160),
+           noindex: false,
+         },
+         sections,
+       },
+     ],
+-    assets: usedPhotos.map((p) => ({ id: p.assetId, alt: p.alt })),
++    // El `alt` llega del proveedor de fotos: con el marcador dentro se omite (es
++    // opcional en 6.1), no se publica.
++    assets: usedPhotos.map((p) => (containsMarker(p.alt) ? { id: p.assetId } : { id: p.assetId, alt: p.alt })),
+   };
+ 
+   const check = validateSiteDocument(doc);
+   if (!check.ok) throw new Error(`borrador invalido: ${check.errors.join("; ")}`);
++  // Última comprobación, sin excepciones: si algo se escapó de todo lo anterior,
++  // el borrador no sale. Fallar aquí es preferible a entregar el marcador (B1).
++  if (containsMarker(JSON.stringify(check.doc))) throw new Error("borrador invalido: contiene el marcador pendiente");
+   return check.doc;
+ }
+diff --git a/agents/design/src/generic-copy.ts b/agents/design/src/generic-copy.ts
+new file mode 100644
+index 0000000..cd21580
+--- /dev/null
++++ b/agents/design/src/generic-copy.ts
+@@ -0,0 +1,213 @@
++import { PENDING_MARKER, type QuickBrief } from "./brief.js";
++import { COPY_LIMITS, briefValueOk, type SiteCopy } from "./copy.js";
++
++// Copy determinista de respaldo (T-002.2).
++//
++// Cuando no hay copy del modelo, el sitio no puede quedarse con el marcador
++// `pendiente de confirmar` ni con secciones vacias. Esta funcion arma un copy
++// completo con lo que el brief SI sabe y con textos genericos de negocio local:
++// nada de cifras, anos, premios, certificaciones, precios ni testimonios, asi
++// que la guardia no tiene nada que podar y el esquema lo acepta tal cual.
++//
++// El brief manda en lo que dice; lo que no dice NO se rellena con una suposicion.
++// Si el dueño no dio nombre, `businessName` se omite en vez de inventarlo, y el
++// resto de huecos caen a frases que no afirman ningun hecho del negocio.
++//
++// Los textos estan fijados por el contrato de T-002.2: se copian literales, sin
++// reescribirlos. El cableado en el flujo (`runFastDesign`, `draftSite`) es T-002.3.
++
++/** Minimo del esquema para `heroHeadline`: por debajo no es un titular. */
++const HERO_HEADLINE_MIN = 8;
++
++/**
++ * Recorta PROSA sin datos al máximo del esquema, en frontera de palabra, sin
++ * partir caracteres multibyte (T-002.9, Fix 2).
++ *
++ * Solo se llama sobre textos fijos que no contienen cifras ni datos del brief.
++ * Nunca se llama sobre textos compuestos con valores del dueño: esos usan
++ * `safeCompose` para elegir la variante más corta en vez de recortar.
++ */
++const cutProse = (value: string, max: number): string => {
++  if (value.length <= max) return value;
++  let out = value.slice(0, max);
++  // No se parte un carácter multibyte (emoji, etc.).
++  if (/[\uD800-\uDBFF]$/.test(out)) out = out.slice(0, -1);
++  // Frontera de palabra: no dejar una sílaba suelta.
++  const space = out.lastIndexOf(" ");
++  if (space > max * 0.5) out = out.slice(0, space);
++  return out.trimEnd();
++};
++
++/**
++ * Elige la primera variante que cabe en `max` sin recortar (T-002.9, Fix 2).
++ *
++ * Un recorte de un texto con datos del brief puede dejar un número parcial
++ * («Café 2019» → «Café 20»), que es exactamente lo que la guardia prohíbe. No
++ * se recorta: si no cabe la variante larga, se prueba la corta; si tampoco, el
++ * neutro. El neutro siempre cabe (sus longitudes se verifican en test).
++ */
++function safeCompose(variants: string[], max: number): string {
++  for (const v of variants) {
++    if (v.length <= max) return v;
++  }
++  // Nunca debe llegar aquí: el llamador debe incluir un neutro que quepa.
++  throw new Error(`safeCompose: ninguna variante cabe en ${max}`);
++}
++
++/**
++ * Recorta TODOS los campos del copy a los límites del esquema (T-002.8/T-002.9).
++ *
++ * Los campos fijos sin datos del brief se recortan con `cutProse` (en frontera
++ * de palabra, sin partir multibyte). Los campos compuestos con datos del dueño
++ * (seoDescription, aboutBody, businessName, heroHeadline) NO pasan por aquí:
++ * se componen con `safeCompose` antes de llegar, eligiendo ya la variante que
++ * cabe. Pasar un valor de esos por `cutProse` podría dejar un número parcial.
++ */
++function fit(copy: SiteCopy): SiteCopy {
++  const t = cutProse;
++  const fitted: SiteCopy = {
++    ...copy,
++    businessType: t(copy.businessType, COPY_LIMITS.businessType),
++    // heroHeadline y heroSubline se componen con safeCompose: llegan ya dentro del límite.
++    heroHeadline: copy.heroHeadline,
++    heroSubline: t(copy.heroSubline, COPY_LIMITS.heroSubline),
++    heroCta: t(copy.heroCta, COPY_LIMITS.heroCta),
++    servicesHeading: t(copy.servicesHeading, COPY_LIMITS.servicesHeading),
++    services: copy.services.map((item) => ({
++      title: t(item.title, COPY_LIMITS.serviceTitle),
++      body: t(item.body, COPY_LIMITS.serviceBody),
++    })),
++    processHeading: t(copy.processHeading, COPY_LIMITS.processHeading),
++    process: copy.process.map((item) => ({
++      title: t(item.title, COPY_LIMITS.processTitle),
++      body: t(item.body, COPY_LIMITS.processBody),
++    })),
++    aboutHeading: t(copy.aboutHeading, COPY_LIMITS.aboutHeading),
++    // aboutBody y seoDescription se componen con safeCompose: llegan ya dentro del límite.
++    aboutBody: copy.aboutBody,
++    faq: copy.faq.map((item) => ({ q: t(item.q, COPY_LIMITS.faqQ), a: t(item.a, COPY_LIMITS.faqA) })),
++    closingHeadline: t(copy.closingHeadline, COPY_LIMITS.closingHeadline),
++    closingCta: t(copy.closingCta, COPY_LIMITS.closingCta),
++    // seoDescription se compone con safeCompose: llega ya dentro del límite.
++    seoDescription: copy.seoDescription,
++  };
++  // businessName: si llegó es porque ya pasó por safeCompose/omisión.
++  if (copy.businessName !== undefined) fitted.businessName = copy.businessName;
++  if (copy.photoQueries !== undefined) {
++    fitted.photoQueries = {
++      hero: t(copy.photoQueries.hero, COPY_LIMITS.photoQuery),
++      gallery: t(copy.photoQueries.gallery, COPY_LIMITS.photoQuery),
++    };
++  }
++  return fitted;
++}
++
++/** ¿El dueño dio este dato, o el brief lo dejo con el marcador? */
++function known(value: string): boolean {
++  return value !== PENDING_MARKER && value.trim() !== "";
++}
++
++/**
++ * ¿El dato del dueño se puede publicar? (T-002.4, Fix D)
++ *
++ * Se pasa ANTES de interpolar cualquier valor del brief en un texto de respaldo.
++ * `briefValueOk` es el mismo predicado de la guardia, así que un tipo de negocio
++ * como "taller certificado" no entra en el «about» ni en el SEO aunque venga del
++ * dueño. Sin esto, el respaldo genérico restauraba justo el reclamo que la
++ * guardia acababa de podar.
++ *
++ * No se sanea recortando palabras: o el dato pasa entero, o se cae al neutro.
++ */
++function publishable(value: string, brief: QuickBrief): boolean {
++  return known(value) && briefValueOk(value, brief);
++}
++
++export function genericCopy(brief: QuickBrief): SiteCopy {
++  const businessType = publishable(brief.businessType, brief) ? brief.businessType : "negocio local";
++  const city = publishable(brief.city, brief) ? brief.city : "";
++  // El lugar solo se compone con datos que ya pasaron la guardia.
++  const place = city === "" ? businessType : `${businessType} en ${city}`;
++
++  // heroHeadline: variantes más cortas antes que recortar (T-002.9, Fix 2).
++  // Si el candidato no cabe en el máximo del esquema (90), probamos sin ciudad,
++  // luego sin tipo, y por último la frase fija, que siempre cabe.
++  const candidatoConNombre = publishable(brief.name, brief) ? brief.name : null;
++  const heroVariants = [
++    candidatoConNombre ?? place,          // nombre del dueño, o tipo con ciudad
++    candidatoConNombre ? place : businessType, // tipo con ciudad, o solo tipo
++    businessType,                          // solo el tipo
++    "Tu negocio, más cerca",               // frase fija, siempre cabe
++  ];
++  const rawHeadline = heroVariants.find((v) => v.length >= HERO_HEADLINE_MIN && v.length <= COPY_LIMITS.heroHeadline)
++    ?? "Tu negocio, más cerca";
++
++  // seoDescription: variantes sin recorte (T-002.9, Fix 2).
++  // La composición con tipo y ciudad puede superar el límite (155) con datos
++  // largos del brief; en ese caso caemos a variantes más cortas, nunca cortamos.
++  const SEO_SUFFIX = ". Escríbenos y te contamos cómo podemos ayudarte.";
++  const seoDescription = safeCompose(
++    [
++      `${place}${SEO_SUFFIX}`,
++      `${businessType}${SEO_SUFFIX}`,
++      `Escríbenos y te contamos cómo podemos ayudarte.`,
++    ],
++    COPY_LIMITS.seoDescription,
++  );
++
++  // aboutBody: variantes sin recorte (T-002.9, Fix 2).
++  const ABOUT_SUFFIX = ". Trabajamos de cerca con quien nos escribe: lo importante es entender bien lo que necesitas antes de empezar. Si quieres saber si podemos ayudarte, escríbenos y te lo contamos.";
++  const aboutBody = safeCompose(
++    [
++      `${place}${ABOUT_SUFFIX}`,
++      `${businessType}${ABOUT_SUFFIX}`,
++      `Trabajamos de cerca con quien nos escribe. Si quieres saber si podemos ayudarte, escríbenos y te lo contamos.`,
++    ],
++    COPY_LIMITS.aboutBody,
++  );
++
++  const copy: SiteCopy = {
++    businessType,
++    heroHeadline: rawHeadline,
++    heroSubline: publishable(brief.service, brief) ? brief.service : "Atención cercana y trabajo cuidado, sin complicaciones.",
++    heroCta: "Contactar",
++    servicesHeading: "Qué hacemos",
++    services: [
++      {
++        title: "Atención directa",
++        body: "Escribes y te contesta una persona, sin formularios largos ni intermediarios.",
++      },
++      {
++        title: "Trabajo a medida",
++        body: "Cada encargo se ajusta a lo que necesitas y a cómo lo necesitas.",
++      },
++      {
++        title: "Seguimiento",
++        body: "Te contamos cómo va lo que pediste y resolvemos las dudas que vayan saliendo.",
++      },
++    ],
++    processHeading: "Cómo trabajamos",
++    process: [
++      { title: "Nos escribes", body: "Cuéntanos qué necesitas y para cuándo." },
++      { title: "Lo concretamos", body: "Vemos juntos la mejor forma de hacerlo y te decimos cómo seguimos." },
++      { title: "Lo llevamos a cabo", body: "Nos ponemos con ello y te mantenemos al día." },
++    ],
++    aboutHeading: publishable(brief.businessType, brief) ? brief.businessType : "Quiénes somos",
++    aboutBody,
++    faq: [
++      { q: "¿Cómo puedo contactar?", a: "Escríbenos desde el formulario de esta página y te contestamos." },
++      { q: "¿Trabajáis en mi zona?", a: "Cuéntanos qué necesitas y te decimos si podemos ayudarte." },
++      { q: "¿Cuánto tarda?", a: "Depende de lo que pidas; te damos una idea cuando nos escribes." },
++    ],
++    closingHeadline: "Hablemos de lo que necesitas",
++    closingCta: "Escribir",
++    seoDescription,
++    photoQueries: { hero: "local business storefront", gallery: "small business interior" },
++  };
++  // `businessName` es opcional en el esquema. Si no cabe (máx 60) se omite en
++  // vez de recortarlo: un nombre a medias es peor que ninguno (T-002.9, Fix 2).
++  if (publishable(brief.name, brief) && brief.name.length <= COPY_LIMITS.businessName) {
++    copy.businessName = brief.name;
++  }
++  // Un último paso, uno solo, que recorta los campos de prosa fija.
++  return fit(copy);
++}
+diff --git a/agents/design/src/index.ts b/agents/design/src/index.ts
+index 04ae2c1..3651f30 100644
+--- a/agents/design/src/index.ts
++++ b/agents/design/src/index.ts
+@@ -19,10 +19,14 @@ export { draftSite, heroHeadline, type PhotoRef, type Preset, type SitePhotos }
+ 
+ export { copyPrompt, guardCopy, readCopy, retryLine, siteCopySchema, type SiteCopy } from "./copy.js";
+ 
++export { genericCopy } from "./generic-copy.js";
++
+ export {
++  completeCopy,
+   inventory,
+   planSections,
+   plannedTypes,
++  type CompletedCopy,
+   type Inventory,
+   type Known,
+   type Missing,
+diff --git a/agents/design/src/plan.ts b/agents/design/src/plan.ts
+index 81ebe20..f66a8ac 100644
+--- a/agents/design/src/plan.ts
++++ b/agents/design/src/plan.ts
+@@ -1,9 +1,21 @@
+ import { BRIEF_FIELDS, FIELD_LABEL, PENDING_MARKER, type BriefField, type QuickBrief } from "./brief.js";
+ import type { SiteCopy } from "./copy.js";
+ import type { Preset, SitePhotos } from "./draft.js";
++import { genericCopy } from "./generic-copy.js";
+ 
+ /** Mínimo de fotos de la galería para que exista como sección. */
+ export const GALLERY_MIN = 3;
++/**
++ * Las secciones de contenido que la página necesita sí o sí, en su orden
++ * canónico (T-002.6). El preset decide estilo y orden preferido, no qué
++ * contenido existe: si el copy lo sostiene, la sección va, haya hueco o no.
++ */
++const CANONICAL = ["features", "text", "process", "faq"] as const;
++
++/** Mínimos de una sección publicable (criterio B2). */
++export const MIN_SERVICES = 3;
++export const MIN_PROCESS = 3;
++export const MIN_FAQ = 2;
+ 
+ // Inventario y plan (spec 9.1: brief → inventario → recomendación → plan →
+ // checkpoint → construcción → validación).
+@@ -23,6 +35,79 @@ export interface Inventory {
+   missing: Missing[];
+ }
+ 
++/**
++ * Resultado de completar el copy (T-002.9).
++ *
++ * Separa el copy ya completo de las claves que vinieron de la plantilla y no del
++ * modelo: `substituted` se consulta para asignar `origin` sin comparar textos,
++ * que es lo que producía falsos `copy_generico` cuando el modelo coincidía por
++ * casualidad con la plantilla (p. ej. CTA «Contactar»).
++ */
++export interface CompletedCopy {
++  copy: SiteCopy;
++  /** Claves de SiteCopy que vinieron de la plantilla y no del modelo. */
++  substituted: ReadonlySet<keyof SiteCopy>;
++}
++
++/**
++ * Completa por sección el copy del modelo con el genérico (T-002.3, criterio B2).
++ *
++ * El producto promete una página terminada, no una a medias. Si la guardia podó
++ * tanto que una sección se queda por debajo del mínimo, la sección **entera** se
++ * sustituye por la de `genericCopy`: nunca se mezcla un texto del modelo con uno
++ * de plantilla dentro del mismo bloque. Una sección dicha mitad por el modelo y
++ * mitad por plantilla se nota, y el visitante no sabría qué está leyendo.
++ *
++ * Mínimos: 3 servicios, 3 pasos de proceso, `aboutBody` no vacío y 2 preguntas.
++ * El encabezado va con el cuerpo que lo acompaña: si los servicios (o los pasos)
++ * son los genéricos, su encabezado también lo es. Los mínimos son los mismos que usa
++ * `planSections`, así que plan y documento no pueden discrepar.
++ *
++ * Cuando `copy === undefined` se usa el genérico entero: todas las claves que
++ * forman secciones quedan en `substituted`.
++ *
++ * Es idempotente: aplicarla sobre un copy ya completo no cambia nada.
++ */
++export function completeCopy(copy: SiteCopy | undefined, brief: QuickBrief): CompletedCopy {
++  const generic = genericCopy(brief);
++  const substituted = new Set<keyof SiteCopy>();
++
++  if (copy === undefined) {
++    // Sin copy del modelo: todo viene de la plantilla.
++    for (const k of ["services", "servicesHeading", "aboutBody", "aboutHeading", "process", "processHeading", "faq",
++                      "heroHeadline", "heroSubline", "heroCta", "closingHeadline", "closingCta"] as const) {
++      substituted.add(k);
++    }
++    return { copy: generic, substituted };
++  }
++
++  const out: SiteCopy = { ...copy };
++  if (copy.services.length < MIN_SERVICES) {
++    out.services = generic.services;
++    out.servicesHeading = generic.servicesHeading;
++    substituted.add("services");
++    substituted.add("servicesHeading");
++  }
++  // `aboutBody` vacío es lo que deja la guardia al podar: se repone entero.
++  if (copy.aboutBody.trim() === "") {
++    out.aboutBody = generic.aboutBody;
++    out.aboutHeading = generic.aboutHeading;
++    substituted.add("aboutBody");
++    substituted.add("aboutHeading");
++  }
++  if (copy.process.length < MIN_PROCESS) {
++    out.process = generic.process;
++    out.processHeading = generic.processHeading;
++    substituted.add("process");
++    substituted.add("processHeading");
++  }
++  if (copy.faq.length < MIN_FAQ) {
++    out.faq = generic.faq;
++    substituted.add("faq");
++  }
++  return { copy: out, substituted };
++}
++
+ /** Inventario del brief: qué sabemos y qué no, sin interpretar. */
+ export function inventory(brief: QuickBrief): Inventory {
+   const known: Known[] = [];
+@@ -38,12 +123,28 @@ export function inventory(brief: QuickBrief): Inventory {
+ /** Por qué una sección se escribe, se degrada o se omite. */
+ export type PlanAction = "write" | "degrade" | "omit";
+ 
++/**
++ * De dónde sale el TEXTO de una sección (T-002.8). Solo depende del contenido,
++ * nunca del preset: el mismo texto da el mismo origen con cualquier preset.
++ */
++export type SectionOrigin = "copy_del_dueno" | "copy_generico" | "contacto_del_dueno" | "contacto_generico";
++
+ export interface PlannedSection {
+   type: string;
+   /** Tipo real que se escribirá: `degrade` lo cambia a `text`. */
+   as: string;
+   action: PlanAction;
++  /**
++   * POR QUÉ la sección está (o no) en la página: `preset`, `completitud_*`,
++   * `cierre_obligatorio`, `h1_obligatorio`, `fotos_de_la_busqueda` o el motivo
++   * de una omisión. No dice de dónde sale el texto: eso es `origin`.
++   */
+   reason: string;
++  /**
++   * DE DÓNDE sale su texto. Solo en las secciones que se escriben y llevan texto
++   * del copy o del contacto; la galería (fotos) y las omitidas no lo tienen.
++   */
++  origin?: SectionOrigin;
+ }
+ 
+ export interface Plan {
+@@ -54,119 +155,186 @@ export interface Plan {
+ /**
+  * Decide qué hacer con cada sección del preset.
+  *
+- * Se degradan (`text`) las que solo pueden llenarse con datos que aún no
+- * existen: ventajas, testimonios y preguntas. Se omiten las que necesitan un
+- * asset propio. Escribir cualquiera de ellas sería inventar, que es justo lo que
+- * 9.1 prohíbe.
++ * Siempre hay un copy: el del modelo o, si no llegó, `genericCopy(brief)`, igual
++ * que hace `draftSite`. Así plan y documento no pueden discrepar. El motivo dice
++ * de dónde salió el texto (`copy_del_dueno` o `copy_generico`) para que el panel
++ * no presente un texto genérico como si fuera del dueño.
++ *
++ * Se omiten las secciones que solo existen si se inventan (testimonio y precio)
++ * y las que necesitan un asset propio. Escribir cualquiera de ellas sería
++ * inventar, que es justo lo que 9.1 prohíbe.
+  */
+ export function planSections(brief: QuickBrief, preset: Preset, copy?: SiteCopy, photos?: SitePhotos): Plan {
+   const sections: PlannedSection[] = [];
+   const galleryPhotos = photos?.gallery.length ?? 0;
++  // El mismo copy que escribira el borrador: sin copy, el generico; con copy,
++  // completado por seccion. Asi el plan no puede prometer algo distinto.
++  const { copy: text, substituted } = completeCopy(copy, brief);
++  // Una sección escrita: su `reason` (por qué está) y su `origin` (de dónde
++  // sale el texto). El origen se consulta al conjunto `substituted`, no por
++  // comparación de textos: así un CTA genérico que el modelo repitió por
++  // casualidad no oculta que ese campo vino de la plantilla (T-002.9).
++  const write = (type: string, as: string, reason: string): PlannedSection => {
++    const origin = originFromSet(as, substituted, brief);
++    return origin === undefined ? { type, as, action: "write", reason } : { type, as, action: "write", reason, origin };
++  };
++  const omit = (type: string, reason: string): PlannedSection => ({ type, as: type, action: "omit", reason });
++
+   for (const s of preset.sections) {
+-  if (copy !== undefined) {
+-    // Con copy el plan cambia: lo que el modelo puede escribir con datos del
+-    // dueno se escribe; lo que solo existe si se inventa (testimonio, precio) se
+-    // omite. El plan tiene que decir lo mismo que el documento, o el dueno veria
+-    // un plan que no es el que se aplico.
+     switch (s.type) {
+       case "image":
+-        sections.push({ type: s.type, as: s.type, action: "omit", reason: "sin_assets_del_dueno" });
++        sections.push(omit(s.type, "sin_assets_del_dueno"));
+         break;
+       case "gallery":
+-        sections.push(
+-          galleryPhotos >= GALLERY_MIN
+-            ? { type: s.type, as: "gallery", action: "write", reason: "fotos_de_la_busqueda" }
+-            : { type: s.type, as: s.type, action: "omit", reason: "sin_fotos_suficientes" },
+-        );
++        sections.push(galleryPhotos >= GALLERY_MIN ? write(s.type, "gallery", "fotos_de_la_busqueda") : omit(s.type, "sin_fotos_suficientes"));
+         break;
+       case "features":
+         // Sin servicios validos no hay ventajas que escribir: el borrador omite
+-        // la seccion y el plan lo dice igual, o el dueno veria un plan que no es
+-        // el que se aplico.
+-        sections.push(
+-          copy.services.length > 0
+-            ? { type: s.type, as: "features", action: "write", reason: "copy_del_dueno" }
+-            : { type: s.type, as: s.type, action: "omit", reason: "sin_servicios_del_dueno" },
+-        );
+-        // El proceso va siempre detras de las ventajas, como bloque propio, y se
+-        // omite con la misma regla que el borrador: sin pasos no hay seccion.
+-        sections.push(
+-          copy.process.length > 0
+-            ? { type: "process", as: "process", action: "write", reason: "copy_del_dueno" }
+-            : { type: "process", as: "process", action: "omit", reason: "sin_pasos_del_dueno" },
+-        );
++        // la seccion y el plan lo dice igual.
++        sections.push(text.services.length >= MIN_SERVICES ? write(s.type, "features", "preset") : omit(s.type, "sin_servicios_del_dueno"));
++        // El proceso va siempre detras de las ventajas, como bloque propio.
++        sections.push(text.process.length >= MIN_PROCESS ? write("process", "process", "preset") : omit("process", "sin_pasos_del_dueno"));
+         break;
+       case "testimonial":
+-        sections.push({ type: s.type, as: s.type, action: "omit", reason: "testimonio_requiere_cliente_real" });
++        sections.push(omit(s.type, "testimonio_requiere_cliente_real"));
+         break;
+       case "pricing":
+-        sections.push({ type: s.type, as: s.type, action: "omit", reason: "precio_requiere_dato_del_dueno" });
++        sections.push(omit(s.type, "precio_requiere_dato_del_dueno"));
+         break;
+       case "faq":
+-        sections.push(
+-          copy.faq.length >= 2
+-            ? { type: s.type, as: "faq", action: "write", reason: "copy_del_dueno" }
+-            : { type: s.type, as: s.type, action: "omit", reason: "sin_preguntas_del_dueno" },
+-        );
++        sections.push(text.faq.length >= MIN_FAQ ? write(s.type, "faq", "preset") : omit(s.type, "sin_preguntas_del_dueno"));
+         break;
+       case "hero":
+-        sections.push({ type: s.type, as: "hero", action: "write", reason: "copy_del_dueno" });
++      case "contact":
++      case "cta":
++        sections.push(write(s.type, s.type, "preset"));
+         break;
+       default:
+         // El resto se escribe como `text` con el "sobre el negocio": sin
+         // aboutBody no hay texto y el borrador omite la seccion (draft.ts).
+-        // `contact` y `cta` no dependen de aboutBody: llevan sus propios props.
+-        sections.push(
+-          s.type !== "contact" && s.type !== "cta" && copy.aboutBody === ""
+-            ? { type: s.type, as: s.type, action: "omit", reason: "sin_about_del_dueno" }
+-            : { type: s.type, as: s.type, action: "write", reason: "copy_del_dueno" },
+-        );
+-    }
+-    continue;
+-  }
+-    switch (s.type) {
+-      case "image":
+-      case "gallery":
+-        sections.push({ type: s.type, as: s.type, action: "omit", reason: "sin_assets_del_dueno" });
+-        break;
+-      case "features":
+-        sections.push({ type: s.type, as: "text", action: "degrade", reason: "ventajas_requieren_datos_del_dueno" });
+-        break;
+-      case "testimonial":
+-        sections.push({ type: s.type, as: "text", action: "degrade", reason: "testimonio_requiere_cliente_real" });
+-        break;
+-      case "faq":
+-        sections.push({ type: s.type, as: "text", action: "degrade", reason: "preguntas_requieren_datos_del_dueno" });
+-        break;
+-      case "pricing":
+-        sections.push({ type: s.type, as: "pricing", action: "write", reason: "precio_queda_pendiente" });
+-        break;
+-      case "hero":
+-        sections.push({
+-          type: s.type,
+-          as: "hero",
+-          action: "write",
+-          reason: brief.name === PENDING_MARKER ? "titular_pendiente" : "titular_del_negocio",
+-        });
+-        break;
+-      default:
+-        sections.push({ type: s.type, as: s.type, action: "write", reason: "contenido_del_brief" });
++        sections.push(text.aboutBody === "" ? omit(s.type, "sin_about_del_dueno") : write(s.type, s.type, "preset"));
+     }
+   }
+   // Un preset sin galería no impide las fotos: la galería va tras los servicios y el proceso.
+   const hasGallery = sections.some((s) => s.as === "gallery" && s.action === "write");
+-  if (copy !== undefined && galleryPhotos >= GALLERY_MIN && !hasGallery) {
++  if (galleryPhotos >= GALLERY_MIN && !hasGallery) {
+     let at = 0;
+     sections.forEach((s, i) => {
+       if (s.as === "features" || s.as === "process") at = i + 1;
+     });
+-    sections.splice(at, 0, { type: "gallery", as: "gallery", action: "write", reason: "fotos_de_la_busqueda" });
++    sections.splice(at, 0, write("gallery", "gallery", "fotos_de_la_busqueda"));
+   }
+-  // Sin hero no hay h1 y 6.5 marca la jerarquía: se antepone uno.
+-  if (!sections.some((s) => s.type === "hero" && s.action === "write")) {
+-    sections.unshift({ type: "hero", as: "hero", action: "write", reason: "h1_obligatorio" });
++  return { presetId: preset.id, sections: closePlan(sections, text, write) };
++}
++
++/**
++ * ¿El copy sostiene esta sección? Sin esto no se añade nada (T-002.6).
++ *
++ * Se pregunta al copy YA completado (`completeCopy`), que es el mismo que verá
++ * el borrador: si dice que hay 3 servicios, hay sección de servicios.
++ */
++function supports(type: string, text: SiteCopy): boolean {
++  switch (type) {
++    case "features":
++      return text.services.length >= MIN_SERVICES;
++    case "text":
++      return text.aboutBody.trim() !== "";
++    case "process":
++      return text.process.length >= MIN_PROCESS;
++    case "faq":
++      return text.faq.length >= MIN_FAQ;
++    default:
++      return false;
++  }
++}
++
++/**
++ * ¿Qué contacto del dueño se puede publicar? Correo o teléfono, tal cual.
++ *
++ * Una sola definición para el plan (que decide el `origin`) y el borrador (que
++ * escribe la sección): si discreparan, el panel diría «contacto del dueño» sobre
++ * una sección que sale sin datos.
++ */
++export function ownerContact(brief: QuickBrief): { email: string } | { phone: string } | undefined {
++  const raw = brief.contact;
++  if (raw === PENDING_MARKER || raw.trim() === "") return undefined;
++  if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(raw)) return { email: raw };
++  if (/^[+\d][\d\s().-]{5,}$/.test(raw)) return { phone: raw.length <= 30 ? raw : raw.slice(0, 30).trimEnd() };
++  return undefined;
++}
++
++/**
++ * De dónde sale el texto de una sección (T-002.9).
++ *
++ * Se consulta `substituted`, el conjunto que `completeCopy` construyó al saber
++ * exactamente qué claves sustituyó. No se compara texto: comparar producía falsos
++ * `copy_generico` cuando el modelo coincidía por casualidad con la plantilla
++ * (CTA «Contactar», titular corto igual al genérico).
++ *
++ * Hero: solo `copy_generico` si titular, subtítulo Y CTA vinieron todos de la
++ * plantilla; si uno solo vino del modelo → `copy_del_dueno`.
++ */
++function originFromSet(type: string, substituted: ReadonlySet<keyof SiteCopy>, brief: QuickBrief): SectionOrigin | undefined {
++  const sub = (k: keyof SiteCopy) => substituted.has(k);
++  switch (type) {
++    case "features":
++      return sub("services") ? "copy_generico" : "copy_del_dueno";
++    case "text":
++      return sub("aboutBody") ? "copy_generico" : "copy_del_dueno";
++    case "process":
++      return sub("process") ? "copy_generico" : "copy_del_dueno";
++    case "faq":
++      return sub("faq") ? "copy_generico" : "copy_del_dueno";
++    case "hero":
++      // Solo genérico si LOS TRES campos vienen de la plantilla.
++      return sub("heroHeadline") && sub("heroSubline") && sub("heroCta") ? "copy_generico" : "copy_del_dueno";
++    case "cta":
++      return sub("closingHeadline") || sub("closingCta") ? "copy_generico" : "copy_del_dueno";
++    case "contact":
++      return ownerContact(brief) === undefined ? "contacto_generico" : "contacto_del_dueno";
++    default:
++      // La galería lleva fotos, no texto: no tiene origen de texto.
++      return undefined;
++  }
++}
++
++/**
++ * Cierra el plan: hero primero, contenido obligatorio, contacto y cierre al final.
++ *
++ * Es el arreglo de T-002.6. Antes se recorría el preset y solo se garantizaba
++ * `hero`, así que un preset sin `text` entregaba la página sin presentación y
++ * uno sin `features`, sin servicios ni pasos. El catálogo describe estilo; la
++ * completitud no puede depender de que cada fila esté bien escrita.
++ *
++ * Reglas:
++ *   - `hero` siempre primero.
++ *   - Las canónicas que falten se añaden en orden features → text → process → faq
++ *     (los pasos, detrás de los servicios), solo si el copy las sostiene.
++ *   - `contact` y `cta` siempre al final, exista o no el preset.
++ *   - Lo que el preset sí incluye conserva su posición relativa.
++ *
++ * Lo añadido aquí cambia el `reason` (por qué está), nunca el `origin` (de dónde
++ * sale el texto), que `write` calcula igual que para las secciones del preset.
++ */
++function closePlan(
++  sections: PlannedSection[],
++  text: SiteCopy,
++  write: (type: string, as: string, reason: string) => PlannedSection,
++): PlannedSection[] {
++  const hero = sections.find((s) => s.type === "hero" && s.action === "write") ?? write("hero", "hero", "h1_obligatorio");
++  const content = sections.filter((s) => s !== hero && s.type !== "hero" && s.type !== "contact" && s.type !== "cta");
++  const closing = sections.filter((s) => s.type === "contact" || s.type === "cta");
++  const has = (type: string) => content.some((s) => s.type === type && s.action === "write");
++  for (const type of CANONICAL) {
++    if (has(type) || !supports(type, text)) continue;
++    // El `reason` de completitud repite el origen, como pidió el contrato de
++    // T-002.6: el panel lee de un vistazo que se añadió y de dónde sale.
++    const added = write(type, type, "completitud");
++    content.push({ ...added, reason: `completitud_${added.origin === "copy_del_dueno" ? "copy_del_dueno" : "copy_generico"}` });
+   }
+-  return { presetId: preset.id, sections };
++  const contact = closing.find((s) => s.type === "contact") ?? write("contact", "contact", "cierre_obligatorio");
++  const cta = closing.find((s) => s.type === "cta") ?? write("cta", "cta", "cierre_obligatorio");
++  return [hero, ...content, contact, cta];
+ }
+ 
+ /** Los tipos que el borrador debe escribir, en orden y ya resueltos. */
+diff --git a/agents/design/test/acceptance.test.mjs b/agents/design/test/acceptance.test.mjs
+index be973bb..afe6317 100644
+--- a/agents/design/test/acceptance.test.mjs
++++ b/agents/design/test/acceptance.test.mjs
+@@ -9,6 +9,7 @@ import {
+   createStore,
+   designAgent,
+   draftSite,
++  guardCopy,
+   makeDesignTools,
+   normalizeBrief,
+   runFastDesign,
+@@ -31,8 +32,36 @@ const PRESET = {
+   radius: "rounded",
+   sections: [{ type: "hero" }, { type: "text" }, { type: "testimonial" }, { type: "cta" }],
+ };
+-// Preset con precio: tras un hero, un `pricing` produce SLOP_HEADING_SKIP (error 6.5).
+-const PRICED = { ...PRESET, sections: [{ type: "hero" }, { type: "pricing" }] };
++// Disparador del error 6.5 SLOP_HEADING_SKIP (h1 -> h3).
++//
++// Cambiado en T-002.3: antes lo provocaba un `pricing` tras el hero (sus planes
++// son h3 sin h2). `pricing` ya no se escribe nunca, asi que ese camino murio.
++// El salto sigue siendo alcanzable por el flujo real: un copy del modelo con
++// `servicesHeading` vacio (el esquema lo admite) deja las tarjetas en h3 justo
++// tras el h1. Lo que la prueba protege no cambia: un error de 6.5 avisa y no
++// bloquea ni revierte.
++const SKIP_PRESET = { ...PRESET, sections: [{ type: "hero" }, { type: "features" }] };
++const SKIP_COPY = JSON.stringify({
++  businessType: "cafetería de especialidad",
++  heroHeadline: "Café Aurora en Valencia",
++  heroSubline: "Tueste propio y desayunos.",
++  heroCta: "Escribir",
++  servicesHeading: "",
++  services: [
++    { title: "Tueste propio", body: "Tostamos el grano en casa." },
++    { title: "Desayunos", body: "Preparamos desayunos por la mañana." },
++    { title: "Para llevar", body: "Te lo servimos para que te lo lleves." },
++  ],
++  processHeading: "Cómo trabajamos",
++  process: [{ title: "Nos escribes", body: "Cuéntanos qué necesitas." }],
++  aboutHeading: "Quiénes somos",
++  aboutBody: "Cafetería de especialidad en Valencia.",
++  faq: [],
++  closingHeadline: "Hablemos",
++  closingCta: "Escribir",
++  seoDescription: "Cafetería de especialidad en Valencia.",
++});
++const SKIP_REPLY = { text: SKIP_COPY, toolCalls: [], finishReason: "stop" };
+ 
+ const BRIEFS = {
+   cafeteria: { businessType: "cafetería de especialidad", name: "Café Aurora", city: "Valencia", service: "tueste propio", contact: "hola@cafeaurora.test" },
+@@ -95,23 +124,31 @@ test("b) si el modelo pide publish_site, el documento no cambia y no hay llamada
+   assert.deepEqual(store.doc, before);
+ });
+ 
+-// c) Lo que falta sale como marcador y en pending; sin cifras ni nombres inventados.
+-test("c) campos faltantes salen como 'pendiente de confirmar' y en pending", () => {
++// c) Lo que falta se pide por `pending`, no se escribe en la página.
++//
++// Cambiado en T-002.3: la prueba pedía el marcador en el documento, que es justo
++// lo que B1 prohíbe. Lo que sigue igual de firme es que el brief sabe qué falta
++// y lo dice: el panel se lo pide al dueño sin ensuciar la página entregada.
++test("c) campos faltantes quedan en pending y el documento no lleva el marcador", () => {
+   const brief = normalizeBrief(BRIEFS.vacio);
+   assert.deepEqual(brief.pending, ["businessType", "city", "service", "contact"]);
+   const doc = draftSite(brief, PRESET);
+-  assert.match(JSON.stringify(doc), new RegExp(PENDING_MARKER));
++  assert.doesNotMatch(JSON.stringify(doc), new RegExp(PENDING_MARKER), "B1: la página entregada no lleva el marcador");
++  // El nombre del dueño sigue mandando sobre cualquier texto de respaldo.
+   assert.equal(doc.meta.name, "Café Aurora");
+ });
+ 
+ test("c) testimonial y pricing no inventan cifras ni nombres", () => {
+   const doc = draftSite(normalizeBrief(BRIEFS.vacio), { ...PRESET, sections: [{ type: "testimonial" }, { type: "pricing" }] });
+   const json = JSON.stringify(doc);
+-  assert.equal(doc.pages[0].sections.some((s) => s.type === "testimonial"), false, "testimonio degradado a texto");
++  const tipos = doc.pages[0].sections.map((s) => s.type);
++  // Cambiado en T-002.3: antes se comprobaba que el precio quedaba con el
++  // marcador. Ahora la seccion se omite entera, que es la regla del encargo: un
++  // precio inventado es peor que no tener seccion, y el marcador tampoco vale.
++  assert.equal(tipos.includes("testimonial"), false, "sin testimonio: no hay cliente real");
++  assert.equal(tipos.includes("pricing"), false, "sin precios: no hay dato del dueño");
+   assert.doesNotMatch(json, /\d+\s?€|€\s?\d+|\$\s?\d+/, "ninguna cifra de precio");
+-  const plans = doc.pages[0].sections.find((s) => s.type === "pricing")?.props.plans ?? [];
+-  assert.equal(plans[0]?.name, PENDING_MARKER);
+-  assert.deepEqual(plans[0]?.features, []);
++  assert.doesNotMatch(json, new RegExp(PENDING_MARKER), "y tampoco el marcador");
+ });
+ 
+ // d) Checkpoint previo y revert restaura el documento exacto.
+@@ -170,15 +207,16 @@ test("f) error 6.5 con ownerRequested=true aparece en warnings sin revertir", as
+   const tracker = new BudgetTracker(BUDGET);
+   const out = await runFastDesign({
+     brief: BRIEFS.cafeteria,
+-    presets: [PRICED],
+-    client: new LlmClient(scripted([STOP]), tracker),
++    presets: [SKIP_PRESET],
++    client: new LlmClient(scripted([SKIP_REPLY, STOP]), tracker),
+     tracker,
+     ctx: CTX,
+     ownerRequested: true,
+   });
+   assert.ok(out.findings6_5.some((f) => f.severity === "error" && f.code === "SLOP_HEADING_SKIP"), "el 6.5 de error existe");
+   assert.ok(out.warnings.some((w) => /6\.5/.test(w) && /SLOP_HEADING_SKIP/.test(w)), `warnings: ${out.warnings}`);
+-  assert.ok(out.doc.pages[0].sections.some((s) => s.type === "pricing"), "el documento no se revierte");
++  // La seccion que provoca el salto sigue en el documento: no se revierte.
++  assert.ok(out.doc.pages[0].sections.some((s) => s.type === "features"), "el documento no se revierte");
+   assert.equal(validateSiteDocument(out.doc).ok, true);
+ });
+ 
+@@ -187,7 +225,7 @@ test("f) error 6.5 con ownerRequested=true aparece en warnings sin revertir", as
+ // con aviso; lanzar dejaria al dueno sin borrador por un defecto de estilo.
+ test("f) sin ownerRequested, el error 6.5 tampoco bloquea: entrega con aviso", async () => {
+   const tracker = new BudgetTracker(BUDGET);
+-  const out = await runFastDesign({ brief: BRIEFS.cafeteria, presets: [PRICED], client: new LlmClient(scripted([STOP]), tracker), tracker, ctx: CTX });
++  const out = await runFastDesign({ brief: BRIEFS.cafeteria, presets: [SKIP_PRESET], client: new LlmClient(scripted([SKIP_REPLY, STOP]), tracker), tracker, ctx: CTX });
+   assert.ok(out.warnings.some((w) => /6\.5/.test(w) && /SLOP_HEADING_SKIP/.test(w)), `warnings: ${out.warnings}`);
+   assert.equal(validateSiteDocument(out.doc).ok, true);
+ });
+@@ -235,3 +273,112 @@ test("g) modo rapido: el modelo se llama como mucho 1 vez en el bucle, aunque pi
+   assert.ok(transport.calls <= 2, `el modelo se llamo ${transport.calls} veces`);
+   assert.equal(validateSiteDocument(out.doc).ok, true);
+ });
++
++// --- T-002.7: la ronda de resumen no puede tocar el sitio -------------------
++
++/**
++ * Transporte que responde distinto por llamada. La primera es el copy (JSON
++ * válido, para no gastar el reintento); la segunda es la ronda de resumen, que
++ * es donde se cuela la llamada a herramienta.
++ */
++function copyThenRound(roundReply) {
++  const tracker = new BudgetTracker(BUDGET);
++  const calls = [];
++  let n = 0;
++  const transport = {
++    provider: "fake",
++    async complete() {
++      calls.push(this.provider);
++      const reply = n === 0 ? { text: COPY_VALIDO } : roundReply;
++      n += 1;
++      return { text: "", toolCalls: [], finishReason: "stop", usage: { tokensIn: 10, tokensOut: 5, costUsd: 0 }, model: "fake", latencyMs: 1, ...reply };
++    },
++  };
++  return { client: new LlmClient(transport, tracker), tracker, calls };
++}
++
++const COPY_VALIDO = JSON.stringify({
++  businessType: "cafetería de especialidad",
++  heroHeadline: "Café Aurora en Valencia",
++  heroSubline: "Tueste propio y desayunos.",
++  heroCta: "Escribir",
++  servicesHeading: "Qué hacemos",
++  services: [
++    { title: "Tueste propio", body: "Tostamos el grano en casa." },
++    { title: "Desayunos", body: "Preparamos desayunos por la mañana." },
++    { title: "Para llevar", body: "Te lo servimos para que te lo lleves." },
++  ],
++  processHeading: "Cómo trabajamos",
++  process: [
++    { title: "Nos escribes", body: "Cuéntanos qué necesitas." },
++    { title: "Lo concretamos", body: "Vemos juntos la mejor forma." },
++    { title: "Lo llevamos a cabo", body: "Nos ponemos con ello." },
++  ],
++  aboutHeading: "Quiénes somos",
++  aboutBody: "Cafetería de especialidad en Valencia.",
++  faq: [
++    { q: "¿Cómo contacto?", a: "Escríbenos desde esta página." },
++    { q: "¿Dónde estáis?", a: "En el centro de Valencia." },
++  ],
++  closingHeadline: "Hablemos",
++  closingCta: "Escribir",
++  seoDescription: "Cafetería de especialidad en Valencia.",
++});
++
++const TEXTO_INVENTADO = "Atendemos a 900 clientes cada semana";
++
++test("T-002.7: una llamada a update_section en la ronda de resumen no llega al documento", async () => {
++  const { client, tracker } = copyThenRound({
++    text: "",
++    finishReason: "tool_calls",
++    toolCalls: [
++      {
++        id: "1",
++        name: "update_section",
++        args: { pageId: "p_home", sectionId: "s_features", props: { heading: "Clientes", items: [{ title: "Clientes", body: TEXTO_INVENTADO }] } },
++      },
++    ],
++  });
++  const out = await runFastDesign({ brief: BRIEFS.cafeteria, presets: [PRESET], client, tracker, ctx: CTX });
++  // El texto inventado no aparece por ninguna parte: la ronda solo tenía herramientas de lectura.
++  assert.doesNotMatch(JSON.stringify(out.doc), /900 clientes/, "el resumen no escribe en el sitio");
++  assert.equal(validateSiteDocument(out.doc).ok, true);
++});
++
++test("T-002.7: una llamada a remove_section en la ronda de resumen no borra nada", async () => {
++  const { client, tracker } = copyThenRound({
++    text: "",
++    finishReason: "tool_calls",
++    toolCalls: [{ id: "1", name: "remove_section", args: { pageId: "p_home", sectionId: "s_features" } }],
++  });
++  const out = await runFastDesign({ brief: BRIEFS.cafeteria, presets: [PRESET], client, tracker, ctx: CTX });
++  // La sección de servicios sigue en el documento entregado.
++  assert.ok(out.doc.pages[0].sections.some((s) => s.id === "s_features"), "no se borra la sección");
++});
++
++test("T-002.7: control — sin llamadas en la ronda, lo entregado es el borrador", async () => {
++  const { client, tracker } = copyThenRound({ text: "Resumen de dos frases.", toolCalls: [], finishReason: "stop" });
++  const out = await runFastDesign({ brief: BRIEFS.cafeteria, presets: [PRESET], client, tracker, ctx: CTX });
++  // El documento entregado es exactamente el que produce el borrador con el mismo copy.
++  const esperado = draftSite(normalizeBrief(BRIEFS.cafeteria), PRESET, guardCopy(JSON.parse(COPY_VALIDO), normalizeBrief(BRIEFS.cafeteria)).copy);
++  assert.deepEqual(out.doc.pages, esperado.pages);
++  assert.equal(out.warnings.some((w) => w.startsWith("resumen_intento_mutar")), false);
++});
++
++test("T-002.7: el nombre del modelo con reclamo no se convierte en el nombre del sitio", async () => {
++  // Dueño SIN nombre: el nombre público saldría del `businessName` del modelo.
++  const copia = { ...JSON.parse(COPY_VALIDO), businessName: "Café nº1 de Valencia" };
++  const tracker = new BudgetTracker(BUDGET);
++  let n = 0;
++  const transport = {
++    provider: "fake",
++    async complete() {
++      const text = n === 0 ? JSON.stringify(copia) : "Resumen.";
++      n += 1;
++      return { text, toolCalls: [], finishReason: "stop", usage: { tokensIn: 10, tokensOut: 5, costUsd: 0 }, model: "fake", latencyMs: 1 };
++    },
++  };
++  const out = await runFastDesign({ brief: { businessType: "cafetería", city: "Valencia", service: "tueste", contact: "hola@cafe.test" }, presets: [PRESET], client: new LlmClient(transport, tracker), tracker, ctx: CTX });
++  assert.doesNotMatch(out.doc.meta.name, /nº1/i);
++  assert.doesNotMatch(out.doc.pages[0].seo.title, /nº1/i);
++});
+diff --git a/agents/design/test/copy.test.mjs b/agents/design/test/copy.test.mjs
+index 513cd92..236a6e9 100644
+--- a/agents/design/test/copy.test.mjs
++++ b/agents/design/test/copy.test.mjs
+@@ -7,8 +7,11 @@ import {
+   PENDING_MARKER,
+   copyPrompt,
+   draftSite,
++  genericCopy,
+   guardCopy,
+   normalizeBrief,
++  planSections,
++  retryLine,
+   runFastDesign,
+   siteCopySchema,
+ } from "../dist/index.js";
+@@ -143,7 +146,7 @@ test("copy: la guardia elimina un servicio con '15 años' y un titular con '100%
+   assert.doesNotMatch(JSON.stringify(out.copy), /15 años|100%/);
+ });
+ 
+-test("copy: dos servicios validos llegan al borrador como dos ventajas y sin marcador", () => {
++test("copy: dos servicios validos no llegan al minimo y la seccion pasa entera a la generica", () => {
+   const brief = normalizeBrief(BRIEF);
+   const copy = guardCopy(
+     validCopy({
+@@ -154,15 +157,19 @@ test("copy: dos servicios validos llegan al borrador como dos ventajas y sin mar
+     }),
+     brief,
+   ).copy;
++  // La guardia no cambia: sigue dejando los dos servicios validos.
+   assert.equal(copy.services.length, 2);
+   const doc = draftSite(brief, PRESET, copy);
+   assert.equal(validateSiteDocument(doc).ok, true);
++  // Cambiado en T-002.3 (completitud por seccion): antes el documento publicaba
++  // 2 tarjetas. Con menos de 3 la seccion se sustituye ENTERA por la generica;
++  // no se mezclan las dos del modelo con una de plantilla.
+   const features = doc.pages[0].sections.find((s) => s.id === "s_features");
+-  assert.equal(features.props.items.length, 2);
++  assert.deepEqual(features.props.items, genericCopy(brief).services);
+   assert.doesNotMatch(JSON.stringify(doc), /pendiente de confirmar/);
+ });
+ 
+-test("copy: el tercer servicio con una cifra inventada se poda y quedan los otros dos", () => {
++test("copy: el tercer servicio con una cifra inventada se poda y la seccion pasa a la generica", () => {
+   const brief = normalizeBrief(BRIEF);
+   const copy = guardCopy(
+     validCopy({
+@@ -174,10 +181,13 @@ test("copy: el tercer servicio con una cifra inventada se poda y quedan los otro
+     }),
+     brief,
+   ).copy;
++  // La guardia no cambia: poda el tercero y quedan los otros dos (A3).
+   assert.equal(copy.services.length, 2);
+   const doc = draftSite(brief, PRESET, copy);
++  // Cambiado en T-002.3: el documento ya no publica 2 tarjetas; la seccion es
++  // la generica completa. Lo inventado sigue sin llegar al sitio.
+   const features = doc.pages[0].sections.find((s) => s.id === "s_features");
+-  assert.equal(features.props.items.length, 2);
++  assert.deepEqual(features.props.items, genericCopy(brief).services);
+   assert.doesNotMatch(JSON.stringify(doc), /pendiente de confirmar|500 clientes/);
+ });
+ 
+@@ -207,13 +217,18 @@ test("copy: los reclamos sin cifra también se caen y el about se queda vacío",
+   assert.doesNotMatch(out.copy.seoDescription, /pendiente de confirmar/);
+ });
+ 
+-test("copy: con aboutBody podado no hay sección about en el documento", () => {
++test("copy: con aboutBody podado la sección about es la genérica entera", () => {
+   const brief = normalizeBrief(BRIEF);
+   const copy = guardCopy(validCopy({ aboutBody: "Somos la empresa líder del sector." }), brief).copy;
++  // La guardia no cambia: el about del modelo se queda vacío.
+   assert.equal(copy.aboutBody, "");
+   const doc = draftSite(brief, PRESET, copy);
+   assert.equal(validateSiteDocument(doc).ok, true);
+-  assert.equal(doc.pages[0].sections.some((s) => s.type === "text"), false);
++  // Cambiado en T-002.3: antes la sección se omitía. Ahora el documento lleva el
++  // about genérico completo, encabezado incluido.
++  const about = doc.pages[0].sections.find((s) => s.type === "text");
++  const generic = genericCopy(brief);
++  assert.deepEqual(about.props, { heading: generic.aboutHeading, body: generic.aboutBody });
+ });
+ 
+ test("draftSite con copy: features con 3+, titular del copy, sin testimonio ni precio", () => {
+@@ -238,25 +253,30 @@ test("draftSite con copy: features con 3+, titular del copy, sin testimonio ni p
+   assert.equal(doc.meta.name, "Café Aurora");
+ });
+ 
+-test("draftSite con copy y brief de solo description: ninguna sección visible lleva el marcador", () => {
++test("draftSite con copy y brief de solo description: el documento entero va sin marcador", () => {
+   // El brief no trae mas que la descripcion: businessType, name, city, service y
+-  // contact quedan con el marcador, y `design.brief` (draft.ts:224) lo guarda
+-  // como frase del brief. Lo visible es `doc.pages`, y ahi no puede estar.
++  // contact quedan pendientes. Cambiado en T-002.3: antes se aceptaba el marcador
++  // en `design.brief`, pero `design.brief` viaja dentro del documento entregado y
++  // B1 lo mira entero, no solo `doc.pages`.
+   const brief = normalizeBrief({ description: "somos una tienda de barrio que abre todos los dias" });
+   const copy = guardCopy(validCopy({ businessName: "Café Aurora" }), brief).copy;
+   const doc = draftSite(brief, PRESET, copy);
+   assert.equal(validateSiteDocument(doc).ok, true);
+-  assert.match(doc.design.brief, /pendiente de confirmar/);
+-  assert.doesNotMatch(JSON.stringify(doc.pages), /pendiente de confirmar/);
++  assert.doesNotMatch(JSON.stringify(doc), /pendiente de confirmar/, "ni en pages ni en design.brief");
++  // Lo que el dueño sí dijo (su descripcion libre) no se pierde.
++  assert.match(doc.design.brief, /tienda de barrio/);
+ });
+ 
+-test("draftSite sin copy: el comportamiento de antes sigue intacto", () => {
++test("draftSite sin copy: usa el copy generico y entrega un sitio completo", () => {
++  // Cambiado en T-002.3: antes esta prueba fijaba que sin copy no había ventajas
++  // y que el marcador aparecía. Eso es justo lo que B1/B2 prohíben.
+   const doc = draftSite(normalizeBrief(BRIEF), PRESET);
+   assert.equal(validateSiteDocument(doc).ok, true);
+-  // Sin copy no hay ventajas: se degradan a texto con el marcador.
+-  assert.equal(doc.pages[0].sections.some((s) => s.type === "features"), false);
+-  assert.equal(doc.pages[0].sections.some((s) => s.type === "testimonial"), false);
+-  assert.match(JSON.stringify(doc), /pendiente de confirmar/);
++  assert.doesNotMatch(JSON.stringify(doc), /pendiente de confirmar/);
++  const tipos = doc.pages[0].sections.map((s) => s.type);
++  assert.ok(tipos.includes("features"), "B2: hay ventajas");
++  assert.ok(tipos.includes("text"), "B2: hay about");
++  assert.equal(tipos.includes("testimonial"), false, "sin testimonio inventado");
+ });
+ 
+ test("runFastDesign: un client que devuelve JSON válido usa el copy", async () => {
+@@ -275,12 +295,16 @@ test("runFastDesign: JSON envuelto en ```json también se acepta", async () => {
+   assert.equal(out.warnings.includes("copy_fallback"), false);
+ });
+ 
+-test("runFastDesign: con JSON roto cae a copy_fallback y sigue con marcadores", async () => {
++test("runFastDesign: con JSON roto cae a copy_fallback y entrega el sitio igual", async () => {
++  // Cambiado en T-002.3: antes el respaldo del copy dejaba marcadores en el
++  // sitio. Ahora cae a `genericCopy`: el aviso queda para el panel y la página
++  // se entrega completa y publicable.
+   const { client, tracker } = fakeClient("{ esto no es json valido");
+   const out = await runFastDesign({ brief: BRIEF, presets: [PRESET], client, tracker, ctx: CTX });
+   assert.ok(out.warnings.some((w) => w.startsWith("copy_fallback")), `warnings: ${out.warnings}`);
+   assert.equal(validateSiteDocument(out.doc).ok, true);
+-  assert.match(JSON.stringify(out.doc), /pendiente de confirmar/);
++  assert.doesNotMatch(JSON.stringify(out.doc), /pendiente de confirmar/);
++  assert.ok(out.doc.pages[0].sections.some((s) => s.type === "features"));
+ });
+ 
+ /** Transporte falso que devuelve una respuesta distinta por llamada (cicla la última). */
+@@ -307,6 +331,31 @@ function sequencedClient(replies) {
+   return { client: new LlmClient(transport, tracker), tracker, transport };
+ }
+ 
++test("copy: el reintento por empty_services dice que se podaron datos, no que no se leyo", () => {
++  // La guardia no tuvo un fallo de lectura: descarto los servicios por inventos.
++  // Decirle "no se pudo leer" hace que el modelo repita la misma cifra.
++  const line = retryLine("empty_services");
++  assert.match(line, /cifras/i);
++  assert.doesNotMatch(line, /no se pudo leer/i);
++  // Sigue pidiendo solo el JSON y mas corto.
++  assert.match(line, /SOLO el objeto JSON/);
++  assert.match(line, /mas corto/i);
++});
++
++test("copy: el reintento por schema conserva el texto de lectura", () => {
++  const line = retryLine("schema:services,faq");
++  assert.match(line, /no se pudo leer/i);
++  // No se nombra la guardia ni los datos podados: ahi no hubo poda.
++  assert.doesNotMatch(line, /empty_services|guardia|descart/i);
++  assert.doesNotMatch(line, /cifras|premios|certificaciones/i);
++});
++
++test("copy: cualquier otro motivo cae en el texto de lectura, sin inventar la causa", () => {
++  const line = retryLine("otra_cosa");
++  assert.match(line, /no se pudo leer/i);
++  assert.doesNotMatch(line, /cifras|descart/i);
++});
++
+ test("runFastDesign: JSON valido envuelto en prosa (sin bloque de codigo) tambien se acepta", async () => {
+   const text = `Aquí tienes los textos que pediste.\n${JSON.stringify(validCopy())}\nEspero que te sirvan.`;
+   const { client, tracker } = fakeClient(text);
+@@ -370,3 +419,768 @@ test("runFastDesign: sin ningun servicio valido el copy no sirve (empty_services
+   );
+   assert.equal(transport.calls, 2, "empty_services es motivo de lectura: se reintenta una vez");
+ });
++
++// --- T-002.3: el marcador fuera del sitio (criterios B1 y B2) ----------------
++
++/**
++ * Diez briefs distintos: desde uno vacio de campos hasta el que los trae todos,
++ * pasando por los que solo dan un dato, con acentos, contactos raros y nombres
++ * con cifras. Todos tienen que salir sin el marcador (B1) y con copy completo
++ * (B2). Se prueban por los dos caminos: sin copy del modelo (genérico) y con un
++ * copy valido del modelo.
++ */
++const BRIEFS_B1 = [
++  { description: "somos una tienda de barrio que abre todos los dias" },
++  { name: "Café Aurora" },
++  { name: "Café 2019", city: "Valencia" },
++  { businessType: "cafetería de especialidad", name: "Café Aurora", city: "Valencia" },
++  { businessType: "peluquería canina", city: "Alcalá de Henares" },
++  { businessType: "clínica dental", name: "Clínica Sonrisa", city: "Sevilla", service: "implantes" },
++  { businessType: "abogado", name: "Despacho Romero", city: "Madrid", service: "derecho laboral", contact: "+34 600 333 444" },
++  { businessType: "taller", name: "Taller Norte", city: "Bilbao", service: "chapa y pintura", contact: "hola@taller.test" },
++  { name: "Bar Pepe", service: "menú del día" },
++  { businessType: "floristería", service: "ramos por encargo", contact: "600 123 456" },
++];
++
++for (const [i, entrada] of BRIEFS_B1.entries()) {
++  test(`B1/B2 (brief ${i + 1}): el documento va sin marcador y con copy completo`, () => {
++    const brief = normalizeBrief(entrada);
++    for (const conCopy of [false, true]) {
++      const copy = conCopy ? guardCopy(validCopy(), brief).copy : undefined;
++      const doc = draftSite(brief, PRESET, copy);
++      assert.equal(validateSiteDocument(doc).ok, true);
++      // B1: ni en las secciones ni en ninguna parte del documento entregado.
++      assert.doesNotMatch(JSON.stringify(doc), /pendiente de confirmar/, `brief ${i + 1}, conCopy=${conCopy}`);
++      // B2: servicios, about y faq suficientes para que la página sea publicable.
++      const secciones = doc.pages[0].sections.filter((s) => s.id !== "s_process");
++      const features = secciones.find((s) => s.type === "features");
++      assert.ok(features, "hay ventajas");
++      assert.ok(features.props.items.length >= 3, `servicios: ${features.props.items.length}`);
++      const about = secciones.find((s) => s.type === "text");
++      assert.ok(about, "hay about");
++      assert.notEqual(about.props.body.trim(), "", "el about no esta vacio");
++      const faq = secciones.find((s) => s.type === "faq");
++      assert.ok(faq, "hay faq");
++      assert.ok(faq.props.items.length >= 2, `faq: ${faq.props.items.length}`);
++    }
++  });
++}
++
++// Cambio 1: la guardia confia en los campos que el dueño relleno.
++test("guardia: el nombre con cifra que escribio el dueño no se poda", () => {
++  // Sin descripcion: antes el corpus era solo `description`, asi que el nombre
++  // del propio dueño se tomaba por inventado y se caia a un titular generico.
++  const brief = normalizeBrief({ name: "Café 2019", city: "Valencia" });
++  const out = guardCopy(validCopy({ heroHeadline: "Café 2019 en Valencia" }), brief);
++  assert.deepEqual(out.dropped, []);
++  assert.equal(out.copy.heroHeadline, "Café 2019 en Valencia");
++  // Y el dato del dueño llega al sitio, no solo al copy.
++  const doc = draftSite(brief, PRESET, out.copy);
++  assert.match(JSON.stringify(doc), /Café 2019/);
++});
++
++test("guardia: el corpus son todos los campos que describen el negocio", () => {
++  const brief = normalizeBrief({ businessType: "taller", city: "Bilbao", service: "revisiones cada 20000 km" });
++  // Cambiado en T-002.5: `contact` sale del corpus numérico. Un teléfono o un
++  // correo no autorizan cifras de plazo, cantidad ni año (hallazgo 1 de
++  // seguridad). Se prueba aparte, más abajo, con su propio caso.
++  for (const campo of ["name", "city", "service", "businessType", "description"]) {
++    const entrada = { businessType: "taller", city: "Bilbao", service: "revisiones", contact: "hola@taller.test", name: "Taller Norte" };
++    const conDato = normalizeBrief({ ...entrada, [campo]: "llevamos 3 anos" });
++    const out = guardCopy(validCopy({ heroSubline: "Llevamos 3 anos en el barrio." }), conDato);
++    assert.deepEqual(out.dropped, [], `campo ${campo}: la cifra la escribio el dueño`);
++    assert.equal(out.copy.heroSubline, "Llevamos 3 anos en el barrio.");
++  }
++  // Control: la misma cifra sin que la diga nadie SI se poda.
++  const sinDato = guardCopy(validCopy({ heroSubline: "Llevamos 3 anos en el barrio." }), brief);
++  assert.equal(sinDato.dropped.includes("heroSubline"), true);
++});
++
++test("guardia: un reclamo se poda aunque el dueño lo escriba (CLAIM no se ablanda)", () => {
++  const brief = normalizeBrief({
++    businessType: "cafetería",
++    name: "Café Aurora",
++    city: "Valencia",
++    description: "somos lideres del sector y estamos certificados",
++  });
++  const out = guardCopy(validCopy({ aboutBody: "Somos líderes del sector" }), brief);
++  assert.equal(out.dropped.includes("aboutBody"), true, "el reclamo se poda aunque venga del dueño");
++  assert.notEqual(out.copy.aboutBody, "Somos líderes del sector");
++  // El plural y las formas flexionadas cuentan: "lideres" no es una excepcion.
++  for (const texto of ["Somos líderes del sector", "Somos lideres", "Equipo premiado", "Productos certificados", "Resultado garantizado"]) {
++    assert.equal(guardCopy(validCopy({ aboutBody: texto }), brief).dropped.includes("aboutBody"), true, `deberia podarse: ${texto}`);
++  }
++});
++
++// Cambio 3: los avisos son del intento que gana, no del que se descarta.
++test("runFastDesign: los avisos de guardia del intento descartado no llegan al panel", async () => {
++  // Primer intento: todos los servicios con cifras inventadas -> la guardia los
++  // poda (aviso `copy_guard`) y el copy se descarta por `empty_services`.
++  // Segundo intento: copy limpio. Solo este llega al sitio, y no tiene podas.
++  const { client, tracker, transport } = sequencedClient([
++    {
++      text: JSON.stringify(
++        validCopy({
++          services: [
++            { title: "Clientes", body: "Atendemos a 500 clientes cada semana." },
++            { title: "Experiencia", body: "Llevamos 15 años detrás de la barra." },
++            { title: "Premios", body: "Somos líderes del sector." },
++          ],
++        }),
++      ),
++    },
++    { text: JSON.stringify(validCopy()) },
++    { text: "Resumen final." },
++  ]);
++  const brief = normalizeBrief({ name: "Café Aurora", businessType: "cafetería", city: "Valencia", service: "tueste propio", contact: "hola@cafe.test" });
++  const out = await runFastDesign({ brief, presets: [PRESET], client, tracker, ctx: CTX });
++  assert.equal(transport.calls, 3, "intento descartado + reintento + resumen");
++  assert.equal(out.warnings.some((w) => w.startsWith("copy_fallback")), false, "el segundo intento salvo el copy");
++  assert.equal(out.warnings.some((w) => w.startsWith("copy_guard")), false, `warnings: ${out.warnings}`);
++  // Y el copy que se publica no lleva nada del intento descartado.
++  assert.doesNotMatch(JSON.stringify(out.doc), /500 clientes|15 años|líderes/);
++});
++
++test("runFastDesign: si el copy que gana tiene podas, el aviso SI llega", async () => {
++  // Control del caso anterior: sin este, el test de arriba pasaria tambien si
++  // el aviso se hubiera perdido siempre. El copy gana (le quedan 2 servicios
++  // validos) y arrastra un aviso por el que se podo.
++  const { client, tracker } = sequencedClient([
++    {
++      text: JSON.stringify(
++        validCopy({
++          services: [
++            { title: "Tueste propio", body: "Tostamos el grano en casa cada semana." },
++            { title: "Desayunos", body: "Preparamos desayunos hasta media mañana." },
++            { title: "Clientes", body: "Atendemos a 500 clientes cada semana." },
++          ],
++        }),
++      ),
++    },
++    { text: "Resumen final." },
++  ]);
++  const out = await runFastDesign({ brief: BRIEF, presets: [PRESET], client, tracker, ctx: CTX });
++  assert.ok(out.warnings.some((w) => w.startsWith("copy_guard: services[2]")), `warnings: ${out.warnings}`);
++  // Con 2 servicios validos la seccion pasa entera a la generica (T-002.3); el
++  // aviso sigue llegando porque la poda ocurrio en el copy que gano.
++  assert.deepEqual(
++    out.doc.pages[0].sections.filter((s) => s.type === "features")[0].props.items,
++    genericCopy(normalizeBrief(BRIEF)).services,
++  );
++});
++
++// --- T-002.3: completitud por sección ---------------------------------------
++//
++// La guardia no cambia: sigue podando y sigue quedándose corta. Lo que cambia es
++// el borrador, que sustituye la SECCIÓN ENTERA por la genérica cuando el copy del
++// modelo no llega al mínimo. Todo o nada: medio bloque del modelo y medio de
++// plantilla se nota, y el visitante no sabría qué está leyendo.
++
++/** Copy del modelo con textos propios, para distinguirlos de los genéricos. */
++const COPY_MODELO = {
++  heroHeadline: "Café de especialidad en el centro de Valencia",
++  heroSubline: "Tostamos en casa cada semana.",
++  services: [
++    { title: "Tueste artesanal de origen", body: "Elegimos el grano y lo tostamos nosotros." },
++    { title: "Degustación guiada", body: "Te acompañamos para que encuentres tu tueste." },
++    // Limpio a proposito: el control necesita 3 servicios validos del modelo.
++    { title: "Café para llevar", body: "Te lo servimos molido o en grano." },
++  ],
++  aboutBody: "Abrimos en 2015 en el barrio del Carmen con una idea simple.",
++  faq: [
++    { q: "¿Tenéis terraza?", a: "Sí, con sombra por la mañana." },
++    { q: "¿Cuántos clientes atendéis al día?", a: "Atendemos a 400 clientes al día." },
++  ],
++};
++
++test("completitud: servicios podados a 1 -> los 3 genéricos, sin nada del modelo", () => {
++  const brief = normalizeBrief(BRIEF);
++  const copy = guardCopy(
++    validCopy({
++      services: [
++        { title: "Clientes fieles", body: "Atendemos a 900 clientes cada mes." },
++        { title: "Experiencia", body: "Llevamos 15 años detrás de la barra." },
++        { title: "Tueste artesanal de origen", body: "Elegimos el grano y lo tostamos nosotros." },
++      ],
++    }),
++    brief,
++  ).copy;
++  // La guardia deja 1 solo servicio válido: el mínimo son 3.
++  assert.equal(copy.services.length, 1);
++
++  const doc = draftSite(brief, PRESET, copy);
++  const features = doc.pages[0].sections.find((s) => s.id === "s_features");
++  // Exactamente la sección genérica, encabezado incluido.
++  assert.deepEqual(features.props, { heading: genericCopy(brief).servicesHeading, items: genericCopy(brief).services });
++  // Y ni un fragmento del que sobrevivió a la guardia.
++  const json = JSON.stringify(doc);
++  assert.doesNotMatch(json, /Tueste artesanal de origen|Elegimos el grano/);
++  assert.doesNotMatch(json, /900 clientes|15 años/);
++});
++
++test("completitud: aboutBody podado -> el párrafo genérico entero, sin nada del modelo", () => {
++  const brief = normalizeBrief(BRIEF);
++  const copy = guardCopy(validCopy({ aboutBody: COPY_MODELO.aboutBody, services: COPY_MODELO.services }), brief).copy;
++  // "Abrimos en 2015" lleva una cifra que el dueño no dio: el about se poda.
++  assert.equal(copy.aboutBody, "");
++
++  const doc = draftSite(brief, PRESET, copy);
++  const generic = genericCopy(brief);
++  const about = doc.pages[0].sections.find((s) => s.type === "text");
++  assert.deepEqual(about.props, { heading: generic.aboutHeading, body: generic.aboutBody });
++  assert.doesNotMatch(JSON.stringify(doc), /Abrimos en 2015/);
++});
++
++test("completitud: faq podada a 1 -> las 3 genéricas, sin nada del modelo", () => {
++  const brief = normalizeBrief(BRIEF);
++  const copy = guardCopy(
++    validCopy({
++      faq: [
++        { q: "¿Tenéis terraza?", a: "Sí, con sombra por la mañana." },
++        { q: "¿Cuántos clientes atendéis al día?", a: "Atendemos a 400 clientes al día." },
++      ],
++    }),
++    brief,
++  ).copy;
++  // Queda 1 pregunta válida: el mínimo para que haya sección es 2.
++  assert.equal(copy.faq.length, 1);
++
++  const doc = draftSite(brief, PRESET, copy);
++  const faq = doc.pages[0].sections.find((s) => s.type === "faq");
++  assert.deepEqual(faq.props.items, genericCopy(brief).faq);
++  assert.doesNotMatch(JSON.stringify(doc), /¿Tenéis terraza\?|400 clientes/);
++});
++
++test("completitud: si la sección llega al mínimo, se conserva la del modelo", () => {
++  // Control: sin esto, las tres pruebas de arriba pasarían también si el
++  // borrador sustituyera siempre, que sería perder el copy del modelo.
++  const brief = normalizeBrief(BRIEF);
++  // Servicios limpios (pasan los 3) y about limpio por defecto de `validCopy`;
++  // la faq del fixture lleva una cifra en una respuesta y queda en 1.
++  const copy = guardCopy(validCopy({ services: COPY_MODELO.services, faq: COPY_MODELO.faq }), brief).copy;
++  assert.equal(copy.services.length, 3);
++  assert.equal(copy.faq.length, 1);
++  assert.notEqual(copy.aboutBody, "");
++
++  const doc = draftSite(brief, PRESET, copy);
++  const features = doc.pages[0].sections.find((s) => s.id === "s_features");
++  assert.deepEqual(features.props.items, copy.services);
++  const about = doc.pages[0].sections.find((s) => s.type === "text");
++  assert.equal(about.props.body, copy.aboutBody);
++  // La sección que sí quedó corta (faq con 1 tras podar) es la única genérica.
++  const faq = doc.pages[0].sections.find((s) => s.type === "faq");
++  assert.deepEqual(faq.props.items, genericCopy(brief).faq);
++});
++
++test("completitud: pasos podados a 1 -> los 3 genéricos, sin nada del modelo", () => {
++  const brief = normalizeBrief(BRIEF);
++  const copy = guardCopy(
++    validCopy({
++      // Los servicios llegan al mínimo para aislar el caso del proceso.
++      process: [
++        { title: "Clientes fieles", body: "Atendemos a 900 clientes cada mes." },
++        { title: "Experiencia", body: "Llevamos 15 años detrás de la barra." },
++        // Texto distinto de cualquier paso genérico, para poder buscarlo.
++        { title: "Pasas a probarlo", body: "Te esperamos en la barra del local." },
++      ],
++    }),
++    brief,
++  ).copy;
++  // La guardia deja 1 de 3 pasos válidos.
++  assert.equal(copy.process.length, 1);
++  assert.equal(copy.services.length, 3);
++
++  const doc = draftSite(brief, PRESET, copy);
++  const generic = genericCopy(brief);
++  // El proceso es un bloque `features` con id propio (6.1 no tiene tipo `process`).
++  const process = doc.pages[0].sections.find((s) => s.id === "s_process");
++  assert.deepEqual(process.props, { heading: generic.processHeading, items: generic.process });
++  // Ni el paso que sobrevivió ni los podados.
++  const json = JSON.stringify(doc);
++  assert.doesNotMatch(json, /Pasas a probarlo|Te esperamos en la barra|900 clientes|15 años/);
++  // Los servicios del modelo siguen intactos: cada sección va a lo suyo.
++  const features = doc.pages[0].sections.find((s) => s.id === "s_features");
++  assert.deepEqual(features.props.items, copy.services);
++  // El plan marca el bloque sustituido como plantilla, igual que las demás.
++  const plan = planSections(brief, PRESET, copy);
++  // Cambiado en T-002.8: el origen del texto vive en `origin`; `reason` dice por qué está.
++  assert.equal(plan.sections.find((s) => s.type === "process").origin, "copy_generico");
++  assert.equal(plan.sections.find((s) => s.type === "features").origin, "copy_del_dueno");
++});
++
++test("completitud: con 3 pasos válidos se conservan los del modelo", () => {
++  // Control: sin esto, la prueba de arriba pasaría también si el borrador
++  // reemplazara siempre el proceso, perdiendo el texto del modelo.
++  const brief = normalizeBrief(BRIEF);
++  const copy = guardCopy(
++    validCopy({
++      process: [
++        { title: "Nos escribes", body: "Cuéntanos qué necesitas y para cuándo." },
++        { title: "Lo concretamos", body: "Vemos juntos la mejor forma de hacerlo." },
++        { title: "Lo llevamos a cabo", body: "Nos ponemos con ello y te avisamos." },
++      ],
++    }),
++    brief,
++  ).copy;
++  assert.equal(copy.process.length, 3);
++
++  const doc = draftSite(brief, PRESET, copy);
++  const process = doc.pages[0].sections.find((s) => s.id === "s_process");
++  assert.deepEqual(process.props.items, copy.process);
++  // Y el plan lo marca como del modelo, no como plantilla.
++  const plan = planSections(brief, PRESET, copy);
++  // Cambiado en T-002.8: el origen del texto vive en `origin`; `reason` dice por qué está.
++  assert.equal(plan.sections.find((s) => s.type === "process").origin, "copy_del_dueno");
++});
++
++// --- T-002.4: los cuatro hallazgos de testing y seguridad -------------------
++
++/** ¿El documento entregado lleva el marcador en cualquier sitio? */
++const conMarcador = (doc) => /pendiente de confirmar/i.test(JSON.stringify(doc));
++
++// Fix A.1 — el marcador DENTRO de un texto del modelo también es invención.
++test("Fix A: un aboutBody que contiene el marcador se poda, no solo el valor exacto", () => {
++  const brief = normalizeBrief(BRIEF);
++  const out = guardCopy(validCopy({ aboutBody: "Horario pendiente de confirmar." }), brief);
++  // La comparación por igualdad no lo veía: el texto no ES el marcador, lo lleva dentro.
++  assert.equal(out.dropped.includes("aboutBody"), true);
++  assert.equal(out.copy.aboutBody, "");
++  // Y el documento no lo publica: la sección se repone con el genérico.
++  const doc = draftSite(brief, PRESET, out.copy);
++  assert.equal(conMarcador(doc), false);
++  assert.equal(doc.pages[0].sections.find((s) => s.type === "text").props.body, genericCopy(brief).aboutBody);
++});
++
++test("Fix A: el marcador se detecta sin distinguir mayúsculas", () => {
++  const brief = normalizeBrief(BRIEF);
++  const out = guardCopy(validCopy({ aboutBody: "PENDIENTE DE CONFIRMAR el horario." }), brief);
++  assert.equal(out.dropped.includes("aboutBody"), true);
++});
++
++// Fix A.2 — una descripción del dueño con el marcador no es un dato suyo.
++test("Fix A: una description con el marcador no se da por aportada", () => {
++  const brief = normalizeBrief({ name: "Pan de Alba", description: "Horario pendiente de confirmar." });
++  assert.equal("description" in brief, false);
++  const doc = draftSite(brief, PRESET);
++  assert.equal(conMarcador(doc), false);
++});
++
++test("Fix A: una description limpia se sigue respetando", () => {
++  // Control: la red no puede vaciar un dato legítimo del dueño.
++  const brief = normalizeBrief({ name: "Pan de Alba", description: "abrimos todos los dias menos el lunes" });
++  assert.equal(brief.description, "abrimos todos los dias menos el lunes");
++});
++
++// Fix A.3 — la red final del borrador, probada SIN pasar por la guardia.
++test("Fix A: la red final de draftSite sustituye el marcador aunque el copy no venga de la guardia", () => {
++  const brief = normalizeBrief(BRIEF);
++  // Copy fabricado a mano: no ha pasado por `guardCopy`, es el caso que se colaba.
++  const sucio = { ...genericCopy(brief), aboutBody: "Horario pendiente de confirmar." };
++  const doc = draftSite(brief, PRESET, sucio);
++  assert.equal(conMarcador(doc), false);
++  // Solo cae la sección afectada; el resto del copy se conserva.
++  const texto = doc.pages[0].sections.filter((s) => s.type === "text").map((s) => s.props.body);
++  assert.deepEqual(texto, [genericCopy(brief).aboutBody]);
++  assert.equal(doc.pages[0].sections.find((s) => s.type === "features").props.items[0].title, sucio.services[0].title);
++});
++
++test("Fix A: la red final también cubre las tarjetas de un servicio", () => {
++  const brief = normalizeBrief(BRIEF);
++  const sucio = genericCopy(brief);
++  sucio.services = [...sucio.services.slice(0, 2), { title: "Horario", body: "Atención pendiente de confirmar." }];
++  const doc = draftSite(brief, PRESET, sucio);
++  assert.equal(conMarcador(doc), false);
++  // La sección de servicios se rehace entera con la genérica.
++  assert.deepEqual(doc.pages[0].sections.find((s) => s.id === "s_features").props.items, genericCopy(brief).services);
++});
++
++// Fix B — una cifra solo la avala la cifra completa, no un trozo.
++test("Fix B: «19» no se avala con el «2019» del nombre del dueño", () => {
++  const brief = normalizeBrief({ name: "Café 2019" });
++  const out = guardCopy(validCopy({ heroSubline: "Tenemos 19 sucursales." }), brief);
++  assert.equal(out.dropped.includes("heroSubline"), true);
++  assert.notEqual(out.copy.heroSubline, "Tenemos 19 sucursales.");
++});
++
++test("Fix B: una cifra completa del dueño sí se conserva", () => {
++  const brief = normalizeBrief({ name: "Café Aurora", description: "abrimos en 2019" });
++  const out = guardCopy(validCopy({ heroSubline: "Desde 2019 te atendemos." }), brief);
++  assert.deepEqual(out.dropped, []);
++  assert.equal(out.copy.heroSubline, "Desde 2019 te atendemos.");
++});
++
++test("Fix B: la comparación es por token, no por subcadena, en cualquier campo", () => {
++  const brief = normalizeBrief({ businessType: "taller", city: "Bilbao", service: "revisiones cada 20000 km" });
++  // "2000" está dentro de "20000" pero no es la misma cifra.
++  assert.equal(guardCopy(validCopy({ heroSubline: "Revisamos tu coche cada 2000 km." }), brief).dropped.includes("heroSubline"), true);
++  // La cifra exacta, sí.
++  assert.equal(guardCopy(validCopy({ heroSubline: "Revisamos tu coche cada 20000 km." }), brief).dropped.includes("heroSubline"), false);
++});
++
++// Fix C — una prueba por forma: las que se podan y las que no.
++test("Fix C: se podan las diez formas de reclamo", () => {
++  const brief = normalizeBrief(BRIEF);
++  for (const texto of [
++    "Un equipo premiado",
++    "Somos premiados por la ciudad",
++    "Producto certificado",
++    "Contamos con certificaciones oficiales",
++    "Servicio garantizado",
++    "Somos el líder del barrio",
++    "Somos líderes del sector",
++    "El nº1 de Valencia",
++    "Muchos clientes satisfechos",
++    "Veinte años de experiencia",
++  ]) {
++    assert.equal(guardCopy(validCopy({ aboutBody: texto }), brief).dropped.includes("aboutBody"), true, `debería podarse: ${texto}`);
++  }
++});
++
++test("Fix C: NO se podan las actividades ni el texto normal", () => {
++  const brief = normalizeBrief(BRIEF);
++  for (const texto of [
++    // Actividades: describen lo que se hace, no presumen un estado del negocio.
++    "Ana se encarga de liderar las reuniones.",
++    "Nos gusta coliderar proyectos con el barrio.",
++    "Podemos certificar tu documento ante notario.",
++    "Estamos liderando el cambio en el barrio",
++    // Cambiado en T-002.5: "liderazgo" SÍ se poda, porque es un sustantivo que
++    // presume posición. Esta línea lo afirmaba como tema conservable.
++    // Texto normal.
++    "Atendemos por la mañana.",
++    "Tostamos el grano en casa cada semana.",
++  ]) {
++    assert.equal(guardCopy(validCopy({ aboutBody: texto }), brief).dropped.includes("aboutBody"), false, `no debería podarse: ${texto}`);
++  }
++});
++
++// Fix D — los valores del brief pasan la guardia antes de entrar en la plantilla.
++test("Fix D: un tipo de negocio con reclamo no entra en el copy genérico ni en el documento", () => {
++  const brief = normalizeBrief({ businessType: "taller certificado", city: "Bilbao", name: "Taller Norte" });
++  const copy = genericCopy(brief);
++  const serializado = JSON.stringify(copy);
++  // Ni el tipo, ni el encabezado, ni el about, ni el SEO.
++  assert.doesNotMatch(serializado, /certificad/i);
++  assert.equal(copy.businessType, "negocio local");
++  assert.equal(copy.aboutHeading, "Quiénes somos");
++  assert.doesNotMatch(copy.aboutBody, /taller/i);
++  // Y el documento final: ni en las secciones ni en el SEO. `meta.name` y
++  // `design.brief` quedan fuera del Fix D (llevan el nombre del negocio tal cual,
++  // que es un dato identificativo, no un texto redactado); el reporte lo deja
++  // anotado como riesgo para que lo decida el lead.
++  const doc = draftSite(brief, PRESET);
++  assert.doesNotMatch(JSON.stringify(doc.pages), /certificad/i);
++  assert.doesNotMatch(JSON.stringify(doc.pages[0].seo.description), /certificad/i);
++});
++
++test("Fix D: un tipo de negocio limpio sí se usa", () => {
++  // Control: el filtro no puede vaciar datos legítimos.
++  const brief = normalizeBrief({ businessType: "taller de bicicletas", city: "Bilbao" });
++  const copy = genericCopy(brief);
++  assert.equal(copy.businessType, "taller de bicicletas");
++  assert.equal(copy.aboutHeading, "taller de bicicletas");
++  assert.match(copy.aboutBody, /taller de bicicletas en Bilbao/);
++  assert.match(copy.seoDescription, /taller de bicicletas en Bilbao/);
++});
++
++test("Fix D: el nombre del dueño con reclamo no llega a la plantilla del copy ni a las secciones", () => {
++  const brief = normalizeBrief({ name: "Café nº1 de Valencia", city: "Valencia" });
++  const copy = genericCopy(brief);
++  assert.equal("businessName" in copy, false);
++  assert.doesNotMatch(copy.heroHeadline, /nº1/i);
++  assert.doesNotMatch(copy.aboutBody, /nº1/i);
++  // Las secciones del documento y su SEO de página salen limpios. `meta.name` es
++  // el nombre del negocio y sí lo conserva: fuera del alcance del Fix D.
++  const doc = draftSite(brief, PRESET);
++  assert.doesNotMatch(JSON.stringify(doc.pages[0].sections), /nº1/i);
++  assert.equal(doc.meta.name, "Café nº1 de Valencia");
++});
++
++test("Fix D: el respaldo del titular en la guardia no restaura un reclamo del brief", () => {
++  // Seguridad: la guardia poda el titular inventado y cae a `heroHeadline(brief)`,
++  // que interpolaba el tipo de negocio sin filtrar. "taller certificado en Bilbao"
++  // volvía al hero justo después de que la guardia lo podara.
++  const brief = normalizeBrief({ businessType: "taller certificado", city: "Bilbao" });
++  const out = guardCopy(validCopy({ heroHeadline: "Los 25 mejores mecánicos" }), brief);
++  assert.equal(out.dropped.includes("heroHeadline"), true);
++  assert.doesNotMatch(out.copy.heroHeadline, /certificad/i);
++  // Control: con un tipo limpio el respaldo sigue usando los datos del dueño.
++  const limpio = normalizeBrief({ businessType: "taller de bicicletas", city: "Bilbao" });
++  assert.equal(guardCopy(validCopy({ heroHeadline: "Los 25 mejores mecánicos" }), limpio).copy.heroHeadline, "taller de bicicletas en Bilbao");
++});
++
++// --- T-002.5: liderazgo y el contacto fuera del corpus numérico -------------
++
++test("T-002.5: «liderazgo» presume posición y se poda; las actividades se conservan", () => {
++  const brief = normalizeBrief(BRIEF);
++  const poda = (texto) => guardCopy(validCopy({ aboutBody: texto }), brief).dropped.includes("aboutBody");
++  // Afirmaciones de estado: se podan.
++  for (const texto of ["Nuestro liderazgo en el barrio", "Tres liderazgos reconocidos", "Somos el líder", "Somos líderes del sector"]) {
++    assert.equal(poda(texto), true, `debería podarse: ${texto}`);
++  }
++  // Actividades: se conservan.
++  for (const texto of ["Nos gusta liderar proyectos", "Vamos a coliderar la feria", "Seguimos liderando equipos pequeños"]) {
++    assert.equal(poda(texto), false, `no debería podarse: ${texto}`);
++  }
++});
++
++test("T-002.5: una cifra del teléfono no autoriza un plazo", () => {
++  // Hallazgo 1 de seguridad: con el contacto en el corpus, el "24" del número
++  // validaba "Entrega en 24 horas", un plazo que el dueño nunca dio.
++  const brief = normalizeBrief({ name: "Taller Norte", contact: "600 24 24 24" });
++  const out = guardCopy(validCopy({ heroSubline: "Entrega en 24 horas" }), brief);
++  assert.equal(out.dropped.includes("heroSubline"), true);
++  assert.notEqual(out.copy.heroSubline, "Entrega en 24 horas");
++});
++
++test("T-002.5: el mismo plazo escrito por el dueño en la descripción se conserva", () => {
++  // Control: la cifra sale del contacto, no deja de valer cuando la dice el dueño.
++  const brief = normalizeBrief({ name: "Taller Norte", contact: "600 24 24 24", description: "entrega en 24 horas" });
++  const out = guardCopy(validCopy({ heroSubline: "Entrega en 24 horas" }), brief);
++  assert.deepEqual(out.dropped, []);
++  assert.equal(out.copy.heroSubline, "Entrega en 24 horas");
++});
++
++test("T-002.5: el contacto se sigue publicando aunque no avale cifras", () => {
++  // Que no avale cifras no significa que se pierda: va a su sección, tal cual.
++  const brief = normalizeBrief({ name: "Taller Norte", contact: "600 24 24 24" });
++  const doc = draftSite(brief, { ...PRESET, sections: [...PRESET.sections, { type: "contact" }] });
++  const contacto = doc.pages[0].sections.find((s) => s.type === "contact");
++  assert.equal(contacto.props.phone, "600 24 24 24");
++});
++
++// --- T-002.6: el preset decide estilo, no qué contenido existe ---------------
++//
++// Presets mínimos: solo hero y lo que se pruebe. La completitud no puede
++// depender de que el preset traiga la sección.
++const SOLO_HERO = { ...PRESET, sections: [{ type: "hero" }] };
++const HERO_CONTACTO = { ...PRESET, sections: [{ type: "hero" }, { type: "contact" }] };
++const ids = (doc) => doc.pages[0].sections.map((s) => s.id);
++
++test("T-002.6: preset con solo hero y contact -> la página lleva todo el contenido", () => {
++  const brief = normalizeBrief(BRIEF);
++  const doc = draftSite(brief, HERO_CONTACTO, guardCopy(validCopy(), brief).copy);
++  const secciones = doc.pages[0].sections;
++  const tipos = secciones.map((s) => s.type);
++  // Hero primero y cierre al final.
++  assert.equal(secciones[0].type, "hero");
++  assert.equal(secciones.at(-2).type, "contact");
++  assert.equal(secciones.at(-1).type, "cta");
++  // Y el contenido que el preset no pedía, en el orden canónico.
++  assert.deepEqual(ids(doc), ["s_hero", "s_features", "s_text", "s_process", "s_faq", "s_contact", "s_cta"]);
++  assert.ok(tipos.includes("features"));
++  assert.ok(tipos.includes("text"));
++  assert.ok(tipos.includes("faq"));
++});
++
++test("T-002.6: preset sin faq -> la FAQ aparece igualmente antes de contact", () => {
++  const brief = normalizeBrief(BRIEF);
++  const sinFaq = { ...PRESET, sections: [{ type: "hero" }, { type: "features" }, { type: "text" }, { type: "contact" }] };
++  const doc = draftSite(brief, sinFaq, guardCopy(validCopy(), brief).copy);
++  const orden = ids(doc);
++  assert.ok(orden.includes("s_faq"), "la FAQ existe aunque el preset no la pida");
++  assert.ok(orden.indexOf("s_faq") < orden.indexOf("s_contact"), "va antes del contacto");
++  // El plan dice lo mismo que el documento.
++  const plan = planSections(brief, sinFaq, guardCopy(validCopy(), brief).copy);
++  assert.equal(plan.sections.find((s) => s.type === "faq").action, "write");
++  assert.match(plan.sections.find((s) => s.type === "faq").reason, /^completitud_/);
++});
++
++test("T-002.6: preset con pricing y testimonial -> se omiten y el resto está completo", () => {
++  const brief = normalizeBrief(BRIEF);
++  const conTodo = { ...PRESET, sections: [{ type: "hero" }, { type: "pricing" }, { type: "testimonial" }] };
++  const copy = guardCopy(validCopy(), brief).copy;
++  const doc = draftSite(brief, conTodo, copy);
++  const tipos = doc.pages[0].sections.map((s) => s.type);
++  assert.equal(tipos.includes("pricing"), false, "sin precios inventados");
++  assert.equal(tipos.includes("testimonial"), false, "sin testimonios inventados");
++  // Pero el contenido obligatorio sí.
++  for (const id of ["s_features", "s_text", "s_process", "s_faq", "s_contact", "s_cta"]) {
++    assert.ok(ids(doc).includes(id), `falta ${id}`);
++  }
++  assert.doesNotMatch(JSON.stringify(doc), /\d+\s?€|premiad|certificad/i);
++});
++
++test("T-002.6: sin copy (rama genérica) la completitud es la misma", () => {
++  const doc = draftSite(normalizeBrief(BRIEF), SOLO_HERO);
++  assert.deepEqual(ids(doc), ["s_hero", "s_features", "s_text", "s_process", "s_faq", "s_contact", "s_cta"]);
++  // Y el plan coincide con el documento, sección a sección.
++  const plan = planSections(normalizeBrief(BRIEF), SOLO_HERO);
++  assert.deepEqual(
++    plan.sections.filter((s) => s.action !== "omit").map((s) => s.as),
++    ["hero", "features", "text", "process", "faq", "contact", "cta"],
++  );
++  assert.ok(plan.sections.filter((s) => s.reason.startsWith("completitud_")).every((s) => s.reason === "completitud_copy_generico"));
++});
++
++test("T-002.6: control — preset completo y copy completo respetan el orden y no duplican", () => {
++  const brief = normalizeBrief(BRIEF);
++  const completo = {
++    ...PRESET,
++    sections: [
++      { type: "hero" }, { type: "text" }, { type: "features" },
++      { type: "faq" }, { type: "cta" }, { type: "contact" },
++    ],
++  };
++  const doc = draftSite(brief, completo, guardCopy(validCopy(), brief).copy);
++  // Nada duplicado.
++  assert.deepEqual(ids(doc), ["s_hero", "s_text", "s_features", "s_process", "s_faq", "s_contact", "s_cta"]);
++  assert.equal(doc.pages[0].sections.filter((s) => s.type === "features").length, 2, "features y proceso, no dos de ventajas");
++  assert.equal(doc.pages[0].sections.filter((s) => s.type === "contact").length, 1);
++  // El orden del preset se respeta: text antes que features, y el cierre al final
++  // aunque el preset pusiera `cta` antes de `contact`.
++  assert.ok(ids(doc).indexOf("s_text") < ids(doc).indexOf("s_features"));
++  assert.deepEqual(ids(doc).slice(-2), ["s_contact", "s_cta"]);
++  // Ninguna sección del preset se marca como añadida por completitud.
++  const plan = planSections(brief, completo, guardCopy(validCopy(), brief).copy);
++  assert.equal(plan.sections.some((s) => s.reason.startsWith("completitud_")), false);
++});
++
++// --- T-002.7: Fix E (titular compuesto) y Fix F (origen por contenido) ------
++
++test("Fix E: un tipo de 120 y una ciudad de 80 no abortan la ejecución", () => {
++  const brief = normalizeBrief({ businessType: "t".repeat(119) + "a", city: "c".repeat(80) });
++  const copy = genericCopy(brief);
++  // El titular compuesto se recorta al máximo del esquema del copy (90).
++  assert.ok(copy.heroHeadline.length <= 90, `titular: ${copy.heroHeadline.length}`);
++  assert.ok(copy.heroHeadline.length >= 8, "y no baja del mínimo");
++  // El copy genérico pasa su propio esquema, que antes no pasaba.
++  assert.equal(siteCopySchema.safeParse(copy).success, true);
++  // Y el borrador sale: antes lanzaba "borrador invalido".
++  const doc = draftSite(brief, PRESET, copy);
++  assert.equal(validateSiteDocument(doc).ok, true);
++  assert.ok(doc.pages[0].sections[0].props.headline.length <= 120);
++});
++
++test("Fix E: el titular compuesto se recorta, pero el nombre corto del dueño no cambia", () => {
++  // Control: recortar no puede tocar un titular que ya cabía.
++  const brief = normalizeBrief({ businessType: "cafetería", name: "Café Aurora", city: "Valencia" });
++  assert.equal(genericCopy(brief).heroHeadline, "Café Aurora");
++});
++
++test("Fix F: una sección de plantilla no se marca como del dueño", () => {
++  // T-002.9: `origin` dice QUIÉN produjo el texto, no si el contenido coincide
++  // con la plantilla. `completeCopy` registra en `substituted` exactamente qué
++  // claves sustituyó; `originFromSet` consulta ese conjunto. Si el modelo
++  // devuelve texto que cumple los mínimos, `completeCopy` no sustituye nada y
++  // el origen es `copy_del_dueno`, sea cual sea el contenido.
++  //
++  // El caso que sí garantiza `copy_generico` es que `completeCopy` sustituya:
++  // con 2 servicios (< 3) la sección entera se reemplaza por la plantilla, y
++  // el origen refleja ese reemplazo sin comparar contenido.
++  const brief = normalizeBrief(BRIEF);
++  const copyPoco = guardCopy(validCopy({
++    services: [
++      { title: "Tueste propio", body: "Tostamos el grano en casa." },
++      { title: "Desayunos", body: "Servimos desayunos hasta mediodía." },
++    ],
++  }), brief).copy;
++  const plan = planSections(brief, PRESET, copyPoco);
++  // La sección de servicios fue sustituida por la plantilla: origin correcto.
++  assert.equal(plan.sections.find((s) => s.type === "features").origin, "copy_generico");
++  // El contenido es exactamente el genérico, sin fragmentos del modelo.
++  assert.deepEqual(
++    plan.sections.find((s) => s.type === "features"),
++    planSections(brief, PRESET).sections.find((s) => s.type === "features"),
++    "la sección sustituida es idéntica a la genérica"
++  );
++});
++
++test("Fix F: el texto del modelo que sí es suyo se sigue marcando como tal", () => {
++  // Control: el filtro no puede marcar todo como plantilla.
++  const brief = normalizeBrief(BRIEF);
++  const copy = guardCopy(validCopy(), brief).copy;
++  const plan = planSections(brief, PRESET, copy);
++  // Cambiado en T-002.8: el origen del texto vive en `origin`; `reason` dice por qué está.
++  assert.equal(plan.sections.find((s) => s.type === "features").origin, "copy_del_dueno");
++  assert.equal(plan.sections.find((s) => s.type === "faq").origin, "copy_del_dueno");
++});
++
++// --- T-002.8: límites sistemáticos y origen separado del motivo -------------
++
++test("T-002.8: con TODOS los campos del brief al máximo, el copy pasa su esquema", () => {
++  const brief = normalizeBrief({
++    businessType: "Á".repeat(120),
++    name: "Á".repeat(80),
++    city: "Á".repeat(80),
++    service: "Á".repeat(200),
++    contact: "a@b.co",
++    description: "Á".repeat(500),
++  });
++  const copy = genericCopy(brief);
++  const parsed = siteCopySchema.safeParse(copy);
++  assert.equal(parsed.success, true, JSON.stringify(parsed.success ? [] : parsed.error.issues));
++  // Y cada campo respeta su límite declarado.
++  assert.ok((copy.businessName ?? "").length <= 60);
++  assert.ok(copy.businessType.length <= 60);
++  assert.ok(copy.heroHeadline.length <= 90);
++  assert.ok(copy.heroSubline.length <= 220);
++  assert.ok(copy.aboutHeading.length <= 80);
++  assert.ok(copy.aboutBody.length <= 700);
++  assert.ok(copy.seoDescription.length <= 155);
++});
++
++test("T-002.9: un nombre que no cabe en businessName (máx 60) se omite, no se recorta", () => {
++  // T-002.9, Fix 2: recortar un nombre propio puede dejar un número parcial
++  // («Café 2019» → «Café 20»). La regla nueva es: si no cabe, se omite.
++  // "a" + 39 emojis = 1 + 39*2 = 79 unidades UTF-16: más largo que el límite 60.
++  const brief = normalizeBrief({ name: "a" + "😀".repeat(39) });
++  assert.equal(brief.name, "a" + "😀".repeat(39));
++  const copy = genericCopy(brief);
++  // El campo se omite entero en vez de recortarse.
++  assert.equal("businessName" in copy, false, "businessName se omite cuando no cabe en 60");
++  // Ningún sustituto suelto en ningún campo del copy: no hay mitad de emoji.
++  assert.doesNotMatch(
++    JSON.stringify(copy),
++    /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/,
++    "ningun campo del copy contiene un sustituto suelto",
++  );
++  assert.equal(siteCopySchema.safeParse(copy).success, true);
++});
++
++test("T-002.8: el mismo contenido da el mismo origen con cualquier preset", () => {
++  const brief = normalizeBrief(BRIEF);
++  const copy = guardCopy(validCopy(), brief).copy;
++  // Un preset que trae contacto y cierre, y otro que no trae ninguno.
++  const conCierre = { ...PRESET, sections: [{ type: "hero" }, { type: "text" }, { type: "features" }, { type: "faq" }, { type: "contact" }, { type: "cta" }] };
++  const sinCierre = { ...PRESET, sections: [{ type: "hero" }, { type: "text" }, { type: "features" }, { type: "faq" }] };
++  const uno = planSections(brief, conCierre, copy).sections;
++  const otro = planSections(brief, sinCierre, copy).sections;
++  const buscar = (lista, type) => lista.find((s) => s.type === type);
++
++  // Mismo origen en los dos: el texto es el mismo.
++  assert.equal(buscar(uno, "contact").origin, "contacto_del_dueno");
++  assert.equal(buscar(otro, "contact").origin, "contacto_del_dueno");
++  assert.equal(buscar(uno, "cta").origin, buscar(otro, "cta").origin);
++  // Distinto motivo: en uno lo pidió el preset, en el otro lo puso el cierre.
++  assert.equal(buscar(uno, "contact").reason, "preset");
++  assert.equal(buscar(otro, "contact").reason, "cierre_obligatorio");
++  assert.equal(buscar(uno, "cta").reason, "preset");
++  assert.equal(buscar(otro, "cta").reason, "cierre_obligatorio");
++});
++
++test("T-002.8: el origen del contacto depende solo de los datos del dueño", () => {
++  // Con teléfono o correo: del dueño.
++  for (const contact of ["hola@cafe.test", "600 111 222", "+34 600 333 444"]) {
++    const brief = normalizeBrief({ ...BRIEF, contact });
++    const plan = planSections(brief, PRESET);
++    assert.equal(plan.sections.find((s) => s.type === "contact").origin, "contacto_del_dueno", contact);
++  }
++  // Sin contacto utilizable: genérico, aunque el preset lo pida.
++  for (const entrada of [{ businessType: "cafetería" }, { businessType: "cafetería", contact: "escríbeme cuando quieras" }]) {
++    const brief = normalizeBrief(entrada);
++    const plan = planSections(brief, PRESET);
++    assert.equal(plan.sections.find((s) => s.type === "contact").origin, "contacto_generico", JSON.stringify(entrada));
++  }
++});
++
++test("T-002.8: la galería no tiene origen de texto", () => {
++  const brief = normalizeBrief(BRIEF);
++  const conFotos = { ...PRESET, sections: [{ type: "hero" }, { type: "gallery" }] };
++  const photos = { gallery: [{ assetId: "a1", alt: "" }, { assetId: "a2", alt: "" }, { assetId: "a3", alt: "" }] };
++  const plan = planSections(brief, conFotos, undefined, photos);
++  const galeria = plan.sections.find((s) => s.type === "gallery");
++  assert.equal(galeria.action, "write");
++  assert.equal(galeria.origin, undefined, "la galería lleva fotos, no texto");
++  assert.equal(galeria.reason, "fotos_de_la_busqueda");
++});
+diff --git a/agents/design/test/design.test.mjs b/agents/design/test/design.test.mjs
+index 73fb717..cbd8431 100644
+--- a/agents/design/test/design.test.mjs
++++ b/agents/design/test/design.test.mjs
+@@ -7,8 +7,10 @@ import { renderPage } from "@webdesign/renderer";
+ import {
+   BRIEF_FIELDS,
+   PENDING_MARKER,
++  completeCopy,
+   designAgent,
+   draftSite,
++  genericCopy,
+   inventory,
+   normalizeBrief,
+   planSections,
+@@ -93,22 +95,30 @@ test("draft: el borrador valida contra site-schema y no inventa contenido", () =
+ 
+   const sections = doc.pages[0].sections;
+   assert.equal(sections[0].type, "hero");
+-  // Testimonio y ventajas degradan a texto: inventarlos sería fabricar datos.
++  // Testimonio: nunca se escribe, se inventaría un cliente. (Cambiado en
++  // T-002.3: antes las ventajas también se degradaban a texto con el marcador;
++  // ahora se escriben con el copy genérico, que no afirma nada del negocio.)
+   assert.ok(sections.every((s) => s.type !== "testimonial"));
+-  assert.ok(sections.every((s) => s.type !== "features"));
++  assert.ok(sections.some((s) => s.type === "features"), "las ventajas se escriben con el copy");
+   assert.equal(doc.theme.colors.accent, PRESET.colors.accent);
+ 
+-  // Ningún precio del preset se hereda.
++  // Ningún precio del preset se hereda: la sección ni siquiera se escribe.
++  // (Cambiado en T-002.3: antes salía con el marcador; ahora se omite.)
+   const priced = draftSite(normalizeBrief(BRIEF), { ...PRESET, sections: [{ type: "pricing" }] });
+-  const plans = priced.pages[0].sections.find((s) => s.type === "pricing").props.plans;
+-  assert.notEqual(plans[0].price, "19 €");
+-  assert.deepEqual(plans[0].features, []);
++  assert.equal(priced.pages[0].sections.some((s) => s.type === "pricing"), false);
+ });
+ 
+-test("draft: 6.4 no devuelve ningún error y el marcador llega al HTML", () => {
++// Cambiado en T-002.3 (era "…y el marcador llega al HTML"): el marcador ya no
++// llega a ninguna parte. Lo que sigue igual de importante es que el camino sin
++// datos del dueño produce HTML válido y un 6.4 limpio; lo nuevo que se afirma
++// es que ese HTML cumple B1.
++test("draft: 6.4 no devuelve ningún error y el HTML no lleva el marcador", () => {
+   const doc = draftSite(normalizeBrief({ name: "Café Aurora" }), PRESET);
+   assert.deepEqual(lintSite(doc).filter((f) => f.severity === "error"), []);
+-  assert.match(renderPage(doc, "p_home"), /pendiente de confirmar/i);
++  const html = renderPage(doc, "p_home");
++  assert.doesNotMatch(html, /pendiente de confirmar/i);
++  // Y la página no sale vacía: hay titular y hay contenido.
++  assert.match(html, /Café Aurora/);
+ });
+ 
+ test("inventario: separa lo afirmado de lo que falta, sin interpretar", () => {
+@@ -119,10 +129,27 @@ test("inventario: separa lo afirmado de lo que falta, sin interpretar", () => {
+   assert.deepEqual(inv.missing.map((m) => m.field), normalizeBrief({ name: "Café Aurora", city: "Valencia" }).pending);
+ });
+ 
+-test("plan: degrada testimonios y ventajas, omite imágenes sin assets", () => {
++test("plan: omite testimonios y precios, escribe ventajas con el copy genérico", () => {
+   const plan = planSections(normalizeBrief(BRIEF), PRESET);
+   assert.equal(plan.presetId, PRESET.id);
+-  assert.deepEqual(plan.sections.map((s) => s.action), ["write", "write", "degrade", "degrade", "write"]);
++  // Cambiado en T-002.3: sin copy del modelo el plan ya no "degrada" a texto con
++  // el marcador; escribe con `genericCopy`. El testimonio se omite, no se degrada.
++  // Cambiado en T-002.6: el plan respeta el orden del preset para lo que incluye
++  // y añade lo que falta (aquí `faq` y `contact`), con contacto y cierre al final.
++  assert.deepEqual(
++    plan.sections.map((s) => `${s.type}:${s.action}`),
++    ["hero:write", "text:write", "features:write", "process:write", "testimonial:omit", "faq:write", "contact:write", "cta:write"],
++  );
++  // Lo añadido se distingue de lo que pidió el preset: el panel ve el motivo.
++  assert.equal(plan.sections.find((s) => s.type === "faq").reason, "completitud_copy_generico");
++  assert.equal(plan.sections.find((s) => s.type === "contact").reason, "cierre_obligatorio");
++  // El panel no puede presentar el texto genérico como si lo hubiera dicho el dueño.
++  // Cambiado en T-002.8: el origen vive en `origin` y vale para TODAS las
++  // secciones de texto, las del preset y las añadidas. Las del preset dicen por
++  // qué están con `reason: "preset"`.
++  const delPreset = plan.sections.filter((s) => s.action === "write" && s.reason === "preset" && s.type !== "contact");
++  assert.ok(delPreset.length > 0);
++  assert.ok(plan.sections.filter((s) => s.action === "write" && s.type !== "contact").every((s) => s.origin === "copy_generico"));
+   // Ningún plan puede dejar el documento sin h1.
+   assert.equal(plan.sections[0].as, "hero");
+   const noHero = planSections(normalizeBrief(BRIEF), { ...PRESET, sections: [{ type: "gallery" }, { type: "text" }] });
+@@ -163,8 +190,9 @@ test("runFastDesign: una ronda, sin invenciones y con checkpoint", async () => {
+   assert.equal(siteDocumentSchema.safeParse(out.doc).success, true);
+   assert.ok(out.checkpointId);
+   assert.deepEqual(out.findings6_4.filter((f) => f.severity === "error"), []);
+-  // Ni el modelo ni el agente sustituyen el marcador.
+-  assert.match(JSON.stringify(out.doc), /pendiente de confirmar/);
++  // Ni el modelo ni el agente escriben el marcador en el sitio; el fallback del
++  // copy deja constancia en `warnings`, que es donde el panel lo lee (B1).
++  assert.doesNotMatch(JSON.stringify(out.doc), /pendiente de confirmar/);
+   // El panel recibe el motivo de cada decisión, no una caja negra.
+   assert.ok(out.plan.sections.every((s) => typeof s.reason === "string" && s.reason.length > 0));
+   assert.deepEqual(out.inventory.missing.map((m) => m.field), ["service", "contact"]);
+@@ -239,15 +267,20 @@ test("runFastDesign: fetchPhotos que lanza deja el sitio sin fotos y avisa photo
+   assert.equal(validateSiteDocument(out.doc).ok, true);
+ });
+ 
+-test("runFastDesign: copy con 2 servicios -> features con 2 items, sin marcador en doc.pages", async () => {
++test("runFastDesign: copy con 2 servicios -> features genérica completa, sin marcador", async () => {
+   const copy = JSON.parse(copyWithPhotosJson());
+   copy.services = copy.services.slice(0, 2);
+   const { client, tracker } = fakeClient(JSON.stringify(copy));
+   const out = await runFastDesign({ brief: BRIEF, presets: [PRESET], client, tracker, ctx: CTX("copy-2") });
+ 
++  // Cambiado en T-002.3: con menos de 3 servicios la sección se sustituye entera
++  // por la genérica (antes salía con 2). Ningún servicio del modelo se mezcla.
+   const features = out.doc.pages[0].sections.find((s) => s.id === "s_features");
+-  assert.equal(features.props.items.length, 2);
+-  assert.doesNotMatch(JSON.stringify(out.doc.pages), /pendiente de confirmar/);
++  assert.deepEqual(features.props.items, genericCopy(normalizeBrief(BRIEF)).services);
++  assert.doesNotMatch(JSON.stringify(out.doc), /pendiente de confirmar/);
++  // El plan dice de dónde sale ese bloque: plantilla, no el modelo.
++  // Cambiado en T-002.8: el origen vive en `origin`.
++  assert.equal(out.plan.sections.find((s) => s.type === "features").origin, "copy_generico");
+ });
+ 
+ test("runFastDesign: plan y documento coinciden cuando el about se poda", async () => {
+@@ -256,10 +289,15 @@ test("runFastDesign: plan y documento coinciden cuando el about se poda", async
+   const { client, tracker } = fakeClient(JSON.stringify(copy));
+   const out = await runFastDesign({ brief: BRIEF, presets: [PRESET], client, tracker, ctx: CTX("copy-about") });
+ 
+-  // Podado por la guardia: ni seccion `text` en el documento ni accion `write`.
+-  assert.equal(out.doc.pages[0].sections.some((s) => s.type === "text"), false);
++  // Cambiado en T-002.3: antes plan y documento coincidían en OMITIR el about.
++  // Ahora coinciden en escribir el about genérico entero, y el plan lo nombra
++  // como tal. Lo que se protege es lo mismo: que no discrepen.
++  const generic = genericCopy(normalizeBrief(BRIEF));
++  const about = out.doc.pages[0].sections.find((s) => s.type === "text");
++  assert.deepEqual(about.props, { heading: generic.aboutHeading, body: generic.aboutBody });
+   const textPlan = out.plan.sections.filter((s) => s.as === "text");
+-  assert.deepEqual(textPlan.map((s) => [s.action, s.reason]), [["omit", "sin_about_del_dueno"]]);
++  // Cambiado en T-002.8: por qué está (`preset`) y de dónde sale (`origin`), por separado.
++  assert.deepEqual(textPlan.map((s) => [s.action, s.reason, s.origin]), [["write", "preset", "copy_generico"]]);
+ });
+ 
+ test("runFastDesign: un brief sin ningún dato se rechaza en vez de inventarlo", async () => {
+@@ -271,3 +309,90 @@ test("runFastDesign: sin presets no se inventa una familia nueva", async () => {
+   const { client, tracker } = fakeClient("x");
+   await assert.rejects(runFastDesign({ brief: BRIEF, presets: [], client, tracker, ctx: CTX("r4") }), /no hay presets/);
+ });
++
++// --- T-002.9: origin por registro, no por comparación ----------------------------
++
++test("T-002.9: hero con CTA del modelo -> copy_del_dueno aunque titular sea genérico", () => {
++  // `origin` dice quién produjo el texto. Si el modelo devolvió un CTA propio
++  // («Escríbenos»), el hero es suyo aunque el titular coincida con la plantilla.
++  // Con `substituted` sabemos exactamente qué sustituyó `completeCopy`: si
++  // `heroCta` no está en el conjunto, el hero no puede marcarse como plantilla.
++  const brief = normalizeBrief(BRIEF);
++  const generic = genericCopy(brief);
++  // Copiamos el copy genérico pero sustituimos el CTA por uno del modelo.
++  const copiaConCTA = { ...generic, heroCta: "Escríbenos" };
++  const { substituted } = completeCopy(copiaConCTA, brief);
++  // heroCta viene del modelo: NO debe estar en substituted.
++  assert.equal(substituted.has("heroCta"), false);
++  // Por tanto el hero NO puede ser copy_generico.
++  const plan = planSections(brief, PRESET, copiaConCTA);
++  assert.equal(plan.sections.find((s) => s.type === "hero").origin, "copy_del_dueno");
++});
++
++test("T-002.9: servicios con encabezado del modelo pero tarjetas genéricas -> copy_del_dueno en features", () => {
++  // La regla: `origin` de features depende de si `services` está en `substituted`,
++  // no de `servicesHeading`. Si el modelo dio suficientes servicios (>=3),
++  // `completeCopy` no sustituye `services`, aunque el encabezado sea diferente.
++  const brief = normalizeBrief(BRIEF);
++  const generic = genericCopy(brief);
++  // Copy con 3 servicios del modelo (suficientes) pero encabezado idéntico al genérico.
++  const copiaConServicios = {
++    ...generic,
++    servicesHeading: generic.servicesHeading, // igual al genérico
++    services: [
++      { title: "Tueste propio", body: "Tostamos el grano en casa." },
++      { title: "Desayunos", body: "Servimos desayunos hasta mediodía." },
++      { title: "Café para llevar", body: "También para llevar." },
++    ],
++  };
++  const { substituted } = completeCopy(copiaConServicios, brief);
++  assert.equal(substituted.has("services"), false, "3 servicios no disparan sustitución");
++  const plan = planSections(brief, PRESET, copiaConServicios);
++  assert.equal(plan.sections.find((s) => s.type === "features").origin, "copy_del_dueno");
++});
++
++test("T-002.9: servicios íntegramente genéricos (< 3 del modelo) -> copy_generico en features", () => {
++  // Con solo 2 servicios, `completeCopy` sustituye `services` y `servicesHeading`
++  // con la plantilla. El conjunto `substituted` lo recoge y `origin` es correcto.
++  const brief = normalizeBrief(BRIEF);
++  const copiaPocos = {
++    ...genericCopy(brief),
++    services: [
++      { title: "Tueste propio", body: "Tostamos el grano en casa." },
++      { title: "Desayunos", body: "Servimos desayunos hasta mediodía." },
++    ],
++  };
++  const { substituted } = completeCopy(copiaPocos, brief);
++  assert.equal(substituted.has("services"), true, "2 servicios disparan sustitución");
++  const plan = planSections(brief, PRESET, copiaPocos);
++  assert.equal(plan.sections.find((s) => s.type === "features").origin, "copy_generico");
++});
++
++test("T-002.9: contacto con email del brief -> contacto_del_dueno; sin contacto -> contacto_generico", () => {
++  // `origin` del contacto depende solo de los datos del dueño, no del preset.
++  const conEmail = normalizeBrief({ ...BRIEF, contact: "hola@cafeaurora.test" });
++  const sinContacto = normalizeBrief({ businessType: "cafetería" });
++  const presetConContact = { ...PRESET, sections: [...PRESET.sections, { type: "contact" }] };
++  const presetSinContact = { ...PRESET, sections: PRESET.sections.filter((s) => s.type !== "contact") };
++
++  for (const preset of [presetConContact, presetSinContact]) {
++    const planCon = planSections(conEmail, preset);
++    assert.equal(planCon.sections.find((s) => s.type === "contact").origin, "contacto_del_dueno",
++      `con email, preset ${preset === presetConContact ? "con" : "sin"} contact`);
++    const planSin = planSections(sinContacto, preset);
++    assert.equal(planSin.sections.find((s) => s.type === "contact").origin, "contacto_generico",
++      `sin contacto, preset ${preset === presetConContact ? "con" : "sin"} contact`);
++  }
++});
++
++test("T-002.9: CTA con closingHeadline del modelo -> copy_del_dueno en cta", () => {
++  // Si el modelo devolvió un closingHeadline propio, `substituted` no lo contiene
++  // y el CTA es del dueño, aunque closingCta sea el genérico «Escribir».
++  const brief = normalizeBrief(BRIEF);
++  const generic = genericCopy(brief);
++  const copiaConCierre = { ...generic, closingHeadline: "Pedir orientación" };
++  const { substituted } = completeCopy(copiaConCierre, brief);
++  assert.equal(substituted.has("closingHeadline"), false);
++  const plan = planSections(brief, PRESET, copiaConCierre);
++  assert.equal(plan.sections.find((s) => s.type === "cta").origin, "copy_del_dueno");
++});
+diff --git a/agents/design/test/generic-copy.test.mjs b/agents/design/test/generic-copy.test.mjs
+new file mode 100644
+index 0000000..482e1e7
+--- /dev/null
++++ b/agents/design/test/generic-copy.test.mjs
+@@ -0,0 +1,216 @@
++import { test } from "node:test";
++import assert from "node:assert/strict";
++import { PENDING_MARKER, genericCopy, guardCopy, normalizeBrief, siteCopySchema } from "../dist/index.js";
++
++// Copy determinista de respaldo (spec T-002.2).
++//
++// No hay modelo de por medio: `genericCopy` arma un copy completo a partir del
++// brief, sin el marcador y sin nada que la guardia tenga que podar. Lo que se
++// prueba aquí es justo eso: que pase el esquema, que la guardia no caiga ni un
++// campo, que no aparezca el marcador y que ningun literal parezca un dato.
++
++/** Briefs de partida: desde el mas vacio hasta el que trae los cinco campos. */
++const BRIEFS = {
++  "solo description": { description: "somos una tienda de barrio que abre todos los dias" },
++  "businessType, name y city": {
++    businessType: "cafetería de especialidad",
++    name: "Café Aurora",
++    city: "Valencia",
++  },
++  "los cinco campos": {
++    businessType: "cafetería de especialidad",
++    name: "Café Aurora",
++    city: "Valencia",
++    service: "tueste propio y desayunos",
++    contact: "hola@cafeaurora.test",
++  },
++  "con acentos en businessType y city": {
++    businessType: "peluquería canina",
++    city: "Alcalá de Henares",
++  },
++};
++
++// Lo mismo que mira la guardia (`hasInvention`), mas las palabras concretas que
++// el contrato prohibe por su nombre.
++const DIGIT = /\d/;
++const MONEY = /[€$%]/;
++const CLAIM = /clientes satisfechos|años de experiencia|anos de experiencia|premiad|certificad|garantizad|líder|lider/i;
++
++for (const [nombre, entrada] of Object.entries(BRIEFS)) {
++  test(`genericCopy (${nombre}): esquema valido, guardia sin podas y sin marcador`, () => {
++    const brief = normalizeBrief(entrada);
++    const copy = genericCopy(brief);
++
++    // 1. Pasa el esquema tal cual, sin recortes ni normalizacion previa.
++    const parsed = siteCopySchema.safeParse(copy);
++    assert.equal(parsed.success, true, `esquema: ${JSON.stringify(parsed.error?.issues)}`);
++
++    // 2. La guardia no poda nada: el copy no lleva ni un dato inventado.
++    assert.deepEqual(guardCopy(copy, brief).dropped, []);
++
++    // 3. El marcador no aparece en ningun campo.
++    const serializado = JSON.stringify(copy);
++    assert.doesNotMatch(serializado, /pendiente de confirmar/);
++    assert.doesNotMatch(serializado, new RegExp(PENDING_MARKER));
++
++    // 4. Ni cifras, ni simbolos de dinero, ni reclamos.
++    assert.doesNotMatch(serializado, DIGIT);
++    assert.doesNotMatch(serializado, MONEY);
++    assert.doesNotMatch(serializado, CLAIM);
++
++    // 5. Forma completa: tres servicios, tres pasos, tres preguntas y un about.
++    assert.equal(copy.services.length, 3);
++    assert.equal(copy.process.length, 3);
++    assert.equal(copy.faq.length, 3);
++    assert.notEqual(copy.aboutBody, "");
++    // El titular tiene que superar el minimo del esquema (8).
++    assert.ok(copy.heroHeadline.length >= 8, `titular: ${copy.heroHeadline.length}`);
++  });
++}
++
++test("genericCopy: sin ningun dato conocido usa los textos fijos y omite el nombre", () => {
++  const brief = normalizeBrief({ description: "somos una tienda de barrio que abre todos los dias" });
++  const copy = genericCopy(brief);
++  // `businessName` es opcional: si el dueño no lo dio, la clave no se inventa.
++  assert.equal("businessName" in copy, false);
++  assert.equal(copy.businessType, "negocio local");
++  // Sin nombre ni ciudad el titular es el tipo de negocio, que ya cae al fijo
++  // "negocio local": la frase final solo entra cuando eso no llega al minimo.
++  assert.equal(copy.heroHeadline, "negocio local");
++  assert.equal(copy.heroSubline, "Atención cercana y trabajo cuidado, sin complicaciones.");
++  assert.equal(copy.aboutHeading, "Quiénes somos");
++  assert.equal(copy.aboutBody, "negocio local. Trabajamos de cerca con quien nos escribe: lo importante es entender bien lo que necesitas antes de empezar. Si quieres saber si podemos ayudarte, escríbenos y te lo contamos.");
++  assert.equal(copy.seoDescription, "negocio local. Escríbenos y te contamos cómo podemos ayudarte.");
++});
++
++test("genericCopy: los datos conocidos entran tal cual y el resto se compone con ellos", () => {
++  const brief = normalizeBrief({
++    businessType: "cafetería de especialidad",
++    name: "Café Aurora",
++    city: "Valencia",
++    service: "tueste propio y desayunos",
++    contact: "hola@cafeaurora.test",
++  });
++  const copy = genericCopy(brief);
++  assert.equal(copy.businessName, "Café Aurora");
++  assert.equal(copy.businessType, "cafetería de especialidad");
++  // Con nombre, el titular es el nombre; sin ciudad, no se inventa el "en ...".
++  assert.equal(copy.heroHeadline, "Café Aurora");
++  assert.equal(copy.heroSubline, "tueste propio y desayunos");
++  assert.equal(copy.aboutHeading, "cafetería de especialidad");
++  assert.match(copy.aboutBody, /^cafetería de especialidad en Valencia\. /);
++  assert.equal(copy.seoDescription, "cafetería de especialidad en Valencia. Escríbenos y te contamos cómo podemos ayudarte.");
++  // Los fijos del arquitecto, literales.
++  assert.equal(copy.heroCta, "Contactar");
++  assert.equal(copy.servicesHeading, "Qué hacemos");
++  assert.equal(copy.processHeading, "Cómo trabajamos");
++  assert.equal(copy.closingHeadline, "Hablemos de lo que necesitas");
++  assert.equal(copy.closingCta, "Escribir");
++  assert.deepEqual(copy.photoQueries, { hero: "local business storefront", gallery: "small business interior" });
++});
++
++test("genericCopy: sin nombre pero con tipo y ciudad el titular los usa", () => {
++  const brief = normalizeBrief({ businessType: "peluquería canina", city: "Alcalá de Henares" });
++  const copy = genericCopy(brief);
++  assert.equal(copy.heroHeadline, "peluquería canina en Alcalá de Henares");
++  assert.equal("businessName" in copy, false);
++  // Los acentos del brief no se normalizan ni se pierden.
++  assert.match(copy.aboutBody, /Alcalá de Henares/);
++  assert.match(copy.seoDescription, /peluquería canina en Alcalá de Henares/);
++});
++
++test("genericCopy: sin nombre ni ciudad cae al tipo de negocio, y sin tipo al fijo 'negocio local'", () => {
++  const conTipo = genericCopy(normalizeBrief({ businessType: "panadería artesanal" }));
++  assert.equal(conTipo.heroHeadline, "panadería artesanal");
++  const sinNada = genericCopy(normalizeBrief({ description: "abrimos todos los dias" }));
++  assert.equal(sinNada.heroHeadline, "negocio local");
++});
++
++test("genericCopy: con un tipo de negocio demasiado corto el titular llega al minimo del esquema", () => {
++  // "bar" no llega a los 8 caracteres que exige `heroHeadline`: se usa el fijo
++  // en vez de devolver un copy que el esquema iba a rechazar.
++  const copy = genericCopy(normalizeBrief({ businessType: "bar" }));
++  assert.equal(copy.heroHeadline, "Tu negocio, más cerca");
++  assert.equal(siteCopySchema.safeParse(copy).success, true);
++});
++
++test("genericCopy: es determinista, no comparte estructuras y no toca el brief", () => {
++  const brief = normalizeBrief({ businessType: "cafetería de especialidad", city: "Valencia" });
++  const primero = genericCopy(brief);
++  const segundo = genericCopy(brief);
++  assert.deepEqual(primero, segundo);
++  // Mutar una copia no cambia la otra: los servicios no se comparten por referencia.
++  primero.services[0].title = "otra cosa";
++  assert.equal(segundo.services[0].title, "Atención directa");
++  assert.equal(brief.businessType, "cafetería de especialidad");
++});
++
++// --- T-002.9: Fix 2 — sin recortes que creen números parciales -----------------
++
++test("T-002.9: tipo con año no produce número parcial en seoDescription ni aboutBody", () => {
++  // «Negocio con 2019 locales» es un brief real que antes producía «20» suelto
++  // al recortar seoDescription: el límite caía en mitad de «2019».
++  // Con `safeCompose` se elige la variante que cabe sin recortar.
++  const brief = normalizeBrief({ businessType: "Negocio con 2019 locales", city: "A".repeat(80) });
++  const copy = genericCopy(brief);
++  const serializado = JSON.stringify(copy);
++  // Ningún número del brief debe aparecer parcialmente: «2019» sí; «20» suelto, no.
++  assert.doesNotMatch(serializado, /(?<!\d)20(?!\d|19)/,
++    "ningun campo contiene el número 2019 partido en «20»");
++  assert.ok(copy.seoDescription.length <= 155, `seoDescription ${copy.seoDescription.length} > 155`);
++  assert.ok(copy.aboutBody.length <= 700, `aboutBody ${copy.aboutBody.length} > 700`);
++  assert.equal(siteCopySchema.safeParse(copy).success, true);
++});
++
++test("T-002.9: nombre de 80 caracteres hace que businessName se omita, copy sigue válido", () => {
++  // businessName máx 60; un nombre de 80 no cabe. Se omite entero en vez de
++  // recortarse (un nombre a medias es peor que ninguno: T-002.9, Fix 2).
++  const nombre80 = "A".repeat(80);
++  const copy = genericCopy(normalizeBrief({ name: nombre80 }));
++  assert.equal("businessName" in copy, false, "businessName omitido cuando name > 60");
++  assert.equal(siteCopySchema.safeParse(copy).success, true);
++});
++
++test("T-002.9: todos los campos del brief al máximo simultáneamente pasan el esquema", () => {
++  // Verifica que safeCompose cubre también el peor caso combinado.
++  const brief = normalizeBrief({
++    businessType: "Á".repeat(120),
++    name: "N".repeat(80),
++    city: "C".repeat(80),
++    service: "S".repeat(200),
++    contact: "hola@test.es",
++    description: "Á".repeat(500),
++  });
++  const copy = genericCopy(brief);
++  const parsed = siteCopySchema.safeParse(copy);
++  assert.equal(parsed.success, true, JSON.stringify(parsed.success ? [] : parsed.error.issues));
++  assert.ok(copy.seoDescription.length <= 155);
++  assert.ok(copy.aboutBody.length <= 700);
++  assert.ok(copy.heroHeadline.length >= 8 && copy.heroHeadline.length <= 90);
++});
++
++test("T-002.9: emoji en el punto de corte de heroHeadline no produce sustituto suelto", () => {
++  // heroHeadline máx 90; «a» + 44 emojis = 89 unidades UTF-16 (cabe); con una
++  // más serían 91 (no cabe). safeCompose cae a la variante siguiente sin cortar.
++  const brief = normalizeBrief({ name: "a" + "😀".repeat(45) }); // 1+90=91 unidades
++  const copy = genericCopy(brief);
++  assert.doesNotMatch(
++    JSON.stringify(copy),
++    /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/,
++    "ningun campo del copy contiene un sustituto suelto",
++  );
++  assert.ok(copy.heroHeadline.length <= 90);
++  assert.equal(siteCopySchema.safeParse(copy).success, true);
++});
++
++test("T-002.9: un texto que cabe en su límite se conserva íntegro", () => {
++  // safeCompose no debe tocar nada cuando la variante larga ya cabe.
++  const brief = normalizeBrief({
++    businessType: "cafetería de especialidad",
++    city: "Valencia",
++  });
++  const copy = genericCopy(brief);
++  // La composición «cafetería de especialidad en Valencia» cabe en seoDescription (155).
++  assert.equal(copy.seoDescription, "cafetería de especialidad en Valencia. Escríbenos y te contamos cómo podemos ayudarte.");
++  assert.match(copy.aboutBody, /^cafetería de especialidad en Valencia\./);
++});

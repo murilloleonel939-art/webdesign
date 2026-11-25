@@ -1,0 +1,28 @@
+# Reporte T-002.1 — junior (claude-sonnet-5)
+
+- Fecha: 2026-11-24T13:22:40Z
+- Resultado: DONE
+- Qué hice (3 a 5 líneas):
+  - Reescribí `retryLine` en `agents/design/src/copy.ts` con dos ramas: `empty_services` recibe un texto propio que dice que los servicios se descartaron por datos que el dueño no dio y pide servicios nuevos sin cifras, años, porcentajes, premios, certificaciones, precios ni testimonios; cualquier otro motivo conserva literalmente el texto anterior.
+  - La firma `retryLine(reason: string): string` no cambia y el resto del archivo queda intacto.
+  - Añadí tres casos a `agents/design/test/copy.test.mjs`, uno por familia (guardia, esquema, otro), y el import de `retryLine`.
+  - Compilé con `pnpm turbo run build --force` y verifiqué el paquete y el monorepo completo.
+- Archivos tocados:
+  - `agents/design/src/copy.ts`
+  - `agents/design/test/copy.test.mjs`
+  - `docs/reports/T-002.1/junior.md` (este reporte)
+- Decisiones y por qué:
+  - Solo se ramifica `empty_services`; `schema:*` y el resto caen al mismo `return` final con el texto original, así que el caso «otro» no puede afirmar una causa desconocida aunque se añada un motivo nuevo más adelante.
+  - El texto nuevo no menciona `empty_services` ni la guardia por su nombre: habla del efecto que ve el modelo (datos que el dueño no dio) y le da la lista de datos prohibidos, que es lo que evita que repita la cifra inventada.
+  - Literales sin tildes («ano», «pedir sin cifras», «dueno»), siguiendo la convención del archivo; los tests y el reporte sí llevan tildes normales.
+  - Comentario de función ampliado con el porqué (la guardia no falla al leer, poda), sin adornos, en el estilo del bloque de cabecera del archivo.
+  - No toqué `guardCopy`, `agent.ts`, `brief.ts`, `draft.ts`, el prompt inicial ni el esquema.
+- Pendientes y riesgos:
+  - El rojo previo de los tres tests no se ejecutó contra el build anterior: se deduce del texto original, que contenía «no se pudo leer», justo lo que el test de `empty_services` prohíbe. No es una comprobación ejecutada.
+  - Los avisos `copy_guard` de un intento descartado siguen sin arreglar (T-002.3, senior).
+  - `docs/spec.md` aparece modificado en el árbol de trabajo, pero no es mío: ya estaba así al empezar.
+- Entrego a: senior
+- Referencias:
+  - Spec: `docs/spec.md`, «Detalle de T-002.1 — `retryLine` por familia de motivo» (línea 153).
+  - Deuda original: `docs/spec.md` §10, punto 2.
+  - Verificación: `pnpm turbo run build --force` → 22/22 tareas, exit 0; `agents/design` `pnpm test` → 50/50, 0 fallos (47 previos + 3 nuevos); `pnpm turbo run typecheck test --force` → 67/67 tareas, exit 0, 0 fallos.

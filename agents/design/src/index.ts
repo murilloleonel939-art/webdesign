@@ -19,10 +19,14 @@ export { draftSite, heroHeadline, type PhotoRef, type Preset, type SitePhotos } 
 
 export { copyPrompt, guardCopy, readCopy, retryLine, siteCopySchema, type SiteCopy } from "./copy.js";
 
+export { genericCopy } from "./generic-copy.js";
+
 export {
+  completeCopy,
   inventory,
   planSections,
   plannedTypes,
+  type CompletedCopy,
   type Inventory,
   type Known,
   type Missing,

@@ -1,0 +1,33 @@
+# Reporte T-002.2 — junior (claude-sonnet-5)
+
+- Fecha: 2026-11-24T13:32:02Z
+- Resultado: DONE
+- Qué hice (3 a 5 líneas):
+  - Creé `agents/design/src/generic-copy.ts` con `genericCopy(brief: QuickBrief): SiteCopy`: arma un copy completo y determinista con los datos del brief y los textos fijos del contrato, copiados literales.
+  - `businessName` se omite cuando el dueño no dio nombre; `businessType` cae a `"negocio local"`, y `aboutBody`, `seoDescription` y el titular se componen con el tipo y la ciudad.
+  - Añadí sólo la exportación en `agents/design/src/index.ts`.
+  - Creé `agents/design/test/generic-copy.test.mjs` con 10 casos: los cuatro briefs del contrato (sólo `description`; `businessType`+`name`+`city`; los cinco campos; acentos) verificando las cinco garantías en cada uno, más textos exactos, mínimo del titular, determinismo y ausencia del marcador.
+  - Compilé y verifiqué el paquete y el monorepo completo.
+- Archivos tocados:
+  - `agents/design/src/generic-copy.ts` (nuevo)
+  - `agents/design/src/index.ts` (una línea de exportación)
+  - `agents/design/test/generic-copy.test.mjs` (nuevo)
+  - `docs/reports/T-002.2/junior.md` (este reporte)
+- Decisiones y por qué:
+  - Comprobé por script los 27 literales fijos antes de escribirlos: ninguno lleva dígitos, `€`, `$`, `%` ni palabras de reclamo, así que no hubo nada que devolver como BLOCKED.
+  - No cableé nada: `runFastDesign`, `draftSite`, `agent.ts`, `copy.ts`, `plan.ts` quedan intactos (T-002.3).
+  - `heroHeadline` sigue la cadena del contrato (nombre → tipo con ciudad → tipo → frase fija) con una guarda de longitud: si el candidato no llega a los 8 caracteres que exige el esquema, se usa `"Tu negocio, más cerca"`. Sin esa guarda, un `businessType` corto como `"bar"` devolvería un copy que el esquema rechaza y rompería la garantía 1. Hay un test específico para eso.
+  - Como `businessType` nunca queda vacío (cae a `"negocio local"`), el titular de un brief sin nombre ni ciudad es `"negocio local"`, no la frase fija: así lo dice la cadena del contrato. La frase fija sólo entra por longitud. Corregí dos aserciones mías que esperaban lo contrario, no la implementación.
+  - `aboutBody` y `seoDescription` usan el mismo `place` (`tipo` o `tipo en ciudad`) para no repetir la composición en dos sitios.
+  - `businessName` se añade después, con `known(...)`, para respetar `exactOptionalPropertyTypes` (la clave se omite, no vale `undefined`).
+  - Cada llamada construye arrays y objetos nuevos: mutar el copy devuelto no afecta a la siguiente llamada (hay test).
+- Pendientes y riesgos:
+  - **Límite conocido y no resuelto por el contrato:** los valores que vienen del brief se copian tal cual. Si un campo del brief lleva un dato prohibido (por ejemplo `name: "Café 100% artesanal"`), el copy lo llevaría y `guardCopy` lo podaría, de modo que la garantía 2 no se cumpliría en ese brief concreto. El contrato no cubre ese caso y prohíbe cambiar los textos por mi cuenta, así que no lo he inventado: queda anotado para el senior, que decide si `genericCopy` debe sanear los valores del brief.
+  - La garantía 2 se cumple también cuando el brief trae `service` con cifras: `guardCopy` sustituye `heroSubline` por el servicio del brief, pero el servicio sigue teniendo la cifra y el campo se poda. Mismo límite que el anterior, misma decisión.
+  - El cableado en el flujo sigue pendiente (T-002.3). Mientras no se cablee, `genericCopy` no cambia ningún comportamiento del sitio.
+  - `docs/spec.md` aparece modificado en el árbol de trabajo desde antes de esta tarea; no es mío.
+- Entrego a: senior
+- Referencias:
+  - Contrato recibido del lead (T-002.2), textos fijos del arquitecto.
+  - Spec: `docs/spec.md:127` (fila T-002.2).
+  - Verificación: `pnpm turbo run build --force` → 22/22 tareas, exit 0; `pnpm build` + `pnpm test` en `agents/design` → 60/60 (50 previos + 10 nuevos), 0 fallos; `pnpm turbo run typecheck test --force` en la raíz → 67/67 tareas, exit 0, 0 fallos.

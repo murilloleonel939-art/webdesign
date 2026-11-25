@@ -123,6 +123,9 @@ producción, no el desarrollo.
 | T-000 | Redesplegar `workers` y `llm-gateway`; revisar variables y el log `design_copy_fallback` | A | humano | — |
 | T-001 | Arreglar el reintento de `empty_services` y resolver la prueba de `seoDescription` | A | senior | — |
 | T-002 | Quitar el marcador del sitio y escribir copy completo y verosímil | B | senior + junior | T-001 |
+| T-002.1 | `retryLine` por familia de motivo, no un texto único | B | junior | T-001 |
+| T-002.2 | `genericCopy`: copy determinista sin marcador ni inventos | B | junior | T-002.1 |
+| T-002.3 | Cablear `genericCopy`, quitar el marcador del borrador y avisos por intento | B | senior | T-002.2 |
 | T-003 | Clasificar landing vs sitio y generar varias páginas con navegación | C | senior | T-002 |
 | T-004 | Inicio con un solo campo y resultado a pantalla completa | D.1–D.2 | senior | T-003 |
 | T-005 | Edición con clic, Puck oculto y limpieza de botones | D.3–D.4 | senior + junior | T-004 |
@@ -145,6 +148,44 @@ Detalle de la primera tarea, `T-001`:
 - **Tests que debe pasar:** `pnpm --filter @webdesign/agent-design test` → 47/47, y
   `pnpm turbo run typecheck test --force` → 371/371.
 - **Fuera de alcance:** tocar `guardCopy`, cambiar el esquema del copy, tocar el panel.
+
+
+### Detalle de T-002.1 — `retryLine` por familia de motivo
+
+**Problema:** `retryLine` dice siempre «no se pudo leer», también cuando el problema
+real es que la guardia podó todos los servicios. El modelo reintenta a ciegas y repite
+la misma cifra inventada.
+
+**Contrato:** se conserva la firma `retryLine(reason: string): string`. Cambia el texto
+según la familia del motivo:
+
+| Familia | Reconocimiento | Qué debe decir el mensaje |
+| --- | --- | --- |
+| Guardia | `reason === "empty_services"` | Que los servicios se descartaron **por datos no aportados**; pedir servicios sin cifras, años, premios ni certificaciones |
+| Esquema | `reason.startsWith("schema:")` | El texto actual: no se pudo leer, responder más corto y solo el JSON |
+| Otro | cualquier otra cosa | El texto actual, sin afirmar una causa falsa |
+
+**Archivos cerrados:** `agents/design/src/copy.ts`, `agents/design/test/copy.test.mjs`.
+
+**Tests:** los 47 actuales más tres casos nuevos, uno por familia. El mensaje de
+`empty_services` no debe contener «no se pudo leer» y debe nombrar los datos inventados;
+los otros dos no deben nombrar la guardia.
+
+**Fuera de alcance:** cambiar `guardCopy`, el esquema del copy, el prompt inicial o el
+flujo de `agent.ts`.
+
+## 8bis. Orden de la revisión (regla del dueño del producto)
+
+**Testing primero, seguridad después. Nunca en paralelo.**
+
+Seguridad solo audita un diff que ya pasó testing. Motivo: si el código todavía puede
+cambiar, el dictamen de seguridad caduca antes de leerse y hay que repetirlo. En T-002 se
+lanzaron los dos a la vez y seguridad revisó un diff que testing estaba tumbando en ese
+mismo momento.
+
+Consecuencia práctica: una tarea se manda a seguridad solo cuando testing ha escrito
+`PASS` sobre el diff definitivo. Si después de seguridad se toca una línea, testing vuelve
+a empezar y el dictamen anterior se descarta.
 
 ## 9. Cierre obligatorio
 

@@ -1,6 +1,7 @@
 import { z } from "zod";
-import { PENDING_MARKER, type QuickBrief } from "./brief.js";
+import { PENDING_MARKER, containsMarker, type QuickBrief } from "./brief.js";
 import { heroHeadline } from "./draft.js";
+import { genericCopy } from "./generic-copy.js";
 
 // Textos del sitio escritos por el modelo (spec 9.1, `generate_copy`).
 //
@@ -14,8 +15,9 @@ import { heroHeadline } from "./draft.js";
 //
 // La guardia no interpreta: busca dígitos, símbolos de moneda y un puñado de
 // palabras que solo se dicen con datos detrás. La única excepción es la cifra
-// que el dueño escribió literalmente en `brief.description`: esa no la inventó
-// el modelo.
+// que el dueño escribió literalmente en cualquier campo del brief: esa no la
+// inventó el modelo. Reclamos, dinero y el marcador se podan siempre (ver
+// `hasInvention`).
 
 /**
  * Topes por campo. El esquema los usa tal cual y `normalizeCopy` recorta a ellos
@@ -255,33 +257,109 @@ export function readCopy(text: string, finishReason: string): CopyReadResult {
   return { ok: true, copy: parsed.data };
 }
 
-/** Línea extra del reintento: el motivo del fallo y la orden de ser más corto. */
+/**
+ * Línea extra del reintento: el motivo del fallo y la orden de ser más corto.
+ *
+ * `empty_services` no es un fallo de lectura: la guardia podo todos los
+ * servicios por llevar datos que el dueno no dio. Decirle al modelo "no se
+ * pudo leer" lo hace reintentar a ciegas y repetir la misma cifra inventada,
+ * asi que esa familia recibe un texto propio que nombra los datos prohibidos
+ * en vez de la causa falsa. El resto (motivos de esquema y cualquier otro) no
+ * se toca: no se afirma una causa que no se conoce.
+ */
 export function retryLine(reason: string): string {
+  if (reason === "empty_services") {
+    return "Los servicios anteriores se descartaron porque llevaban datos que el dueno no dio (cifras, anos, porcentajes, premios, certificaciones, precios o testimonios). Escribe servicios nuevos sin nada de eso. Responde SOLO el objeto JSON, mas corto: frases breves y listas de 3 a 4 elementos como mucho.";
+  }
   return `Tu respuesta anterior no se pudo leer (${reason}). Responde SOLO el objeto JSON, mas corto: frases breves y listas de 3 a 4 elementos como mucho.`;
 }
 
 // --- Guardia determinista ---------------------------------------------------
 
-/** Un titular que solo se escribe con datos detrás. */
-const CLAIM = /\b(clientes satisfechos|años de experiencia|anos de experiencia|premiad|certificad|garantizad|n[ºo°]\s*1|líder|lider)\b/i;
+/**
+ * Un titular que solo se escribe con datos detrás (T-002.4, Fix C).
+ *
+ * Cada familia lleva sus flexiones EXPLÍCITAS y `\b` a los dos lados. La
+ * versión anterior quitaba el `\b` final para cubrir los plurales, y con eso
+ * podaba "liderar" o "liderazgo" (actividades, no reclamos) y seguía dejando
+ * pasar "certificaciones". Aquí no hay raíces abiertas: o es una de estas
+ * formas, o no es un reclamo.
+ *
+ * La política (T-002.5) es una sola frase: **se podan las afirmaciones de
+ * estado** (sustantivos y participios que presumen algo del negocio) y **se
+ * conservan las actividades** (verbos que describen lo que se hace).
+ *
+ *   - Se podan: premiado/a/os/as, certificado/a/os/as, certificación/es,
+ *     garantizado/a/os/as, líder/es, liderazgo/s, nº 1, clientes satisfechos y
+ *     años de experiencia.
+ *   - No se podan: "liderar", "coliderar", "liderando" (actividades) ni
+ *     "certificar" (describe un trámite, no afirma que el negocio lo tenga).
+ *
+ * "liderazgo" es un sustantivo que presume posición, no una actividad: entra
+ * con `azgos?`, para que el plural quede cubierto igual que en las demás
+ * familias.
+ */
+const CLAIM = /\b(clientes satisfechos|años de experiencia|anos de experiencia|premiad[oa]s?|certificad[oa]s?|certificaci[oó]n(es)?|garantizad[oa]s?|l[íi]der(azgos?|es)?|n[ºo°]\s*1)\b/i;
 const DIGIT = /\d/;
 const MONEY = /[€$%]/;
+/** Cifra completa: la misma regex para el texto del modelo y para el corpus del dueño. */
+const NUMBER = /\d+([.,]\d+)?/g;
+
+/**
+ * Las cifras que escribió el dueño, como tokens completos.
+ *
+ * El corpus son los campos donde el dueño describe su negocio (T-002.3):
+ * `description`, `name`, `businessType`, `city` y `service`. Un campo que
+ * contiene el marcador no es un dato suyo y no avala nada.
+ *
+ * `contact` queda FUERA (T-002.5, hallazgo 1 de seguridad): un teléfono o un
+ * correo no autorizan cifras. Con el contacto dentro, un "24" del número
+ * validaba "Entrega en 24 horas", un plazo que el dueño nunca dio. El contacto
+ * se sigue publicando tal cual en la sección de contacto, que es donde tiene
+ * sentido; lo que no hace es acreditar afirmaciones del texto.
+ *
+ * Se guardan tokens, no el texto (T-002.4, Fix B): con `includes`, el "19" de
+ * "Tenemos 19 sucursales" quedaba avalado por el "2019" de "Café 2019".
+ */
+function ownerNumbers(brief: QuickBrief): Set<string> {
+  const corpus = [brief.description, brief.name, brief.businessType, brief.city, brief.service]
+    .filter((value): value is string => value !== undefined && value !== PENDING_MARKER && !containsMarker(value))
+    .join("\n");
+  return new Set(corpus.match(NUMBER) ?? []);
+}
 
 /**
  * ¿El texto lleva un dato que el dueño no dio?
  *
- * Una cifra que aparece LITERAL en `brief.description` no cuenta como invento:
- * la escribió el dueño. Se compara el fragmento numérico, no el texto entero,
- * porque el modelo puede repetir "3" en otra frase.
+ * Una cifra cuenta como del dueño solo si aparece COMPLETA, como token, en algún
+ * campo del brief: "2019" avala "2019", nunca "19" ni "201".
+ *
+ * `CLAIM` y `MONEY` se podan SIEMPRE, aunque el dueño los haya escrito. No es
+ * desconfianza hacia el dueño: es que la plataforma no puede avalar "líderes del
+ * sector", "premiados" ni un porcentaje. Publicarlo sería poner una afirmación
+ * comercial en boca del producto, y quien tendría que defenderla es quien lo
+ * publica. Mismo criterio para los importes: un precio que el dueño dictó por
+ * chat no es un precio confirmado. Y el marcador tampoco se publica nunca.
  */
-function hasInvention(value: string, briefDescription: string | undefined): boolean {
+function hasInvention(value: string, owned: Set<string>): boolean {
+  if (containsMarker(value)) return true;
   if (!DIGIT.test(value) && !MONEY.test(value) && !CLAIM.test(value)) return false;
-  const numbers = value.match(/\d+([.,]\d+)?/g) ?? [];
-  const unsupported = numbers.some((n) => !(briefDescription ?? "").includes(n));
-  if (unsupported) return true;
-  // Sin cifras a la vista sigue habiendo reclamos: "premiados", "100 %" (ya
-  // cubierto por MONEY) o "líderes del sector". Nada de eso sale del brief.
-  return CLAIM.test(value) || MONEY.test(value);
+  // Los reclamos y el dinero no se ablandan con el corpus: se podan igual.
+  if (CLAIM.test(value) || MONEY.test(value)) return true;
+  return (value.match(NUMBER) ?? []).some((n) => !owned.has(n));
+}
+
+/**
+ * ¿Se puede publicar este valor del brief tal cual? (T-002.4, Fix D)
+ *
+ * Es el MISMO predicado de la guardia, aplicado a lo que el dueño escribió antes
+ * de interpolarlo en un texto de respaldo. Las cifras del propio dueño pasan; un
+ * reclamo, un importe o el marcador no, aunque los haya escrito él. No se sanea
+ * recortando palabras: o el dato pasa entero, o no se usa y se cae al neutro.
+ */
+export function briefValueOk(value: string, brief: QuickBrief): boolean {
+  if (value === PENDING_MARKER || value.trim() === "") return false;
+  return !hasInvention(value, ownerNumbers(brief));
 }
 
 /**
@@ -294,21 +372,25 @@ function hasInvention(value: string, briefDescription: string | undefined): bool
  */
 export function guardCopy(copy: SiteCopy, brief: QuickBrief): { copy: SiteCopy; dropped: string[] } {
   const dropped: string[] = [];
-  const desc = brief.description;
+  // Un solo corpus para toda la guardia: las cifras de los seis campos del dueño.
+  const corpus = ownerNumbers(brief);
   const headline = heroHeadline(brief);
 
   const keepText = (field: string, value: string, fallback: string): string => {
-    if (!hasInvention(value, desc)) return value;
+    if (!hasInvention(value, corpus)) return value;
     dropped.push(field);
     return fallback;
   };
 
-  const businessType = keepText("businessType", copy.businessType, brief.businessType);
+  // Los respaldos que antes eran `brief.businessType` podian valer el marcador
+  // si el dueño no dio el tipo: salen del copy generico, que nunca lo lleva.
+  const generic = genericCopy(brief);
+  const businessType = keepText("businessType", copy.businessType, generic.businessType);
   const heroCta = keepText("heroCta", copy.heroCta, "Contactar");
   const closingCta = keepText("closingCta", copy.closingCta, "Contactar");
 
   const services = copy.services.filter((item, i) => {
-    const bad = hasInvention(item.title, desc) || hasInvention(item.body, desc);
+    const bad = hasInvention(item.title, corpus) || hasInvention(item.body, corpus);
     if (bad) dropped.push(`services[${i}]`);
     return !bad;
   });
@@ -317,13 +399,13 @@ export function guardCopy(copy: SiteCopy, brief: QuickBrief): { copy: SiteCopy; 
   // queda ninguno, en vez de publicar una tarjeta "pendiente de confirmar".
 
   const process = copy.process.filter((item, i) => {
-    const bad = hasInvention(item.title, desc) || hasInvention(item.body, desc);
+    const bad = hasInvention(item.title, corpus) || hasInvention(item.body, corpus);
     if (bad) dropped.push(`process[${i}]`);
     return !bad;
   });
 
   const faq = copy.faq.filter((item, i) => {
-    const bad = hasInvention(item.q, desc) || hasInvention(item.a, desc);
+    const bad = hasInvention(item.q, corpus) || hasInvention(item.a, corpus);
     if (bad) dropped.push(`faq[${i}]`);
     return !bad;
   });
@@ -331,7 +413,9 @@ export function guardCopy(copy: SiteCopy, brief: QuickBrief): { copy: SiteCopy; 
   // Se calculan antes del objeto: el fallback del SEO baja por esta cadena
   // (subtitular y, si no hay, titular) en vez de caer a un marcador.
   const heroHeadlineText = keepText("heroHeadline", copy.heroHeadline, headline);
-  const heroSublineText = keepText("heroSubline", copy.heroSubline, brief.service === PENDING_MARKER ? "" : brief.service);
+  // El respaldo del subtitular es el servicio del dueño, pero solo si pasa la
+  // misma guardia: un respaldo no puede restaurar lo que se acaba de podar.
+  const heroSublineText = keepText("heroSubline", copy.heroSubline, briefValueOk(brief.service, brief) ? brief.service : "");
   const seoFallback = trimWord(heroSublineText !== "" ? heroSublineText : heroHeadlineText, 160);
 
   const guarded: SiteCopy = {
@@ -344,7 +428,7 @@ export function guardCopy(copy: SiteCopy, brief: QuickBrief): { copy: SiteCopy; 
     services,
     processHeading: keepText("processHeading", copy.processHeading, "Como trabajamos"),
     process,
-    aboutHeading: keepText("aboutHeading", copy.aboutHeading, brief.businessType),
+    aboutHeading: keepText("aboutHeading", copy.aboutHeading, generic.aboutHeading),
     // Sin texto propio no se escribe un parrafo de relleno: el vacio hace que el
     // borrador omita la seccion `about` entera (draft.ts).
     aboutBody: keepText("aboutBody", copy.aboutBody, ""),

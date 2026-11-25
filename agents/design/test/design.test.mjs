@@ -7,8 +7,10 @@ import { renderPage } from "@webdesign/renderer";
 import {
   BRIEF_FIELDS,
   PENDING_MARKER,
+  completeCopy,
   designAgent,
   draftSite,
+  genericCopy,
   inventory,
   normalizeBrief,
   planSections,
@@ -93,22 +95,30 @@ test("draft: el borrador valida contra site-schema y no inventa contenido", () =
 
   const sections = doc.pages[0].sections;
   assert.equal(sections[0].type, "hero");
-  // Testimonio y ventajas degradan a texto: inventarlos sería fabricar datos.
+  // Testimonio: nunca se escribe, se inventaría un cliente. (Cambiado en
+  // T-002.3: antes las ventajas también se degradaban a texto con el marcador;
+  // ahora se escriben con el copy genérico, que no afirma nada del negocio.)
   assert.ok(sections.every((s) => s.type !== "testimonial"));
-  assert.ok(sections.every((s) => s.type !== "features"));
+  assert.ok(sections.some((s) => s.type === "features"), "las ventajas se escriben con el copy");
   assert.equal(doc.theme.colors.accent, PRESET.colors.accent);
 
-  // Ningún precio del preset se hereda.
+  // Ningún precio del preset se hereda: la sección ni siquiera se escribe.
+  // (Cambiado en T-002.3: antes salía con el marcador; ahora se omite.)
   const priced = draftSite(normalizeBrief(BRIEF), { ...PRESET, sections: [{ type: "pricing" }] });
-  const plans = priced.pages[0].sections.find((s) => s.type === "pricing").props.plans;
-  assert.notEqual(plans[0].price, "19 €");
-  assert.deepEqual(plans[0].features, []);
+  assert.equal(priced.pages[0].sections.some((s) => s.type === "pricing"), false);
 });
 
-test("draft: 6.4 no devuelve ningún error y el marcador llega al HTML", () => {
+// Cambiado en T-002.3 (era "…y el marcador llega al HTML"): el marcador ya no
+// llega a ninguna parte. Lo que sigue igual de importante es que el camino sin
+// datos del dueño produce HTML válido y un 6.4 limpio; lo nuevo que se afirma
+// es que ese HTML cumple B1.
+test("draft: 6.4 no devuelve ningún error y el HTML no lleva el marcador", () => {
   const doc = draftSite(normalizeBrief({ name: "Café Aurora" }), PRESET);
   assert.deepEqual(lintSite(doc).filter((f) => f.severity === "error"), []);
-  assert.match(renderPage(doc, "p_home"), /pendiente de confirmar/i);
+  const html = renderPage(doc, "p_home");
+  assert.doesNotMatch(html, /pendiente de confirmar/i);
+  // Y la página no sale vacía: hay titular y hay contenido.
+  assert.match(html, /Café Aurora/);
 });
 
 test("inventario: separa lo afirmado de lo que falta, sin interpretar", () => {
@@ -119,10 +129,27 @@ test("inventario: separa lo afirmado de lo que falta, sin interpretar", () => {
   assert.deepEqual(inv.missing.map((m) => m.field), normalizeBrief({ name: "Café Aurora", city: "Valencia" }).pending);
 });
 
-test("plan: degrada testimonios y ventajas, omite imágenes sin assets", () => {
+test("plan: omite testimonios y precios, escribe ventajas con el copy genérico", () => {
   const plan = planSections(normalizeBrief(BRIEF), PRESET);
   assert.equal(plan.presetId, PRESET.id);
-  assert.deepEqual(plan.sections.map((s) => s.action), ["write", "write", "degrade", "degrade", "write"]);
+  // Cambiado en T-002.3: sin copy del modelo el plan ya no "degrada" a texto con
+  // el marcador; escribe con `genericCopy`. El testimonio se omite, no se degrada.
+  // Cambiado en T-002.6: el plan respeta el orden del preset para lo que incluye
+  // y añade lo que falta (aquí `faq` y `contact`), con contacto y cierre al final.
+  assert.deepEqual(
+    plan.sections.map((s) => `${s.type}:${s.action}`),
+    ["hero:write", "text:write", "features:write", "process:write", "testimonial:omit", "faq:write", "contact:write", "cta:write"],
+  );
+  // Lo añadido se distingue de lo que pidió el preset: el panel ve el motivo.
+  assert.equal(plan.sections.find((s) => s.type === "faq").reason, "completitud_copy_generico");
+  assert.equal(plan.sections.find((s) => s.type === "contact").reason, "cierre_obligatorio");
+  // El panel no puede presentar el texto genérico como si lo hubiera dicho el dueño.
+  // Cambiado en T-002.8: el origen vive en `origin` y vale para TODAS las
+  // secciones de texto, las del preset y las añadidas. Las del preset dicen por
+  // qué están con `reason: "preset"`.
+  const delPreset = plan.sections.filter((s) => s.action === "write" && s.reason === "preset" && s.type !== "contact");
+  assert.ok(delPreset.length > 0);
+  assert.ok(plan.sections.filter((s) => s.action === "write" && s.type !== "contact").every((s) => s.origin === "copy_generico"));
   // Ningún plan puede dejar el documento sin h1.
   assert.equal(plan.sections[0].as, "hero");
   const noHero = planSections(normalizeBrief(BRIEF), { ...PRESET, sections: [{ type: "gallery" }, { type: "text" }] });
@@ -163,8 +190,9 @@ test("runFastDesign: una ronda, sin invenciones y con checkpoint", async () => {
   assert.equal(siteDocumentSchema.safeParse(out.doc).success, true);
   assert.ok(out.checkpointId);
   assert.deepEqual(out.findings6_4.filter((f) => f.severity === "error"), []);
-  // Ni el modelo ni el agente sustituyen el marcador.
-  assert.match(JSON.stringify(out.doc), /pendiente de confirmar/);
+  // Ni el modelo ni el agente escriben el marcador en el sitio; el fallback del
+  // copy deja constancia en `warnings`, que es donde el panel lo lee (B1).
+  assert.doesNotMatch(JSON.stringify(out.doc), /pendiente de confirmar/);
   // El panel recibe el motivo de cada decisión, no una caja negra.
   assert.ok(out.plan.sections.every((s) => typeof s.reason === "string" && s.reason.length > 0));
   assert.deepEqual(out.inventory.missing.map((m) => m.field), ["service", "contact"]);
@@ -239,15 +267,20 @@ test("runFastDesign: fetchPhotos que lanza deja el sitio sin fotos y avisa photo
   assert.equal(validateSiteDocument(out.doc).ok, true);
 });
 
-test("runFastDesign: copy con 2 servicios -> features con 2 items, sin marcador en doc.pages", async () => {
+test("runFastDesign: copy con 2 servicios -> features genérica completa, sin marcador", async () => {
   const copy = JSON.parse(copyWithPhotosJson());
   copy.services = copy.services.slice(0, 2);
   const { client, tracker } = fakeClient(JSON.stringify(copy));
   const out = await runFastDesign({ brief: BRIEF, presets: [PRESET], client, tracker, ctx: CTX("copy-2") });
 
+  // Cambiado en T-002.3: con menos de 3 servicios la sección se sustituye entera
+  // por la genérica (antes salía con 2). Ningún servicio del modelo se mezcla.
   const features = out.doc.pages[0].sections.find((s) => s.id === "s_features");
-  assert.equal(features.props.items.length, 2);
-  assert.doesNotMatch(JSON.stringify(out.doc.pages), /pendiente de confirmar/);
+  assert.deepEqual(features.props.items, genericCopy(normalizeBrief(BRIEF)).services);
+  assert.doesNotMatch(JSON.stringify(out.doc), /pendiente de confirmar/);
+  // El plan dice de dónde sale ese bloque: plantilla, no el modelo.
+  // Cambiado en T-002.8: el origen vive en `origin`.
+  assert.equal(out.plan.sections.find((s) => s.type === "features").origin, "copy_generico");
 });
 
 test("runFastDesign: plan y documento coinciden cuando el about se poda", async () => {
@@ -256,10 +289,15 @@ test("runFastDesign: plan y documento coinciden cuando el about se poda", async 
   const { client, tracker } = fakeClient(JSON.stringify(copy));
   const out = await runFastDesign({ brief: BRIEF, presets: [PRESET], client, tracker, ctx: CTX("copy-about") });
 
-  // Podado por la guardia: ni seccion `text` en el documento ni accion `write`.
-  assert.equal(out.doc.pages[0].sections.some((s) => s.type === "text"), false);
+  // Cambiado en T-002.3: antes plan y documento coincidían en OMITIR el about.
+  // Ahora coinciden en escribir el about genérico entero, y el plan lo nombra
+  // como tal. Lo que se protege es lo mismo: que no discrepen.
+  const generic = genericCopy(normalizeBrief(BRIEF));
+  const about = out.doc.pages[0].sections.find((s) => s.type === "text");
+  assert.deepEqual(about.props, { heading: generic.aboutHeading, body: generic.aboutBody });
   const textPlan = out.plan.sections.filter((s) => s.as === "text");
-  assert.deepEqual(textPlan.map((s) => [s.action, s.reason]), [["omit", "sin_about_del_dueno"]]);
+  // Cambiado en T-002.8: por qué está (`preset`) y de dónde sale (`origin`), por separado.
+  assert.deepEqual(textPlan.map((s) => [s.action, s.reason, s.origin]), [["write", "preset", "copy_generico"]]);
 });
 
 test("runFastDesign: un brief sin ningún dato se rechaza en vez de inventarlo", async () => {
@@ -270,4 +308,91 @@ test("runFastDesign: un brief sin ningún dato se rechaza en vez de inventarlo",
 test("runFastDesign: sin presets no se inventa una familia nueva", async () => {
   const { client, tracker } = fakeClient("x");
   await assert.rejects(runFastDesign({ brief: BRIEF, presets: [], client, tracker, ctx: CTX("r4") }), /no hay presets/);
+});
+
+// --- T-002.9: origin por registro, no por comparación ----------------------------
+
+test("T-002.9: hero con CTA del modelo -> copy_del_dueno aunque titular sea genérico", () => {
+  // `origin` dice quién produjo el texto. Si el modelo devolvió un CTA propio
+  // («Escríbenos»), el hero es suyo aunque el titular coincida con la plantilla.
+  // Con `substituted` sabemos exactamente qué sustituyó `completeCopy`: si
+  // `heroCta` no está en el conjunto, el hero no puede marcarse como plantilla.
+  const brief = normalizeBrief(BRIEF);
+  const generic = genericCopy(brief);
+  // Copiamos el copy genérico pero sustituimos el CTA por uno del modelo.
+  const copiaConCTA = { ...generic, heroCta: "Escríbenos" };
+  const { substituted } = completeCopy(copiaConCTA, brief);
+  // heroCta viene del modelo: NO debe estar en substituted.
+  assert.equal(substituted.has("heroCta"), false);
+  // Por tanto el hero NO puede ser copy_generico.
+  const plan = planSections(brief, PRESET, copiaConCTA);
+  assert.equal(plan.sections.find((s) => s.type === "hero").origin, "copy_del_dueno");
+});
+
+test("T-002.9: servicios con encabezado del modelo pero tarjetas genéricas -> copy_del_dueno en features", () => {
+  // La regla: `origin` de features depende de si `services` está en `substituted`,
+  // no de `servicesHeading`. Si el modelo dio suficientes servicios (>=3),
+  // `completeCopy` no sustituye `services`, aunque el encabezado sea diferente.
+  const brief = normalizeBrief(BRIEF);
+  const generic = genericCopy(brief);
+  // Copy con 3 servicios del modelo (suficientes) pero encabezado idéntico al genérico.
+  const copiaConServicios = {
+    ...generic,
+    servicesHeading: generic.servicesHeading, // igual al genérico
+    services: [
+      { title: "Tueste propio", body: "Tostamos el grano en casa." },
+      { title: "Desayunos", body: "Servimos desayunos hasta mediodía." },
+      { title: "Café para llevar", body: "También para llevar." },
+    ],
+  };
+  const { substituted } = completeCopy(copiaConServicios, brief);
+  assert.equal(substituted.has("services"), false, "3 servicios no disparan sustitución");
+  const plan = planSections(brief, PRESET, copiaConServicios);
+  assert.equal(plan.sections.find((s) => s.type === "features").origin, "copy_del_dueno");
+});
+
+test("T-002.9: servicios íntegramente genéricos (< 3 del modelo) -> copy_generico en features", () => {
+  // Con solo 2 servicios, `completeCopy` sustituye `services` y `servicesHeading`
+  // con la plantilla. El conjunto `substituted` lo recoge y `origin` es correcto.
+  const brief = normalizeBrief(BRIEF);
+  const copiaPocos = {
+    ...genericCopy(brief),
+    services: [
+      { title: "Tueste propio", body: "Tostamos el grano en casa." },
+      { title: "Desayunos", body: "Servimos desayunos hasta mediodía." },
+    ],
+  };
+  const { substituted } = completeCopy(copiaPocos, brief);
+  assert.equal(substituted.has("services"), true, "2 servicios disparan sustitución");
+  const plan = planSections(brief, PRESET, copiaPocos);
+  assert.equal(plan.sections.find((s) => s.type === "features").origin, "copy_generico");
+});
+
+test("T-002.9: contacto con email del brief -> contacto_del_dueno; sin contacto -> contacto_generico", () => {
+  // `origin` del contacto depende solo de los datos del dueño, no del preset.
+  const conEmail = normalizeBrief({ ...BRIEF, contact: "hola@cafeaurora.test" });
+  const sinContacto = normalizeBrief({ businessType: "cafetería" });
+  const presetConContact = { ...PRESET, sections: [...PRESET.sections, { type: "contact" }] };
+  const presetSinContact = { ...PRESET, sections: PRESET.sections.filter((s) => s.type !== "contact") };
+
+  for (const preset of [presetConContact, presetSinContact]) {
+    const planCon = planSections(conEmail, preset);
+    assert.equal(planCon.sections.find((s) => s.type === "contact").origin, "contacto_del_dueno",
+      `con email, preset ${preset === presetConContact ? "con" : "sin"} contact`);
+    const planSin = planSections(sinContacto, preset);
+    assert.equal(planSin.sections.find((s) => s.type === "contact").origin, "contacto_generico",
+      `sin contacto, preset ${preset === presetConContact ? "con" : "sin"} contact`);
+  }
+});
+
+test("T-002.9: CTA con closingHeadline del modelo -> copy_del_dueno en cta", () => {
+  // Si el modelo devolvió un closingHeadline propio, `substituted` no lo contiene
+  // y el CTA es del dueño, aunque closingCta sea el genérico «Escribir».
+  const brief = normalizeBrief(BRIEF);
+  const generic = genericCopy(brief);
+  const copiaConCierre = { ...generic, closingHeadline: "Pedir orientación" };
+  const { substituted } = completeCopy(copiaConCierre, brief);
+  assert.equal(substituted.has("closingHeadline"), false);
+  const plan = planSections(brief, PRESET, copiaConCierre);
+  assert.equal(plan.sections.find((s) => s.type === "cta").origin, "copy_del_dueno");
 });
