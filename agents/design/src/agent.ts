@@ -75,10 +75,15 @@ export interface FastDesignDeps {
 }
 
 /**
- * El copy no se pudo leer tras el reintento y el dueño SI habia escrito una
- * descripcion: sin textos no hay sitio que enseñar, asi que la ejecucion para.
+ * Error historico del copy no disponible: desde P0-copy-no-aborta NO se lanza.
+ *
+ * Quedarse sin textos del modelo ya no aborta: se avisa con `copy_fallback` y el
+ * sitio sale con `genericCopy`. La clase se mantiene exportada porque
+ * `apps/workers` la importa; ahi la rama que la captura ya no se alcanza y se
+ * conserva solo como red por si alguna version anterior la lanzara.
+ *
  * `reason` es un motivo cerrado (`json_parse`, `truncated`, `schema:...`,
- * `empty_text`, `transport_<kind>`): nunca lleva texto del dueño.
+ * `empty_text`, `empty_services`, `transport_<kind>`): nunca lleva texto del dueño.
  */
 export class CopyUnavailableError extends Error {
   constructor(readonly reason: string) {
@@ -134,12 +139,11 @@ export async function runFastDesign(deps: FastDesignDeps): Promise<FastDesignRes
   // recomendar el preset. La guardia `guardCopy` es determinista: aunque el
   // modelo desobedezca, no se publica un dato inventado.
   const copyOutcome = await generateCopy(brief, client, warnings);
-  // Con descripcion del dueño, quedarse sin textos es un fallo de la ejecucion:
-  // el brief se comprometio a algo que no se puede escribir sin inventar.
-  if ("reason" in copyOutcome) {
-    if (brief.description !== undefined) throw new CopyUnavailableError(copyOutcome.reason);
-    warnings.push(`copy_fallback: ${copyOutcome.reason}`);
-  }
+  // Quedarse sin textos del modelo NUNCA aborta la ejecucion (P0-copy-no-aborta):
+  // el sistema entrega la pagina terminada y el cliente decide que cambiar. Sin
+  // copy, `draftSite` cae en `genericCopy`, que esta completo, sin marcador y sin
+  // datos inventados; el motivo queda como aviso para el panel.
+  if ("reason" in copyOutcome) warnings.push(`copy_fallback: ${copyOutcome.reason}`);
   const copy = "copy" in copyOutcome ? copyOutcome.copy : undefined;
 
   // 2b. Fotos del sitio: las pide el llamador con las busquedas del copy.
@@ -359,8 +363,9 @@ async function generateCopy(
   if (first.outcome.reason.startsWith("transport_")) return win(first);
 
   // Segundo y ultimo intento: lo que salga (copy, motivo de lectura, motivo de
-  // la guardia o de transporte) es el final; un `reason` acaba en
-  // CopyUnavailableError en el llamador. Los avisos del primero se descartan.
+  // la guardia o de transporte) es el final; un `reason` vuelve al llamador como
+  // aviso `copy_fallback` (ya no aborta la ejecucion). Los avisos del primero se
+  // descartan.
   return win(settle(await ask(`${prompt}\n\n${retryLine(first.outcome.reason)}`)));
 }
 
@@ -380,7 +385,8 @@ function finishCopy(copy: SiteCopy, brief: QuickBrief): Attempt {
   // Sin ningun servicio valido el copy no sirve: la seccion `features` se
   // omite y el sitio se quedaria sin lo que el dueno pidio. Se trata como copy
   // no disponible: entra en el reintento como motivo de lectura (`empty_services`
-  // no empieza por `transport_`) y, si tampoco sale, acaba en CopyUnavailableError.
+  // no empieza por `transport_`) y, si tampoco sale, el diseño continua con
+  // `genericCopy` y el aviso `copy_fallback`.
   if (guarded.copy.services.length === 0) return { outcome: { reason: "empty_services" }, warnings };
   return { outcome: { copy: guarded.copy }, warnings };
 }

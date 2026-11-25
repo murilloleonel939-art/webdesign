@@ -3,7 +3,6 @@ import assert from "node:assert/strict";
 import { BudgetTracker, LlmClient } from "@webdesign/llm";
 import { validateSiteDocument } from "@webdesign/site-schema";
 import {
-  CopyUnavailableError,
   PENDING_MARKER,
   copyPrompt,
   draftSite,
@@ -410,14 +409,16 @@ test("runFastDesign: primer intento con JSON cortado y segundo valido -> copy va
   assert.equal(transport.calls, 3, "intento + reintento del copy, mas el resumen de la ronda");
 });
 
-test("runFastDesign: dos intentos rotos con brief de solo description lanza CopyUnavailableError", async () => {
+test("runFastDesign: dos intentos rotos con brief de solo description entrega la pagina y avisa copy_fallback", async () => {
+  // Antes esto abortaba con CopyUnavailableError; ya no: el sistema entrega la
+  // pagina terminada (copy generico) y el cliente decide que cambiar.
   const { client, tracker, transport } = fakeClient("no es json en absoluto");
   const brief = { description: "somos una tienda de barrio que abre todos los dias" };
-  await assert.rejects(
-    runFastDesign({ brief, presets: [PRESET], client, tracker, ctx: CTX }),
-    (err) => err instanceof CopyUnavailableError,
-  );
-  assert.equal(transport.calls, 2, "agota el intento y el reintento antes de lanzar");
+  const out = await runFastDesign({ brief, presets: [PRESET], client, tracker, ctx: CTX });
+  assert.equal(validateSiteDocument(out.doc).ok, true);
+  assert.doesNotMatch(JSON.stringify(out.doc), /pendiente de confirmar/);
+  assert.equal(out.warnings.some((w) => w.startsWith("copy_fallback")), true, `warnings: ${out.warnings}`);
+  assert.equal(transport.calls, 3, "intento + reintento del copy y resumen; la recomendacion es un handler en proceso");
 });
 
 test("runFastDesign: sin ningun servicio valido el copy no sirve (empty_services)", async () => {
@@ -434,11 +435,17 @@ test("runFastDesign: sin ningun servicio valido el copy no sirve (empty_services
     ),
   );
   const brief = { description: "somos una tienda de barrio que abre todos los dias" };
-  await assert.rejects(
-    runFastDesign({ brief, presets: [PRESET], client, tracker, ctx: CTX }),
-    (err) => err instanceof CopyUnavailableError && /empty_services/.test(err.message),
+  // Antes esto abortaba con CopyUnavailableError; ya no: se avisa copy_fallback y
+  // el sitio sale con copy generico, sin tarjetas podadas ni marcador.
+  const out = await runFastDesign({ brief, presets: [PRESET], client, tracker, ctx: CTX });
+  assert.equal(validateSiteDocument(out.doc).ok, true);
+  assert.doesNotMatch(JSON.stringify(out.doc), /pendiente de confirmar|500 clientes|15 años/);
+  assert.equal(
+    out.warnings.some((w) => w.startsWith("copy_fallback") && /empty_services/.test(w)),
+    true,
+    `warnings: ${out.warnings}`,
   );
-  assert.equal(transport.calls, 2, "empty_services es motivo de lectura: se reintenta una vez");
+  assert.equal(transport.calls, 3, "empty_services es motivo de lectura: un reintento, y luego sigue hasta el resumen");
 });
 
 // --- T-002.3: el marcador fuera del sitio (criterios B1 y B2) ----------------

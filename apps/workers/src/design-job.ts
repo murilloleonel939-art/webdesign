@@ -1,5 +1,5 @@
 import { budgetSchema, type BudgetTracker, type LlmClient } from "@webdesign/llm";
-import { CopyUnavailableError, FAST_BUDGET, runFastDesign, type FastDesignDeps, type FastDesignResult, type Preset } from "@webdesign/agent-design";
+import { FAST_BUDGET, runFastDesign, type FastDesignDeps, type FastDesignResult, type Preset } from "@webdesign/agent-design";
 
 // Job del agente de diseño (spec 9.1, Fase 4; punto C).
 //
@@ -211,18 +211,12 @@ export async function processDesignJob(deps: DesignDeps, job: DesignJob): Promis
         fetchPhotos: makeFetchPhotos(deps.fetch ?? globalThis.fetch, made.apiBaseUrl, made.token, job.siteId, photosTally),
       });
     } catch (e) {
-      if (e instanceof CopyUnavailableError) {
-        // El dueno SI escribio una descripcion: sin textos no hay sitio que
-        // enseñar. No se guarda nada, igual que cualquier otro fallo de
-        // `runFastDesign` (misma rama que el catch generico de abajo).
-        console.warn("design_copy_fallback", { runId: job.runId, reason: e.reason });
-        return await finish(
-          deps, job, "error",
-          "No pude escribir los textos de tu web. Pulsa «Diseñar de nuevo» para reintentarlo.",
-        );
-      }
       // Un 6.4 con error, un brief invalido o un fallo del modelo: no se guarda
       // nada. El borrador del dueno queda como estaba.
+      //
+      // Quedarse sin textos del modelo NO pasa por aqui: no aborta el diseño
+      // (P0-copy-no-aborta). El sitio se entrega con `genericCopy` y el motivo
+      // llega en `warnings` como `copy_fallback`, que es lo que se registra abajo.
       return await finish(deps, job, "error", `No se pudo completar el diseno: ${message(e)}`);
     }
 

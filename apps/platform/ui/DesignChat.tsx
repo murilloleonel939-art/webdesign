@@ -372,7 +372,7 @@ export function DesignChat({ siteId, initialPrompt, collapsed = false, onDraftCh
     <header className="builder-chat-head">
       <div>
         <h1>Construir conversando</h1>
-        <p className="builder-chat-sub">Responde lo que sepas. Lo demás queda por confirmar.</p>
+        <p className="builder-chat-sub">Cuéntamelo con tus palabras. Con eso empiezo.</p>
       </div>
     </header>
 
@@ -380,7 +380,7 @@ export function DesignChat({ siteId, initialPrompt, collapsed = false, onDraftCh
       {(initialPrompt ?? "").trim() && <div className="builder-msg builder-msg--user"><p>{initialPrompt}</p></div>}
       <div className="builder-msg builder-msg--assistant">
         <p>{(initialPrompt ?? "").trim()
-          ? "Entendido. Empiezo a diseñar con lo que me contaste; lo que falte lo marco como pendiente y lo cambias cuando quieras."
+          ? "Entendido. Diseño tu web con lo que me contaste. Cuando la veas, dime qué quieres cambiar."
           : "Cuéntame tu proyecto y lo voy montando. Te hago unas preguntas cortas primero."}</p>
       </div>
       {resuming && <div className="builder-msg builder-msg--assistant">
