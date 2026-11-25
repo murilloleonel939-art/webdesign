@@ -1,0 +1,2169 @@
+diff --git a/apps/platform/test/another-active.test.mjs b/apps/platform/test/another-active.test.mjs
+index fdbfcaf..16035b3 100644
+--- a/apps/platform/test/another-active.test.mjs
++++ b/apps/platform/test/another-active.test.mjs
+@@ -15,145 +15,147 @@ import { createApp } from "../dist/server.js";
+ // 409 con el motivo, y que el servidor siga vivo despues (aqui y en produccion).
+ 
+ if (process.env.DB_TEST_CONFIRM !== "destroy-test-db" || !process.env.DB_TEST_URL) {
++  // Solo el caso saltado: sin `process.exit`, que mataba al runner antes de
++  // contabilizarlo, y sin arrancar nada del resto del archivo (pools, hooks).
+   test("pruebas de sitio activo omitidas: falta DB de pruebas", { skip: true }, () => {});
+-  process.exit(0);
+-}
++} else {
++
++  let pool, appPool, server, port, sitesRoot, cookie;
++  let firstSite, secondSite;
++
++  const call = (method, path, body) =>
++    new Promise((resolve, reject) => {
++      const payload = body === undefined ? undefined : JSON.stringify(body);
++      const req = http.request(
++        { host: "127.0.0.1", port, path, method, headers: {
++          host: "panel.example.com",
++          ...(payload ? { "content-type": "application/json", "content-length": Buffer.byteLength(payload) } : {}),
++          ...(cookie ? { cookie } : {}),
++        } },
++        (res) => {
++          let text = "";
++          res.setEncoding("utf8");
++          res.on("data", (c) => (text += c));
++          res.on("end", () => resolve({ status: res.statusCode, json: text ? JSON.parse(text) : undefined }));
++        },
++      );
++      req.on("error", reject);
++      if (payload) req.write(payload);
++      req.end();
++    });
++
++  const siteDoc = (headline, name) => ({
++    schemaVersion: 1,
++    meta: { name, lang: "es" },
++    design: { brief: "b", idea: "i", presetId: "p", dials: { variance: 5, motion: 5, density: 5 } },
++    theme: { colors: { ground: "#F4EFE6", ink: "#1B1B1B", accent: "#B3422B" },
++      typography: { family: "Inter", scale: "s" }, spacing: { margin: 24, sectionGap: 160 }, radius: "square" },
++    pages: [{ id: "p_home", slug: "/", seo: { title: "Inicio", description: "Bienvenido", noindex: false },
++      sections: [{ id: "s_hero", type: "hero", props: { headline } }] }],
++    assets: [],
++  });
++
++  before(async () => {
++    sitesRoot = mkdtempSync(join(tmpdir(), "sites-active-"));
++    const admin = new pg.Pool({ connectionString: process.env.DB_TEST_URL });
++    const url = await ensureTestDatabase(admin, process.env.DB_TEST_URL, "platform_active");
++    await admin.end();
++    pool = new pg.Pool({ connectionString: url });
++    for (const t of ["sites", "site_members", "site_drafts", "site_versions", "assets", "audit_log", "users", "user_sessions", "domains", "site_domain_pool", "reserved_subdomains", "schema_migrations"]) {
++      await pool.query(`DROP TABLE IF EXISTS ${t} CASCADE`);
++    }
++    await migrate(pool);
++    await pool.query("DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='app_platform') THEN CREATE ROLE app_platform LOGIN; END IF; END $$");
++    await pool.query("ALTER ROLE app_platform LOGIN PASSWORD 'test'");
++    appPool = new pg.Pool({ connectionString: url.replace(/\/\/[^@]*@/, "//app_platform:test@") });
++    server = createApp({ pool: appPool, sitesRoot });
++    await new Promise((r) => server.listen(0, "127.0.0.1", r));
++    port = server.address().port;
++
++    const { createUser, startSession } = await import("../dist/api.js");
++    const userId = await createUser(pool, "ana@example.com", "Ana", "contrasena-larga");
++    cookie = `sid=${await startSession(pool, userId)}`;
++
++    const a = await call("POST", "/api/sites", { name: "Café Central" });
++    assert.equal(a.status, 201);
++    firstSite = a.json.id;
++    await call("PUT", `/api/sites/${firstSite}/draft`, { doc: siteDoc("Hola", "Café Central"), expectedRev: 0 });
++
++    const b = await call("POST", "/api/sites", { name: "Café Segundo" });
++    assert.equal(b.status, 201);
++    secondSite = b.json.id;
++    await call("PUT", `/api/sites/${secondSite}/draft`, { doc: siteDoc("Adiós", "Café Segundo"), expectedRev: 0 });
++  });
++
++  after(async () => {
++    server?.close();
++    await appPool?.end();
++    await pool?.end();
++    if (sitesRoot) rmSync(sitesRoot, { recursive: true, force: true });
++  });
++
++  test("the first site publishes", async () => {
++    const r = await call("POST", `/api/sites/${firstSite}/publish`, {});
++    assert.equal(r.status, 200);
++    assert.equal(r.json.version, 1);
++  });
++
++  test("publishing a second site answers 409 another_site_active, never 500", async () => {
++    const r = await call("POST", `/api/sites/${secondSite}/publish`, {});
++    assert.equal(r.status, 409);
++    assert.equal(r.json.error, "another_site_active");
++    // El panel necesita el nombre para decir QUE sitio ocupa el turno y ofrecer
++    // despublicarlo; sin el, el aviso no se puede accionar.
++    assert.equal(r.json.activeSiteId, firstSite);
++    assert.equal(r.json.activeSiteName, "Café Central");
++  });
++
++  test("the server is still alive after the blocked publish", async () => {
++    // Esto es el sintoma real que se estaba viendo: el proceso moria y el proxy
++    // devolvia 502 al resto de clientes. Si el throw hubiera matado el proceso,
++    // esta peticion no tendria con quien hablar.
++    const r = await call("GET", "/healthz");
++    assert.equal(r.status, 200);
++    assert.deepEqual(r.json, { status: "ok" });
++  });
++
++  test("the blocked publish wrote nothing: no release, no version row", async () => {
++    const versions = await pool.query("SELECT version FROM site_versions WHERE site_id = $1", [secondSite]);
++    assert.equal(versions.rowCount, 0);
++    const site = await pool.query("SELECT status FROM sites WHERE id = $1", [secondSite]);
++    assert.equal(site.rows[0].status, "draft");
++  });
+ 
+-let pool, appPool, server, port, sitesRoot, cookie;
+-let firstSite, secondSite;
+-
+-const call = (method, path, body) =>
+-  new Promise((resolve, reject) => {
+-    const payload = body === undefined ? undefined : JSON.stringify(body);
+-    const req = http.request(
+-      { host: "127.0.0.1", port, path, method, headers: {
+-        host: "panel.example.com",
+-        ...(payload ? { "content-type": "application/json", "content-length": Buffer.byteLength(payload) } : {}),
+-        ...(cookie ? { cookie } : {}),
+-      } },
+-      (res) => {
+-        let text = "";
+-        res.setEncoding("utf8");
+-        res.on("data", (c) => (text += c));
+-        res.on("end", () => resolve({ status: res.statusCode, json: text ? JSON.parse(text) : undefined }));
+-      },
+-    );
+-    req.on("error", reject);
+-    if (payload) req.write(payload);
+-    req.end();
++  test("unpublish is idempotent and writes audit on the first call only", async () => {
++    const first = await call("POST", `/api/sites/${firstSite}/unpublish`, {});
++    assert.equal(first.status, 200);
++    assert.deepEqual(first.json, { ok: true });
++    const again = await call("POST", `/api/sites/${firstSite}/unpublish`, {});
++    assert.equal(again.status, 200);
++    const rows = await pool.query("SELECT action FROM audit_log WHERE action = 'site.unpublish' AND site_id = $1", [firstSite]);
++    assert.equal(rows.rowCount, 1);
++    // Despublicar no borra: la release y su fila de version siguen ahi.
++    const kept = await pool.query("SELECT version FROM site_versions WHERE site_id = $1", [firstSite]);
++    assert.equal(kept.rowCount, 1);
+   });
+ 
+-const siteDoc = (headline, name) => ({
+-  schemaVersion: 1,
+-  meta: { name, lang: "es" },
+-  design: { brief: "b", idea: "i", presetId: "p", dials: { variance: 5, motion: 5, density: 5 } },
+-  theme: { colors: { ground: "#F4EFE6", ink: "#1B1B1B", accent: "#B3422B" },
+-    typography: { family: "Inter", scale: "s" }, spacing: { margin: 24, sectionGap: 160 }, radius: "square" },
+-  pages: [{ id: "p_home", slug: "/", seo: { title: "Inicio", description: "Bienvenido", noindex: false },
+-    sections: [{ id: "s_hero", type: "hero", props: { headline } }] }],
+-  assets: [],
+-});
+-
+-before(async () => {
+-  sitesRoot = mkdtempSync(join(tmpdir(), "sites-active-"));
+-  const admin = new pg.Pool({ connectionString: process.env.DB_TEST_URL });
+-  const url = await ensureTestDatabase(admin, process.env.DB_TEST_URL, "platform_active");
+-  await admin.end();
+-  pool = new pg.Pool({ connectionString: url });
+-  for (const t of ["sites", "site_members", "site_drafts", "site_versions", "assets", "audit_log", "users", "user_sessions", "domains", "site_domain_pool", "reserved_subdomains", "schema_migrations"]) {
+-    await pool.query(`DROP TABLE IF EXISTS ${t} CASCADE`);
+-  }
+-  await migrate(pool);
+-  await pool.query("DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='app_platform') THEN CREATE ROLE app_platform LOGIN; END IF; END $$");
+-  await pool.query("ALTER ROLE app_platform LOGIN PASSWORD 'test'");
+-  appPool = new pg.Pool({ connectionString: url.replace(/\/\/[^@]*@/, "//app_platform:test@") });
+-  server = createApp({ pool: appPool, sitesRoot });
+-  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+-  port = server.address().port;
+-
+-  const { createUser, startSession } = await import("../dist/api.js");
+-  const userId = await createUser(pool, "ana@example.com", "Ana", "contrasena-larga");
+-  cookie = `sid=${await startSession(pool, userId)}`;
+-
+-  const a = await call("POST", "/api/sites", { name: "Café Central" });
+-  assert.equal(a.status, 201);
+-  firstSite = a.json.id;
+-  await call("PUT", `/api/sites/${firstSite}/draft`, { doc: siteDoc("Hola", "Café Central"), expectedRev: 0 });
+-
+-  const b = await call("POST", "/api/sites", { name: "Café Segundo" });
+-  assert.equal(b.status, 201);
+-  secondSite = b.json.id;
+-  await call("PUT", `/api/sites/${secondSite}/draft`, { doc: siteDoc("Adiós", "Café Segundo"), expectedRev: 0 });
+-});
+-
+-after(async () => {
+-  server?.close();
+-  await appPool?.end();
+-  await pool?.end();
+-  if (sitesRoot) rmSync(sitesRoot, { recursive: true, force: true });
+-});
+-
+-test("the first site publishes", async () => {
+-  const r = await call("POST", `/api/sites/${firstSite}/publish`, {});
+-  assert.equal(r.status, 200);
+-  assert.equal(r.json.version, 1);
+-});
+-
+-test("publishing a second site answers 409 another_site_active, never 500", async () => {
+-  const r = await call("POST", `/api/sites/${secondSite}/publish`, {});
+-  assert.equal(r.status, 409);
+-  assert.equal(r.json.error, "another_site_active");
+-  // El panel necesita el nombre para decir QUE sitio ocupa el turno y ofrecer
+-  // despublicarlo; sin el, el aviso no se puede accionar.
+-  assert.equal(r.json.activeSiteId, firstSite);
+-  assert.equal(r.json.activeSiteName, "Café Central");
+-});
+-
+-test("the server is still alive after the blocked publish", async () => {
+-  // Esto es el sintoma real que se estaba viendo: el proceso moria y el proxy
+-  // devolvia 502 al resto de clientes. Si el throw hubiera matado el proceso,
+-  // esta peticion no tendria con quien hablar.
+-  const r = await call("GET", "/healthz");
+-  assert.equal(r.status, 200);
+-  assert.deepEqual(r.json, { status: "ok" });
+-});
+-
+-test("the blocked publish wrote nothing: no release, no version row", async () => {
+-  const versions = await pool.query("SELECT version FROM site_versions WHERE site_id = $1", [secondSite]);
+-  assert.equal(versions.rowCount, 0);
+-  const site = await pool.query("SELECT status FROM sites WHERE id = $1", [secondSite]);
+-  assert.equal(site.rows[0].status, "draft");
+-});
+-
+-test("unpublish is idempotent and writes audit on the first call only", async () => {
+-  const first = await call("POST", `/api/sites/${firstSite}/unpublish`, {});
+-  assert.equal(first.status, 200);
+-  assert.deepEqual(first.json, { ok: true });
+-  const again = await call("POST", `/api/sites/${firstSite}/unpublish`, {});
+-  assert.equal(again.status, 200);
+-  const rows = await pool.query("SELECT action FROM audit_log WHERE action = 'site.unpublish' AND site_id = $1", [firstSite]);
+-  assert.equal(rows.rowCount, 1);
+-  // Despublicar no borra: la release y su fila de version siguen ahi.
+-  const kept = await pool.query("SELECT version FROM site_versions WHERE site_id = $1", [firstSite]);
+-  assert.equal(kept.rowCount, 1);
+-});
+-
+-test("after unpublishing the first, the second publishes fine", async () => {
+-  const r = await call("POST", `/api/sites/${secondSite}/publish`, {});
+-  assert.equal(r.status, 200);
+-  assert.equal(r.json.version, 1);
+-  const site = await pool.query("SELECT status FROM sites WHERE id = $1", [secondSite]);
+-  assert.equal(site.rows[0].status, "active");
+-});
+-
+-test("a foreign site cannot be unpublished: 404", async () => {
+-  const { createUser, startSession } = await import("../dist/api.js");
+-  const other = await startSession(pool, await createUser(pool, "luis@example.com", "Luis", "otra-contrasena"));
+-  const saved = cookie;
+-  cookie = `sid=${other}`;
+-  try {
+-    assert.equal((await call("POST", `/api/sites/${secondSite}/unpublish`, {})).status, 404);
+-  } finally {
+-    cookie = saved;
+-  }
+-});
++  test("after unpublishing the first, the second publishes fine", async () => {
++    const r = await call("POST", `/api/sites/${secondSite}/publish`, {});
++    assert.equal(r.status, 200);
++    assert.equal(r.json.version, 1);
++    const site = await pool.query("SELECT status FROM sites WHERE id = $1", [secondSite]);
++    assert.equal(site.rows[0].status, "active");
++  });
++
++  test("a foreign site cannot be unpublished: 404", async () => {
++    const { createUser, startSession } = await import("../dist/api.js");
++    const other = await startSession(pool, await createUser(pool, "luis@example.com", "Luis", "otra-contrasena"));
++    const saved = cookie;
++    cookie = `sid=${other}`;
++    try {
++      assert.equal((await call("POST", `/api/sites/${secondSite}/unpublish`, {})).status, 404);
++    } finally {
++      cookie = saved;
++    }
++  });
++}
+diff --git a/apps/platform/test/cycle.test.mjs b/apps/platform/test/cycle.test.mjs
+index 316e5c7..eb84eb1 100644
+--- a/apps/platform/test/cycle.test.mjs
++++ b/apps/platform/test/cycle.test.mjs
+@@ -12,353 +12,272 @@ import { createApp } from "../dist/server.js";
+ // revertir. Todo por HTTP, con sesion real y RLS activo.
+ 
+ if (process.env.DB_TEST_CONFIRM !== "destroy-test-db" || !process.env.DB_TEST_URL) {
++  // Solo el caso saltado: sin `process.exit`, que mataba al runner antes de
++  // contabilizarlo, y sin arrancar nada del resto del archivo (pools, hooks).
+   test("pruebas del ciclo omitidas: falta DB de pruebas", { skip: true }, () => {});
+-  process.exit(0);
+-}
++} else {
++
++  let pool, appPool, server, port, sitesRoot, cookie;
++  const PNG = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, ...new Array(40).fill(0)]);
++
++  const call = (method, path, body) =>
++    new Promise((resolve, reject) => {
++      const payload = body === undefined ? undefined : JSON.stringify(body);
++      const req = http.request(
++        { host: "127.0.0.1", port, path, method, headers: {
++          host: "panel.example.com",
++          ...(payload ? { "content-type": "application/json", "content-length": Buffer.byteLength(payload) } : {}),
++          ...(cookie ? { cookie } : {}),
++        } },
++        (res) => {
++          let text = "";
++          res.setEncoding("utf8");
++          res.on("data", (c) => (text += c));
++          res.on("end", () => resolve({ status: res.statusCode, headers: res.headers, json: text ? JSON.parse(text) : undefined }));
++        },
++      );
++      req.on("error", reject);
++      if (payload) req.write(payload);
++      req.end();
++    });
+ 
+-let pool, appPool, server, port, sitesRoot, cookie;
+-const PNG = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, ...new Array(40).fill(0)]);
+-
+-const call = (method, path, body) =>
+-  new Promise((resolve, reject) => {
+-    const payload = body === undefined ? undefined : JSON.stringify(body);
+-    const req = http.request(
+-      { host: "127.0.0.1", port, path, method, headers: {
+-        host: "panel.example.com",
+-        ...(payload ? { "content-type": "application/json", "content-length": Buffer.byteLength(payload) } : {}),
+-        ...(cookie ? { cookie } : {}),
+-      } },
+-      (res) => {
+-        let text = "";
+-        res.setEncoding("utf8");
+-        res.on("data", (c) => (text += c));
+-        res.on("end", () => resolve({ status: res.statusCode, headers: res.headers, json: text ? JSON.parse(text) : undefined }));
+-      },
+-    );
+-    req.on("error", reject);
+-    if (payload) req.write(payload);
+-    req.end();
++  const siteDoc = (headline) => ({
++    schemaVersion: 1,
++    meta: { name: "Café", lang: "es" },
++    design: { brief: "b", idea: "i", presetId: "p", dials: { variance: 5, motion: 5, density: 5 } },
++    theme: { colors: { ground: "#F4EFE6", ink: "#1B1B1B", accent: "#B3422B" },
++      typography: { family: "Inter", scale: "s" }, spacing: { margin: 24, sectionGap: 160 }, radius: "square" },
++    pages: [{ id: "p_home", slug: "/", seo: { title: "Inicio", description: "Bienvenido", noindex: false },
++      sections: [{ id: "s_hero", type: "hero", props: { headline } }] }],
++    assets: [],
+   });
+ 
+-const siteDoc = (headline) => ({
+-  schemaVersion: 1,
+-  meta: { name: "Café", lang: "es" },
+-  design: { brief: "b", idea: "i", presetId: "p", dials: { variance: 5, motion: 5, density: 5 } },
+-  theme: { colors: { ground: "#F4EFE6", ink: "#1B1B1B", accent: "#B3422B" },
+-    typography: { family: "Inter", scale: "s" }, spacing: { margin: 24, sectionGap: 160 }, radius: "square" },
+-  pages: [{ id: "p_home", slug: "/", seo: { title: "Inicio", description: "Bienvenido", noindex: false },
+-    sections: [{ id: "s_hero", type: "hero", props: { headline } }] }],
+-  assets: [],
+-});
+-
+-before(async () => {
+-  sitesRoot = mkdtempSync(join(tmpdir(), "sites-"));
+-  const admin = new pg.Pool({ connectionString: process.env.DB_TEST_URL });
+-  const url = await ensureTestDatabase(admin, process.env.DB_TEST_URL, "platform");
+-  await admin.end();
+-  pool = new pg.Pool({ connectionString: url });
+-  for (const t of ["sites", "site_members", "site_drafts", "site_versions", "assets", "audit_log", "users", "user_sessions", "schema_migrations"]) {
+-    await pool.query(`DROP TABLE IF EXISTS ${t} CASCADE`);
+-  }
+-  await migrate(pool);
+-  // RLS no aplica al superusuario: el ciclo se prueba con el rol de la aplicacion,
+-  // que es el que usa la plataforma en produccion.
+-  await pool.query("DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='app_platform') THEN CREATE ROLE app_platform LOGIN; END IF; END $$");
+-  await pool.query("ALTER ROLE app_platform LOGIN PASSWORD 'test'");
+-  appPool = new pg.Pool({ connectionString: url.replace(/\/\/[^@]*@/, "//app_platform:test@") });
+-  server = createApp({ pool: appPool, sitesRoot });
+-  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+-  port = server.address().port;
+-});
+-after(async () => {
+-  server?.close();
+-  await appPool?.end();
+-  await pool?.end();
+-  if (sitesRoot) rmSync(sitesRoot, { recursive: true, force: true });
+-});
+-
+-test("without a session nothing is allowed", async () => {
+-  assert.equal((await call("GET", "/api/sites")).status, 401);
+-  assert.equal((await call("POST", "/api/sites", { name: "x" })).status, 401);
+-});
+-
+-test("an account logs in and creates its site", async () => {
+-  const { createUser, startSession } = await import("../dist/api.js");
+-  const userId = await createUser(pool, "ana@example.com", "Ana", "contrasena-larga");
+-  const token = await startSession(pool, userId);
+-  cookie = `sid=${token}`;
+-  assert.equal((await call("GET", "/api/sites")).status, 200);
+-  const created = await call("POST", "/api/sites", { name: "Café" });
+-  assert.equal(created.status, 201);
+-  assert.match(created.json.id, /^[0-9a-f-]{36}$/);
+-  pool.siteId = created.json.id;
+-});
+-
+-test("editing saves the draft and returns lint findings", async () => {
+-  const r = await call("PUT", `/api/sites/${pool.siteId}/draft`, { doc: siteDoc("Hola"), expectedRev: 0 });
+-  assert.equal(r.status, 200);
+-  assert.equal(r.json.rev, 1);
+-  assert.ok(Array.isArray(r.json.findings));
+-});
+-
+-test("a second tab with a stale revision gets a conflict, not a silent overwrite", async () => {
+-  const r = await call("PUT", `/api/sites/${pool.siteId}/draft`, { doc: siteDoc("Pisado"), expectedRev: 0 });
+-  assert.equal(r.status, 409);
+-  assert.equal(r.json.currentRev, 1);
+-  const loaded = await call("GET", `/api/sites/${pool.siteId}/draft`);
+-  assert.equal(loaded.json.doc.pages[0].sections[0].props.headline, "Hola");
+-});
+-
+-test("an invalid document is refused with 422", async () => {
+-  const bad = siteDoc("x");
+-  bad.pages[0].sections[0].type = "raw_html";
+-  const r = await call("PUT", `/api/sites/${pool.siteId}/draft`, { doc: bad, expectedRev: 1 });
+-  assert.equal(r.status, 422);
+-  assert.equal(r.json.error, "invalid");
+-});
+-
+-test("publishing writes real files and a version", async () => {
+-  const r = await call("POST", `/api/sites/${pool.siteId}/publish`, {});
+-  assert.equal(r.status, 200);
+-  assert.equal(r.json.version, 1);
+-  const html = readFileSync(join(sitesRoot, pool.siteId, "releases", "v1", "index.html"), "utf8");
+-  assert.match(html, /Hola/);
+-  assert.match(html, /Content-Security-Policy/);
+-  // El sitio publicado es apuntado por el symlink public.
+-  // El symlink es relativo a proposito: mover /data no lo rompe.
+-  assert.equal(readlinkSync(join(sitesRoot, pool.siteId, "public")), join("releases", "v1"));
+-  // Publicar tiene que dar direccion. Antes el alta fallaba en silencio por un
+-  // GRANT que faltaba sobre el pool y el sitio quedaba sin hostname.
+-  assert.ok(r.json.hostname, "publicar debe devolver un hostname");
+-  assert.match(r.json.hostname, /^[a-z0-9-]+\./);
+-});
+-
+-test("a second publish creates v2 and moving back to v1 works", async () => {
+-  const edit = await call("PUT", `/api/sites/${pool.siteId}/draft`, { doc: siteDoc("Adiós"), expectedRev: 1 });
+-  assert.equal(edit.status, 200);
+-  const pub = await call("POST", `/api/sites/${pool.siteId}/publish`, {});
+-  assert.equal(pub.json.version, 2);
+-  assert.match(readFileSync(join(sitesRoot, pool.siteId, "releases", "v2", "index.html"), "utf8"), /Adiós/);
+-  const back = await call("POST", `/api/sites/${pool.siteId}/rollback`, { version: 1 });
+-  assert.equal(back.status, 200);
+-  assert.equal(back.json.version, 1);
+-  assert.match(readFileSync(join(sitesRoot, pool.siteId, "public", "index.html"), "utf8"), /Hola/);
+-});
+-
+-test("another account cannot see or touch this site", async () => {
+-  const { createUser, startSession } = await import("../dist/api.js");
+-  const other = await startSession(pool, await createUser(pool, "luis@example.com", "Luis", "otra-contrasena"));
+-  const saved = cookie;
+-  cookie = `sid=${other}`;
+-  try {
+-    const list = await call("GET", "/api/sites");
+-    assert.deepEqual(list.json.sites, []);
+-    assert.equal((await call("GET", `/api/sites/${pool.siteId}/draft`)).status, 404);
+-    // La vista previa del borrador no puede servir el contenido de otro sitio.
+-    assert.equal((await callRaw("GET", `/api/sites/${pool.siteId}/preview?page=p_home`, true)).status, 404);
+-  } finally {
+-    cookie = saved;
+-  }
+-});
+-
+-test("the wrong password does not log in", async () => {
+-  const saved = cookie;
+-  cookie = undefined;
+-  try {
+-    const r = await call("POST", "/api/login", { email: "ana@example.com", password: "incorrecta" });
+-    assert.equal(r.status, 401);
+-  } finally {
+-    cookie = saved;
+-  }
+-});
+-
+-test("audit records every publish and rollback", async () => {
+-  const { withUser } = await import("@webdesign/db");
+-  const rows = await pool.query("SELECT action FROM audit_log ORDER BY at");
+-  const actions = rows.rows.map((r) => r.action);
+-  assert.ok(actions.includes("site.publish"));
+-  assert.ok(actions.includes("site.rollback"));
+-  assert.equal(existsSync(join(sitesRoot, pool.siteId, "releases", "v1")), true);
+-});
+-
+-test("an uploaded asset is linked into the release, not copied", async () => {
+-  const up = await new Promise((resolve, reject) => {
+-    const req = http.request(
+-      { host: "127.0.0.1", port, path: `/api/sites/${pool.siteId}/assets?kind=image`, method: "POST",
+-        headers: { host: "panel.example.com", cookie, "content-type": "image/png", "content-length": PNG.length } },
+-      (res) => {
+-        let text = "";
+-        res.setEncoding("utf8");
+-        res.on("data", (c) => (text += c));
+-        res.on("end", () => resolve({ status: res.statusCode, json: text ? JSON.parse(text) : undefined }));
+-      },
+-    );
+-    req.on("error", reject);
+-    req.write(Buffer.from(PNG));
+-    req.end();
++  before(async () => {
++    sitesRoot = mkdtempSync(join(tmpdir(), "sites-"));
++    const admin = new pg.Pool({ connectionString: process.env.DB_TEST_URL });
++    const url = await ensureTestDatabase(admin, process.env.DB_TEST_URL, "platform");
++    await admin.end();
++    pool = new pg.Pool({ connectionString: url });
++    for (const t of ["sites", "site_members", "site_drafts", "site_versions", "assets", "audit_log", "users", "user_sessions", "schema_migrations"]) {
++      await pool.query(`DROP TABLE IF EXISTS ${t} CASCADE`);
++    }
++    await migrate(pool);
++    // RLS no aplica al superusuario: el ciclo se prueba con el rol de la aplicacion,
++    // que es el que usa la plataforma en produccion.
++    await pool.query("DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='app_platform') THEN CREATE ROLE app_platform LOGIN; END IF; END $$");
++    await pool.query("ALTER ROLE app_platform LOGIN PASSWORD 'test'");
++    appPool = new pg.Pool({ connectionString: url.replace(/\/\/[^@]*@/, "//app_platform:test@") });
++    server = createApp({ pool: appPool, sitesRoot });
++    await new Promise((r) => server.listen(0, "127.0.0.1", r));
++    port = server.address().port;
+   });
+-  assert.equal(up.status, 201);
+-  assert.match(up.json.id, /^[0-9a-f-]{36}$/);
+-
+-  const withImage = siteDoc("Hola");
+-  withImage.assets = [{ id: up.json.id, alt: "", credit: null }];
+-  withImage.pages[0].sections = [{
+-    id: "s_img", type: "image", props: { assetId: up.json.id, alt: "Foto" },
+-  }];
+-  const rev = await call("GET", `/api/sites/${pool.siteId}/draft`);
+-  const saved = await call("PUT", `/api/sites/${pool.siteId}/draft`, { doc: withImage, expectedRev: rev.json.rev });
+-  assert.equal(saved.status, 200);
+-
+-  const pub = await call("POST", `/api/sites/${pool.siteId}/publish`, { confirmWarnings: true });
+-  assert.equal(pub.status, 200);
+-  const html = readFileSync(join(sitesRoot, pool.siteId, "public", "index.html"), "utf8");
+-  assert.match(html, /\/assets\/image\//);
+-  // La release contiene el asset enlazado.
+-  const relAssets = join(sitesRoot, pool.siteId, "releases", `v${pub.json.version}`, "assets", "image");
+-  assert.equal(existsSync(relAssets), true);
+-});
+-
+-test("deleting an asset removes its file from disk", async () => {
+-  const up = await new Promise((resolve, reject) => {
+-    const req = http.request(
+-      { host: "127.0.0.1", port, path: `/api/sites/${pool.siteId}/assets?kind=image`, method: "POST",
+-        headers: { host: "panel.example.com", cookie, "content-type": "image/png", "content-length": PNG.length } },
+-      (res) => {
+-        let text = "";
+-        res.setEncoding("utf8");
+-        res.on("data", (c) => (text += c));
+-        res.on("end", () => resolve({ status: res.statusCode, json: text ? JSON.parse(text) : undefined }));
+-      },
+-    );
+-    req.on("error", reject);
+-    req.write(Buffer.from(PNG));
+-    req.end();
++  after(async () => {
++    server?.close();
++    await appPool?.end();
++    await pool?.end();
++    if (sitesRoot) rmSync(sitesRoot, { recursive: true, force: true });
+   });
+-  assert.equal(up.status, 201);
+-
+-  // El archivo existe antes de borrar.
+-  const dir = join(sitesRoot, pool.siteId, "assets", "image");
+-  const before = readdirSync(dir).filter((n) => n.startsWith(up.json.id));
+-  assert.equal(before.length, 1, "el asset subido debe estar en disco");
+-
+-  const del = await call("DELETE", `/api/sites/${pool.siteId}/assets?id=${up.json.id}`);
+-  assert.equal(del.status, 204);
+-
+-  // Sin huerfanos: ni fila ni archivo.
+-  const after = readdirSync(dir).filter((n) => n.startsWith(up.json.id));
+-  assert.equal(after.length, 0, "el archivo debe desaparecer del disco");
+-  const list = await call("GET", `/api/sites/${pool.siteId}/assets`);
+-  assert.equal(list.json.assets.some((a) => a.id === up.json.id), false);
+-});
+-
+-test("a file whose content is not an image is refused", async () => {
+-  const svg = Buffer.from("<svg onload=alert(1)>");
+-  const r = await new Promise((resolve, reject) => {
+-    const req = http.request(
+-      { host: "127.0.0.1", port, path: `/api/sites/${pool.siteId}/assets?kind=image`, method: "POST",
+-        headers: { host: "panel.example.com", cookie, "content-type": "image/png", "content-length": svg.length } },
+-      (res) => {
+-        let text = "";
+-        res.setEncoding("utf8");
+-        res.on("data", (c) => (text += c));
+-        res.on("end", () => resolve({ status: res.statusCode, json: text ? JSON.parse(text) : undefined }));
+-      },
+-    );
+-    req.on("error", reject);
+-    req.write(svg);
+-    req.end();
++
++  test("without a session nothing is allowed", async () => {
++    assert.equal((await call("GET", "/api/sites")).status, 401);
++    assert.equal((await call("POST", "/api/sites", { name: "x" })).status, 401);
+   });
+-  assert.equal(r.status, 422);
+-  assert.equal(r.json.error, "mime_not_allowed");
+-});
+-
+-// Peticion en crudo: permite omitir la cookie y leer HTML, que `call` no hace.
+-const callRaw = (method, path, withCookie) =>
+-  new Promise((resolve, reject) => {
+-    const req = http.request(
+-      { host: "127.0.0.1", port, path, method, headers: { host: "panel.example.com", ...(withCookie && cookie ? { cookie } : {}) } },
+-      (res) => {
+-        let text = "";
+-        res.setEncoding("utf8");
+-        res.on("data", (c) => (text += c));
+-        res.on("end", () => resolve({ status: res.statusCode, headers: res.headers, text }));
+-      },
+-    );
+-    req.on("error", reject);
+-    req.end();
++
++  test("an account logs in and creates its site", async () => {
++    const { createUser, startSession } = await import("../dist/api.js");
++    const userId = await createUser(pool, "ana@example.com", "Ana", "contrasena-larga");
++    const token = await startSession(pool, userId);
++    cookie = `sid=${token}`;
++    assert.equal((await call("GET", "/api/sites")).status, 200);
++    const created = await call("POST", "/api/sites", { name: "Café" });
++    assert.equal(created.status, 201);
++    assert.match(created.json.id, /^[0-9a-f-]{36}$/);
++    pool.siteId = created.json.id;
+   });
+ 
+-test("the editor preview renders the draft with noindex and the site CSP", async () => {
+-  const r = await callRaw("GET", `/api/sites/${pool.siteId}/preview?page=p_home`, true);
+-  assert.equal(r.status, 200);
+-  // Cabeceras de vista previa: nunca indexable en ningun caso (spec 5.5).
+-  assert.equal(r.headers["x-robots-tag"], "noindex");
+-  assert.match(r.headers["content-security-policy"] ?? "", /default-src 'self'/);
+-  assert.match(r.text, /<\/html>/);
+-});
+-
+-test("the editor preview refuses without a session", async () => {
+-  const r = await callRaw("GET", `/api/sites/${pool.siteId}/preview?page=p_home`, false);
+-  assert.equal(r.status, 401);
+-});
+-
+-test("the panel is served with a strict CSP and never indexable", async () => {
+-  const r = await callRaw("GET", "/app/", false);
+-  // El panel no exige sesion para cargar el HTML: el JS pide los datos y ahi 401.
+-  assert.equal(r.status, 200);
+-  assert.match(r.headers["content-security-policy"] ?? "", /default-src 'none'/);
+-  assert.match(r.headers["content-security-policy"] ?? "", /frame-ancestors|frame-src 'self'/);
+-  assert.notEqual(r.headers["content-security-policy"]?.includes("allow-same-origin"), true);
+-  assert.equal(r.headers["x-robots-tag"], "noindex");
+-  assert.match(r.text, /<div id="root">/);
+-});
+-
+-test("the panel bundle is served as javascript", async () => {
+-  const r = await callRaw("GET", "/app/panel.js", false);
+-  assert.equal(r.status, 200);
+-  assert.match(r.headers["content-type"] ?? "", /javascript/);
+-});
+-
+-test("the panel rejects path traversal", async () => {
+-  for (const path of ["/app/../src/server.ts", "/app/..%2Fserver.js", "/app/x.svg"]) {
+-    const r = await callRaw("GET", path, false);
+-    assert.equal(r.status, 404, path);
+-  }
+-});
+-
+-test("the diagnostic endpoint is invisible without a token", async () => {
+-  const r = await callRaw("GET", "/app/diagnose", false);
+-  // Sin DIAGNOSTIC_TOKEN la ruta no existe: 404, no 401. No revela que exista.
+-  assert.equal(r.status, 404);
+-});
+-
+-test("the diagnostic route is not swallowed by the panel wildcard", async () => {
+-  // Regresion: GET /app/* servia panel.html y devolvia 404 antes de llegar aqui.
+-  // Con token configurado la ruta existe y exige cabecera: 401, no 404.
+-  process.env.DIAGNOSTIC_TOKEN = "token-de-prueba-1234567890";
+-  try {
+-    const r = await callRaw("GET", "/app/diagnose", false);
+-    assert.notEqual(r.status, 404, "el comodin del panel no debe capturar /app/diagnose");
+-    assert.equal(r.status, 401);
+-  } finally {
+-    delete process.env.DIAGNOSTIC_TOKEN;
+-  }
+-});
+-
+-test("the diagnostic route does not exist without a configured token", async () => {
+-  // Sin DIAGNOSTIC_TOKEN no hay ruta: 404 del comodin, nunca 401 ni 200.
+-  delete process.env.DIAGNOSTIC_TOKEN;
+-  const r = await callRaw("GET", "/app/diagnose", false);
+-  assert.equal(r.status, 404);
+-  assert.equal(r.text.includes("diagnose"), false);
+-});
+-
+-test("the diagnostic reports migrations and counts, with no personal data", async () => {
+-  process.env.DIAGNOSTIC_TOKEN = "token-de-prueba-1234567890";
+-  const withToken = (header) =>
++  test("editing saves the draft and returns lint findings", async () => {
++    const r = await call("PUT", `/api/sites/${pool.siteId}/draft`, { doc: siteDoc("Hola"), expectedRev: 0 });
++    assert.equal(r.status, 200);
++    assert.equal(r.json.rev, 1);
++    assert.ok(Array.isArray(r.json.findings));
++  });
++
++  test("a second tab with a stale revision gets a conflict, not a silent overwrite", async () => {
++    const r = await call("PUT", `/api/sites/${pool.siteId}/draft`, { doc: siteDoc("Pisado"), expectedRev: 0 });
++    assert.equal(r.status, 409);
++    assert.equal(r.json.currentRev, 1);
++    const loaded = await call("GET", `/api/sites/${pool.siteId}/draft`);
++    assert.equal(loaded.json.doc.pages[0].sections[0].props.headline, "Hola");
++  });
++
++  test("an invalid document is refused with 422", async () => {
++    const bad = siteDoc("x");
++    bad.pages[0].sections[0].type = "raw_html";
++    const r = await call("PUT", `/api/sites/${pool.siteId}/draft`, { doc: bad, expectedRev: 1 });
++    assert.equal(r.status, 422);
++    assert.equal(r.json.error, "invalid");
++  });
++
++  test("publishing writes real files and a version", async () => {
++    const r = await call("POST", `/api/sites/${pool.siteId}/publish`, {});
++    assert.equal(r.status, 200);
++    assert.equal(r.json.version, 1);
++    const html = readFileSync(join(sitesRoot, pool.siteId, "releases", "v1", "index.html"), "utf8");
++    assert.match(html, /Hola/);
++    assert.match(html, /Content-Security-Policy/);
++    // El sitio publicado es apuntado por el symlink public.
++    // El symlink es relativo a proposito: mover /data no lo rompe.
++    assert.equal(readlinkSync(join(sitesRoot, pool.siteId, "public")), join("releases", "v1"));
++    // Publicar tiene que dar direccion. Antes el alta fallaba en silencio por un
++    // GRANT que faltaba sobre el pool y el sitio quedaba sin hostname.
++    assert.ok(r.json.hostname, "publicar debe devolver un hostname");
++    assert.match(r.json.hostname, /^[a-z0-9-]+\./);
++  });
++
++  test("a second publish creates v2 and moving back to v1 works", async () => {
++    const edit = await call("PUT", `/api/sites/${pool.siteId}/draft`, { doc: siteDoc("Adiós"), expectedRev: 1 });
++    assert.equal(edit.status, 200);
++    const pub = await call("POST", `/api/sites/${pool.siteId}/publish`, {});
++    assert.equal(pub.json.version, 2);
++    assert.match(readFileSync(join(sitesRoot, pool.siteId, "releases", "v2", "index.html"), "utf8"), /Adiós/);
++    const back = await call("POST", `/api/sites/${pool.siteId}/rollback`, { version: 1 });
++    assert.equal(back.status, 200);
++    assert.equal(back.json.version, 1);
++    assert.match(readFileSync(join(sitesRoot, pool.siteId, "public", "index.html"), "utf8"), /Hola/);
++  });
++
++  test("another account cannot see or touch this site", async () => {
++    const { createUser, startSession } = await import("../dist/api.js");
++    const other = await startSession(pool, await createUser(pool, "luis@example.com", "Luis", "otra-contrasena"));
++    const saved = cookie;
++    cookie = `sid=${other}`;
++    try {
++      const list = await call("GET", "/api/sites");
++      assert.deepEqual(list.json.sites, []);
++      assert.equal((await call("GET", `/api/sites/${pool.siteId}/draft`)).status, 404);
++      // La vista previa del borrador no puede servir el contenido de otro sitio.
++      assert.equal((await callRaw("GET", `/api/sites/${pool.siteId}/preview?page=p_home`, true)).status, 404);
++    } finally {
++      cookie = saved;
++    }
++  });
++
++  test("the wrong password does not log in", async () => {
++    const saved = cookie;
++    cookie = undefined;
++    try {
++      const r = await call("POST", "/api/login", { email: "ana@example.com", password: "incorrecta" });
++      assert.equal(r.status, 401);
++    } finally {
++      cookie = saved;
++    }
++  });
++
++  test("audit records every publish and rollback", async () => {
++    const { withUser } = await import("@webdesign/db");
++    const rows = await pool.query("SELECT action FROM audit_log ORDER BY at");
++    const actions = rows.rows.map((r) => r.action);
++    assert.ok(actions.includes("site.publish"));
++    assert.ok(actions.includes("site.rollback"));
++    assert.equal(existsSync(join(sitesRoot, pool.siteId, "releases", "v1")), true);
++  });
++
++  test("an uploaded asset is linked into the release, not copied", async () => {
++    const up = await new Promise((resolve, reject) => {
++      const req = http.request(
++        { host: "127.0.0.1", port, path: `/api/sites/${pool.siteId}/assets?kind=image`, method: "POST",
++          headers: { host: "panel.example.com", cookie, "content-type": "image/png", "content-length": PNG.length } },
++        (res) => {
++          let text = "";
++          res.setEncoding("utf8");
++          res.on("data", (c) => (text += c));
++          res.on("end", () => resolve({ status: res.statusCode, json: text ? JSON.parse(text) : undefined }));
++        },
++      );
++      req.on("error", reject);
++      req.write(Buffer.from(PNG));
++      req.end();
++    });
++    assert.equal(up.status, 201);
++    assert.match(up.json.id, /^[0-9a-f-]{36}$/);
++
++    const withImage = siteDoc("Hola");
++    withImage.assets = [{ id: up.json.id, alt: "", credit: null }];
++    withImage.pages[0].sections = [{
++      id: "s_img", type: "image", props: { assetId: up.json.id, alt: "Foto" },
++    }];
++    const rev = await call("GET", `/api/sites/${pool.siteId}/draft`);
++    const saved = await call("PUT", `/api/sites/${pool.siteId}/draft`, { doc: withImage, expectedRev: rev.json.rev });
++    assert.equal(saved.status, 200);
++
++    const pub = await call("POST", `/api/sites/${pool.siteId}/publish`, { confirmWarnings: true });
++    assert.equal(pub.status, 200);
++    const html = readFileSync(join(sitesRoot, pool.siteId, "public", "index.html"), "utf8");
++    assert.match(html, /\/assets\/image\//);
++    // La release contiene el asset enlazado.
++    const relAssets = join(sitesRoot, pool.siteId, "releases", `v${pub.json.version}`, "assets", "image");
++    assert.equal(existsSync(relAssets), true);
++  });
++
++  test("deleting an asset removes its file from disk", async () => {
++    const up = await new Promise((resolve, reject) => {
++      const req = http.request(
++        { host: "127.0.0.1", port, path: `/api/sites/${pool.siteId}/assets?kind=image`, method: "POST",
++          headers: { host: "panel.example.com", cookie, "content-type": "image/png", "content-length": PNG.length } },
++        (res) => {
++          let text = "";
++          res.setEncoding("utf8");
++          res.on("data", (c) => (text += c));
++          res.on("end", () => resolve({ status: res.statusCode, json: text ? JSON.parse(text) : undefined }));
++        },
++      );
++      req.on("error", reject);
++      req.write(Buffer.from(PNG));
++      req.end();
++    });
++    assert.equal(up.status, 201);
++
++    // El archivo existe antes de borrar.
++    const dir = join(sitesRoot, pool.siteId, "assets", "image");
++    const before = readdirSync(dir).filter((n) => n.startsWith(up.json.id));
++    assert.equal(before.length, 1, "el asset subido debe estar en disco");
++
++    const del = await call("DELETE", `/api/sites/${pool.siteId}/assets?id=${up.json.id}`);
++    assert.equal(del.status, 204);
++
++    // Sin huerfanos: ni fila ni archivo.
++    const after = readdirSync(dir).filter((n) => n.startsWith(up.json.id));
++    assert.equal(after.length, 0, "el archivo debe desaparecer del disco");
++    const list = await call("GET", `/api/sites/${pool.siteId}/assets`);
++    assert.equal(list.json.assets.some((a) => a.id === up.json.id), false);
++  });
++
++  test("a file whose content is not an image is refused", async () => {
++    const svg = Buffer.from("<svg onload=alert(1)>");
++    const r = await new Promise((resolve, reject) => {
++      const req = http.request(
++        { host: "127.0.0.1", port, path: `/api/sites/${pool.siteId}/assets?kind=image`, method: "POST",
++          headers: { host: "panel.example.com", cookie, "content-type": "image/png", "content-length": svg.length } },
++        (res) => {
++          let text = "";
++          res.setEncoding("utf8");
++          res.on("data", (c) => (text += c));
++          res.on("end", () => resolve({ status: res.statusCode, json: text ? JSON.parse(text) : undefined }));
++        },
++      );
++      req.on("error", reject);
++      req.write(svg);
++      req.end();
++    });
++    assert.equal(r.status, 422);
++    assert.equal(r.json.error, "mime_not_allowed");
++  });
++
++  // Peticion en crudo: permite omitir la cookie y leer HTML, que `call` no hace.
++  const callRaw = (method, path, withCookie) =>
+     new Promise((resolve, reject) => {
+       const req = http.request(
+-        { host: "127.0.0.1", port, path: "/app/diagnose", method: "GET", headers: { host: "panel.example.com", ...header } },
++        { host: "127.0.0.1", port, path, method, headers: { host: "panel.example.com", ...(withCookie && cookie ? { cookie } : {}) } },
+         (res) => {
+           let text = "";
+           res.setEncoding("utf8");
+@@ -370,122 +289,205 @@ test("the diagnostic reports migrations and counts, with no personal data", asyn
+       req.end();
+     });
+ 
+-  try {
+-    // Sin cabecera o con token incorrecto: cerrado.
+-    assert.equal((await withToken({})).status, 401);
+-    assert.equal((await withToken({ "x-diagnostic-token": "otro-token-distinto-12345" })).status, 401);
++  test("the editor preview renders the draft with noindex and the site CSP", async () => {
++    const r = await callRaw("GET", `/api/sites/${pool.siteId}/preview?page=p_home`, true);
++    assert.equal(r.status, 200);
++    // Cabeceras de vista previa: nunca indexable en ningun caso (spec 5.5).
++    assert.equal(r.headers["x-robots-tag"], "noindex");
++    assert.match(r.headers["content-security-policy"] ?? "", /default-src 'self'/);
++    assert.match(r.text, /<\/html>/);
++  });
++
++  test("the editor preview refuses without a session", async () => {
++    const r = await callRaw("GET", `/api/sites/${pool.siteId}/preview?page=p_home`, false);
++    assert.equal(r.status, 401);
++  });
+ 
+-    const r = await withToken({ "x-diagnostic-token": "token-de-prueba-1234567890" });
++  test("the panel is served with a strict CSP and never indexable", async () => {
++    const r = await callRaw("GET", "/app/", false);
++    // El panel no exige sesion para cargar el HTML: el JS pide los datos y ahi 401.
+     assert.equal(r.status, 200);
+-    assert.equal(r.headers["cache-control"], "no-store");
++    assert.match(r.headers["content-security-policy"] ?? "", /default-src 'none'/);
++    assert.match(r.headers["content-security-policy"] ?? "", /frame-ancestors|frame-src 'self'/);
++    assert.notEqual(r.headers["content-security-policy"]?.includes("allow-same-origin"), true);
+     assert.equal(r.headers["x-robots-tag"], "noindex");
++    assert.match(r.text, /<div id="root">/);
++  });
++
++  test("the panel bundle is served as javascript", async () => {
++    const r = await callRaw("GET", "/app/panel.js", false);
++    assert.equal(r.status, 200);
++    assert.match(r.headers["content-type"] ?? "", /javascript/);
++  });
++
++  test("the panel rejects path traversal", async () => {
++    for (const path of ["/app/../src/server.ts", "/app/..%2Fserver.js", "/app/x.svg"]) {
++      const r = await callRaw("GET", path, false);
++      assert.equal(r.status, 404, path);
++    }
++  });
++
++  test("the diagnostic endpoint is invisible without a token", async () => {
++    const r = await callRaw("GET", "/app/diagnose", false);
++    // Sin DIAGNOSTIC_TOKEN la ruta no existe: 404, no 401. No revela que exista.
++    assert.equal(r.status, 404);
++  });
++
++  test("the diagnostic route is not swallowed by the panel wildcard", async () => {
++    // Regresion: GET /app/* servia panel.html y devolvia 404 antes de llegar aqui.
++    // Con token configurado la ruta existe y exige cabecera: 401, no 404.
++    process.env.DIAGNOSTIC_TOKEN = "token-de-prueba-1234567890";
++    try {
++      const r = await callRaw("GET", "/app/diagnose", false);
++      assert.notEqual(r.status, 404, "el comodin del panel no debe capturar /app/diagnose");
++      assert.equal(r.status, 401);
++    } finally {
++      delete process.env.DIAGNOSTIC_TOKEN;
++    }
++  });
+ 
+-    const body = JSON.parse(r.text);
+-    assert.equal(body.ok, true);
+-    assert.equal(body.database.reachable, true);
+-    // Las siete migraciones de Fase 1 mas la de dominios.
+-    assert.equal(body.migrations.missing.includes("0003_site_content_rls.sql"), false);
+-    assert.equal(typeof body.counts.sites, "number");
+-    assert.equal(body.counts.sites >= 1, true);
+-    // No se filtran datos personales: solo recuentos y estados.
+-    assert.equal(r.text.includes("@"), false, "el informe no debe traer emails");
+-    assert.equal(/password|token_hash/i.test(r.text), false, "el informe no debe traer secretos");
+-  } finally {
++  test("the diagnostic route does not exist without a configured token", async () => {
++    // Sin DIAGNOSTIC_TOKEN no hay ruta: 404 del comodin, nunca 401 ni 200.
+     delete process.env.DIAGNOSTIC_TOKEN;
+-  }
+-});
+-
+-test("the design catalog is not public without a session", async () => {
+-  const r = await callRaw("GET", "/api/design-styles", false);
+-  assert.equal(r.status, 401);
+-});
+-
+-test("applying an unknown preset is rejected with 400, not 404", async () => {
+-  const r = await new Promise((resolve, reject) => {
+-    const body = JSON.stringify({ presetId: "no-existe-este-estilo", expectedRev: 0 });
+-    const req = http.request(
+-      { host: "127.0.0.1", port, path: `/api/sites/${pool.siteId}/apply-preset`, method: "POST",
+-        headers: { host: "panel.example.com", cookie, "content-type": "application/json", "content-length": Buffer.byteLength(body) } },
+-      (res) => { let t = ""; res.setEncoding("utf8"); res.on("data", (c) => (t += c)); res.on("end", () => resolve({ status: res.statusCode, text: t })); },
+-    );
+-    req.on("error", reject);
+-    req.end(body);
++    const r = await callRaw("GET", "/app/diagnose", false);
++    assert.equal(r.status, 404);
++    assert.equal(r.text.includes("diagnose"), false);
+   });
+-  assert.equal(r.status, 400);
+-  assert.equal(JSON.parse(r.text).error, "unknown_preset");
+-});
+-
+-test("applying a real preset changes the theme and keeps the draft valid", async () => {
+-  const before = JSON.parse((await callRaw("GET", `/api/sites/${pool.siteId}/draft`, true)).text);
+-  const body = JSON.stringify({ presetId: "tech", expectedRev: before.rev });
+-  const r = await new Promise((resolve, reject) => {
+-    const req = http.request(
+-      { host: "127.0.0.1", port, path: `/api/sites/${pool.siteId}/apply-preset`, method: "POST",
+-        headers: { host: "panel.example.com", cookie, "content-type": "application/json", "content-length": Buffer.byteLength(body) } },
+-      (res) => { let t = ""; res.setEncoding("utf8"); res.on("data", (c) => (t += c)); res.on("end", () => resolve({ status: res.statusCode, text: t })); },
+-    );
+-    req.on("error", reject);
+-    req.end(body);
++
++  test("the diagnostic reports migrations and counts, with no personal data", async () => {
++    process.env.DIAGNOSTIC_TOKEN = "token-de-prueba-1234567890";
++    const withToken = (header) =>
++      new Promise((resolve, reject) => {
++        const req = http.request(
++          { host: "127.0.0.1", port, path: "/app/diagnose", method: "GET", headers: { host: "panel.example.com", ...header } },
++          (res) => {
++            let text = "";
++            res.setEncoding("utf8");
++            res.on("data", (c) => (text += c));
++            res.on("end", () => resolve({ status: res.statusCode, headers: res.headers, text }));
++          },
++        );
++        req.on("error", reject);
++        req.end();
++      });
++
++    try {
++      // Sin cabecera o con token incorrecto: cerrado.
++      assert.equal((await withToken({})).status, 401);
++      assert.equal((await withToken({ "x-diagnostic-token": "otro-token-distinto-12345" })).status, 401);
++
++      const r = await withToken({ "x-diagnostic-token": "token-de-prueba-1234567890" });
++      assert.equal(r.status, 200);
++      assert.equal(r.headers["cache-control"], "no-store");
++      assert.equal(r.headers["x-robots-tag"], "noindex");
++
++      const body = JSON.parse(r.text);
++      assert.equal(body.ok, true);
++      assert.equal(body.database.reachable, true);
++      // Las siete migraciones de Fase 1 mas la de dominios.
++      assert.equal(body.migrations.missing.includes("0003_site_content_rls.sql"), false);
++      assert.equal(typeof body.counts.sites, "number");
++      assert.equal(body.counts.sites >= 1, true);
++      // No se filtran datos personales: solo recuentos y estados.
++      assert.equal(r.text.includes("@"), false, "el informe no debe traer emails");
++      assert.equal(/password|token_hash/i.test(r.text), false, "el informe no debe traer secretos");
++    } finally {
++      delete process.env.DIAGNOSTIC_TOKEN;
++    }
+   });
+-  assert.equal(r.status, 200, r.text);
+-  const after = JSON.parse((await callRaw("GET", `/api/sites/${pool.siteId}/draft`, true)).text);
+-  assert.equal(after.doc.design.presetId, "tech");
+-  assert.equal(after.doc.theme.colors.ground, "#0e1117");
+-  assert.equal(after.rev > before.rev, true, "la revision avanza");
+-  // El documento guardado sigue pasando el esquema.
+-  assert.equal(Array.isArray(after.doc.pages[0].sections), true);
+-  assert.equal(after.doc.pages[0].sections.length >= 4, true);
+-});
+-
+-test("the panel bundle is revalidated, never heuristically cached", async () => {
+-  // Regresion: sin cache-control el navegador puede seguir usando el bundle
+-  // viejo tras un despliegue y el dueno no ve los cambios.
+-  const js = await callRaw("GET", "/app/panel.js", false);
+-  assert.equal(js.status, 200);
+-  assert.equal(js.headers["cache-control"], "no-cache");
+-  assert.match(js.headers.etag ?? "", /^"[A-Za-z0-9_-]{20,}"$/);
+-
+-  // El HTML nunca se guarda: puede cambiar en cada despliegue.
+-  const html = await callRaw("GET", "/app/", false);
+-  assert.equal(html.headers["cache-control"], "no-store");
+-
+-  // Revalidacion: con el ETag al dia responde 304 y no reenvia el cuerpo.
+-  const again = await new Promise((resolve, reject) => {
+-    const req = http.request(
+-      { host: "127.0.0.1", port, path: "/app/panel.js", method: "GET",
+-        headers: { host: "panel.example.com", "if-none-match": js.headers.etag } },
+-      (res) => { let t = ""; res.setEncoding("utf8"); res.on("data", (c) => (t += c)); res.on("end", () => resolve({ status: res.statusCode, text: t })); },
+-    );
+-    req.on("error", reject);
+-    req.end();
++
++  test("the design catalog is not public without a session", async () => {
++    const r = await callRaw("GET", "/api/design-styles", false);
++    assert.equal(r.status, 401);
+   });
+-  assert.equal(again.status, 304);
+-  assert.equal(again.text, "");
+-});
+-
+-test("el formulario publico llega a handleApi en vez de 404", async () => {
+-  // Regresion: /_f/ no estaba en la condicion que llama a handleApi, asi que
+-  // el endpoint respondia 404 sin ejecutarse nunca.
+-  const post = (path, body) =>
+-    new Promise((resolve, reject) => {
++
++  test("applying an unknown preset is rejected with 400, not 404", async () => {
++    const r = await new Promise((resolve, reject) => {
++      const body = JSON.stringify({ presetId: "no-existe-este-estilo", expectedRev: 0 });
++      const req = http.request(
++        { host: "127.0.0.1", port, path: `/api/sites/${pool.siteId}/apply-preset`, method: "POST",
++          headers: { host: "panel.example.com", cookie, "content-type": "application/json", "content-length": Buffer.byteLength(body) } },
++        (res) => { let t = ""; res.setEncoding("utf8"); res.on("data", (c) => (t += c)); res.on("end", () => resolve({ status: res.statusCode, text: t })); },
++      );
++      req.on("error", reject);
++      req.end(body);
++    });
++    assert.equal(r.status, 400);
++    assert.equal(JSON.parse(r.text).error, "unknown_preset");
++  });
++
++  test("applying a real preset changes the theme and keeps the draft valid", async () => {
++    const before = JSON.parse((await callRaw("GET", `/api/sites/${pool.siteId}/draft`, true)).text);
++    const body = JSON.stringify({ presetId: "tech", expectedRev: before.rev });
++    const r = await new Promise((resolve, reject) => {
+       const req = http.request(
+-        { host: "127.0.0.1", port, path, method: "POST",
+-          headers: { host: "panel.example.com", "content-type": "application/x-www-form-urlencoded", "content-length": Buffer.byteLength(body) } },
++        { host: "127.0.0.1", port, path: `/api/sites/${pool.siteId}/apply-preset`, method: "POST",
++          headers: { host: "panel.example.com", cookie, "content-type": "application/json", "content-length": Buffer.byteLength(body) } },
+         (res) => { let t = ""; res.setEncoding("utf8"); res.on("data", (c) => (t += c)); res.on("end", () => resolve({ status: res.statusCode, text: t })); },
+       );
+       req.on("error", reject);
+       req.end(body);
+     });
++    assert.equal(r.status, 200, r.text);
++    const after = JSON.parse((await callRaw("GET", `/api/sites/${pool.siteId}/draft`, true)).text);
++    assert.equal(after.doc.design.presetId, "tech");
++    assert.equal(after.doc.theme.colors.ground, "#0e1117");
++    assert.equal(after.rev > before.rev, true, "la revision avanza");
++    // El documento guardado sigue pasando el esquema.
++    assert.equal(Array.isArray(after.doc.pages[0].sections), true);
++    assert.equal(after.doc.pages[0].sections.length >= 4, true);
++  });
++
++  test("the panel bundle is revalidated, never heuristically cached", async () => {
++    // Regresion: sin cache-control el navegador puede seguir usando el bundle
++    // viejo tras un despliegue y el dueno no ve los cambios.
++    const js = await callRaw("GET", "/app/panel.js", false);
++    assert.equal(js.status, 200);
++    assert.equal(js.headers["cache-control"], "no-cache");
++    assert.match(js.headers.etag ?? "", /^"[A-Za-z0-9_-]{20,}"$/);
+ 
+-  // Un envio invalido recibe 400: eso prueba que la ruta se ejecuto, porque el
+-  // 404 anterior venia de fuera de handleApi.
+-  const bad = await post("/_f/lead", "message=hola");
+-  assert.equal(bad.status, 400);
+-
+-  // Host desconocido y envio correcto responden igual: no se revela si el
+-  // sitio existe. No se comprueba el guardado porque habria que crear un
+-  // hostname activo, y eso es lo que hace la Fase 3 con dominios reales.
+-  const unknown = await post("/_f/lead", "email=a@b.com&message=hola&consent=on");
+-  assert.equal(unknown.status, 200);
+-  assert.equal(unknown.text, "ok");
+-});
++    // El HTML nunca se guarda: puede cambiar en cada despliegue.
++    const html = await callRaw("GET", "/app/", false);
++    assert.equal(html.headers["cache-control"], "no-store");
++
++    // Revalidacion: con el ETag al dia responde 304 y no reenvia el cuerpo.
++    const again = await new Promise((resolve, reject) => {
++      const req = http.request(
++        { host: "127.0.0.1", port, path: "/app/panel.js", method: "GET",
++          headers: { host: "panel.example.com", "if-none-match": js.headers.etag } },
++        (res) => { let t = ""; res.setEncoding("utf8"); res.on("data", (c) => (t += c)); res.on("end", () => resolve({ status: res.statusCode, text: t })); },
++      );
++      req.on("error", reject);
++      req.end();
++    });
++    assert.equal(again.status, 304);
++    assert.equal(again.text, "");
++  });
++
++  test("el formulario publico llega a handleApi en vez de 404", async () => {
++    // Regresion: /_f/ no estaba en la condicion que llama a handleApi, asi que
++    // el endpoint respondia 404 sin ejecutarse nunca.
++    const post = (path, body) =>
++      new Promise((resolve, reject) => {
++        const req = http.request(
++          { host: "127.0.0.1", port, path, method: "POST",
++            headers: { host: "panel.example.com", "content-type": "application/x-www-form-urlencoded", "content-length": Buffer.byteLength(body) } },
++          (res) => { let t = ""; res.setEncoding("utf8"); res.on("data", (c) => (t += c)); res.on("end", () => resolve({ status: res.statusCode, text: t })); },
++        );
++        req.on("error", reject);
++        req.end(body);
++      });
++
++    // Un envio invalido recibe 400: eso prueba que la ruta se ejecuto, porque el
++    // 404 anterior venia de fuera de handleApi.
++    const bad = await post("/_f/lead", "message=hola");
++    assert.equal(bad.status, 400);
++
++    // Host desconocido y envio correcto responden igual: no se revela si el
++    // sitio existe. No se comprueba el guardado porque habria que crear un
++    // hostname activo, y eso es lo que hace la Fase 3 con dominios reales.
++    const unknown = await post("/_f/lead", "email=a@b.com&message=hola&consent=on");
++    assert.equal(unknown.status, 200);
++    assert.equal(unknown.text, "ok");
++  });
++}
+diff --git a/packages/assets/test/assets-db.test.mjs b/packages/assets/test/assets-db.test.mjs
+index a39514f..4a481e8 100644
+--- a/packages/assets/test/assets-db.test.mjs
++++ b/packages/assets/test/assets-db.test.mjs
+@@ -10,85 +10,87 @@ import { registerAsset, licensedAssetIds, assetResolver, withdrawAsset, LIMITS }
+ // Registro de assets contra la base real: cuota, licencia y retirada.
+ 
+ if (process.env.DB_TEST_CONFIRM !== "destroy-test-db" || !process.env.DB_TEST_URL) {
++  // Solo el caso saltado: sin `process.exit`, que mataba al runner antes de
++  // contabilizarlo, y sin arrancar nada del resto del archivo (pools, hooks).
+   test("pruebas de assets omitidas: falta DB de pruebas", { skip: true }, () => {});
+-  process.exit(0);
+-}
++} else {
+ 
+-const OWNER = "11111111-1111-4111-8111-111111111111";
+-const SITE = "33333333-3333-4333-8333-333333333333";
+-let pool, sitesRoot;
++  const OWNER = "11111111-1111-4111-8111-111111111111";
++  const SITE = "33333333-3333-4333-8333-333333333333";
++  let pool, sitesRoot;
+ 
+-const PNG = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, ...new Array(40).fill(0)]);
+-const JPEG = Uint8Array.from([0xff, 0xd8, 0xff, 0xe0, ...new Array(40).fill(0)]);
++  const PNG = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, ...new Array(40).fill(0)]);
++  const JPEG = Uint8Array.from([0xff, 0xd8, 0xff, 0xe0, ...new Array(40).fill(0)]);
+ 
+-before(async () => {
+-  sitesRoot = mkdtempSync(join(tmpdir(), "assets-"));
+-  const admin = new pg.Pool({ connectionString: process.env.DB_TEST_URL });
+-  const { ensureTestDatabase } = await import("@webdesign/db");
+-  const url = await ensureTestDatabase(admin, process.env.DB_TEST_URL, "assets");
+-  await admin.end();
+-  pool = new pg.Pool({ connectionString: url });
+-  for (const t of ["sites", "site_members", "site_drafts", "site_versions", "assets", "audit_log", "users", "user_sessions", "schema_migrations"]) {
+-    await pool.query(`DROP TABLE IF EXISTS ${t} CASCADE`);
+-  }
+-  await migrate(pool);
+-  await pool.query(`INSERT INTO users (id, email, name) VALUES ('${OWNER}', 'a@b.co', 'Ana')`);
+-  await pool.query(`INSERT INTO sites (id, owner_id, name) VALUES ('${SITE}', '${OWNER}', 'Café')`);
+-});
+-after(async () => {
+-  await pool?.end();
+-  if (sitesRoot) rmSync(sitesRoot, { recursive: true, force: true });
+-});
++  before(async () => {
++    sitesRoot = mkdtempSync(join(tmpdir(), "assets-"));
++    const admin = new pg.Pool({ connectionString: process.env.DB_TEST_URL });
++    const { ensureTestDatabase } = await import("@webdesign/db");
++    const url = await ensureTestDatabase(admin, process.env.DB_TEST_URL, "assets");
++    await admin.end();
++    pool = new pg.Pool({ connectionString: url });
++    for (const t of ["sites", "site_members", "site_drafts", "site_versions", "assets", "audit_log", "users", "user_sessions", "schema_migrations"]) {
++      await pool.query(`DROP TABLE IF EXISTS ${t} CASCADE`);
++    }
++    await migrate(pool);
++    await pool.query(`INSERT INTO users (id, email, name) VALUES ('${OWNER}', 'a@b.co', 'Ana')`);
++    await pool.query(`INSERT INTO sites (id, owner_id, name) VALUES ('${SITE}', '${OWNER}', 'Café')`);
++  });
++  after(async () => {
++    await pool?.end();
++    if (sitesRoot) rmSync(sitesRoot, { recursive: true, force: true });
++  });
+ 
+-const base = { userId: OWNER, siteId: SITE, sitesRoot, source: "own" };
++  const base = { userId: OWNER, siteId: SITE, sitesRoot, source: "own" };
+ 
+-test("un asset valido se guarda con nombre generado", async () => {
+-  const r = await registerAsset(pool, { ...base, kind: "image", content: PNG, declaredMime: "image/png" });
+-  assert.equal(r.ok, true);
+-  assert.match(r.path, /^image\/[0-9a-f-]{36}-[0-9a-f]{12}\.png$/);
+-  assert.equal(existsSync(join(sitesRoot, SITE, "assets", r.path)), true);
+-});
++  test("un asset valido se guarda con nombre generado", async () => {
++    const r = await registerAsset(pool, { ...base, kind: "image", content: PNG, declaredMime: "image/png" });
++    assert.equal(r.ok, true);
++    assert.match(r.path, /^image\/[0-9a-f-]{36}-[0-9a-f]{12}\.png$/);
++    assert.equal(existsSync(join(sitesRoot, SITE, "assets", r.path)), true);
++  });
+ 
+-test("un archivo cuyo contenido no es imagen no entra, diga lo que diga", async () => {
+-  const svg = Uint8Array.from("<svg onload=alert(1)>".split("").map((c) => c.charCodeAt(0)));
+-  const r = await registerAsset(pool, { ...base, kind: "image", content: svg, declaredMime: "image/png" });
+-  assert.deepEqual(r, { ok: false, reason: "mime_not_allowed" });
+-});
++  test("un archivo cuyo contenido no es imagen no entra, diga lo que diga", async () => {
++    const svg = Uint8Array.from("<svg onload=alert(1)>".split("").map((c) => c.charCodeAt(0)));
++    const r = await registerAsset(pool, { ...base, kind: "image", content: svg, declaredMime: "image/png" });
++    assert.deepEqual(r, { ok: false, reason: "mime_not_allowed" });
++  });
+ 
+-test("un asset sin licencia existe pero no figura como licenciado", async () => {
+-  const r = await registerAsset(pool, { ...base, kind: "image", content: JPEG, declaredMime: "image/jpeg" });
+-  assert.equal(r.ok, true);
+-  const licensed = await licensedAssetIds(pool, OWNER, SITE);
+-  assert.equal(licensed.includes(r.id), false);
+-});
++  test("un asset sin licencia existe pero no figura como licenciado", async () => {
++    const r = await registerAsset(pool, { ...base, kind: "image", content: JPEG, declaredMime: "image/jpeg" });
++    assert.equal(r.ok, true);
++    const licensed = await licensedAssetIds(pool, OWNER, SITE);
++    assert.equal(licensed.includes(r.id), false);
++  });
+ 
+-test("un asset de coleccion abierta guarda autor y licencia", async () => {
+-  const r = await registerAsset(pool, {
+-    ...base, kind: "image", content: JPEG, declaredMime: "image/jpeg",
+-    source: "open-collection", license: "CC0-1.0", author: "Anon", sourceUrl: "https://example.org/x",
++  test("un asset de coleccion abierta guarda autor y licencia", async () => {
++    const r = await registerAsset(pool, {
++      ...base, kind: "image", content: JPEG, declaredMime: "image/jpeg",
++      source: "open-collection", license: "CC0-1.0", author: "Anon", sourceUrl: "https://example.org/x",
++    });
++    assert.equal(r.ok, true);
++    const licensed = await licensedAssetIds(pool, OWNER, SITE);
++    assert.equal(licensed.includes(r.id), true);
+   });
+-  assert.equal(r.ok, true);
+-  const licensed = await licensedAssetIds(pool, OWNER, SITE);
+-  assert.equal(licensed.includes(r.id), true);
+-});
+ 
+-test("el resolver entrega la ruta publica y deja fuera lo retirado", async () => {
+-  const r = await registerAsset(pool, { ...base, kind: "image", content: PNG, declaredMime: "image/png" });
+-  const resolve = await assetResolver(pool, OWNER, SITE);
+-  assert.match(resolve(r.id).src, /^\/assets\/image\//);
+-  await withdrawAsset(pool, OWNER, SITE, r.id);
+-  assert.equal((await assetResolver(pool, OWNER, SITE))(r.id), undefined);
+-});
++  test("el resolver entrega la ruta publica y deja fuera lo retirado", async () => {
++    const r = await registerAsset(pool, { ...base, kind: "image", content: PNG, declaredMime: "image/png" });
++    const resolve = await assetResolver(pool, OWNER, SITE);
++    assert.match(resolve(r.id).src, /^\/assets\/image\//);
++    await withdrawAsset(pool, OWNER, SITE, r.id);
++    assert.equal((await assetResolver(pool, OWNER, SITE))(r.id), undefined);
++  });
+ 
+-test("pasarse de la cuota del sitio no registra nada", async () => {
+-  const y = await pool.query("SELECT COALESCE(SUM(bytes),0) AS t FROM assets WHERE site_id = $1", [SITE]);
+-  const used = Number(y.rows[0].t);
+-  // Se simula un asset que ya llena la cuota.
+-  await pool.query(
+-    `INSERT INTO assets (id, site_id, path, kind, bytes, mime, source)
++  test("pasarse de la cuota del sitio no registra nada", async () => {
++    const y = await pool.query("SELECT COALESCE(SUM(bytes),0) AS t FROM assets WHERE site_id = $1", [SITE]);
++    const used = Number(y.rows[0].t);
++    // Se simula un asset que ya llena la cuota.
++    await pool.query(
++      `INSERT INTO assets (id, site_id, path, kind, bytes, mime, source)
+      VALUES (gen_random_uuid(), $1, 'image/padding.png', 'image', $2, 'image/png', 'own')`,
+-    [SITE, LIMITS.siteTotalBytes - used],
+-  );
+-  const r = await registerAsset(pool, { ...base, kind: "image", content: PNG, declaredMime: "image/png" });
+-  assert.deepEqual(r, { ok: false, reason: "site_quota_exceeded" });
+-});
++      [SITE, LIMITS.siteTotalBytes - used],
++    );
++    const r = await registerAsset(pool, { ...base, kind: "image", content: PNG, declaredMime: "image/png" });
++    assert.deepEqual(r, { ok: false, reason: "site_quota_exceeded" });
++  });
++}
+diff --git a/packages/db/test/migrate.test.mjs b/packages/db/test/migrate.test.mjs
+index 240d3c5..2363dac 100644
+--- a/packages/db/test/migrate.test.mjs
++++ b/packages/db/test/migrate.test.mjs
+@@ -7,123 +7,125 @@ import pg from "pg";
+ import { migrate } from "../dist/index.js";
+ 
+ if (process.env.DB_TEST_CONFIRM !== "destroy-test-db" || !process.env.DB_TEST_URL) {
++  // Solo el caso saltado: sin `process.exit`, que mataba al runner antes de
++  // contabilizarlo, y sin arrancar nada del resto del archivo (pools, hooks).
+   test("pruebas de base omitidas: falta DB_TEST_URL o DB_TEST_CONFIRM", { skip: true }, () => {});
+-  process.exit(0);
+-}
+-const MIGRATIONS_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "migrations");
+-const pool = new pg.Pool({ connectionString: process.env.DB_TEST_URL });
+-after(() => pool.end());
++} else {
++  const MIGRATIONS_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "migrations");
++  const pool = new pg.Pool({ connectionString: process.env.DB_TEST_URL });
++  after(() => pool.end());
+ 
+-test("applies migrations once and is idempotent", async () => {
+-  await pool.query("DROP TABLE IF EXISTS sites, site_members, site_drafts, site_versions, assets, audit_log, users, schema_migrations CASCADE");
+-  // El rol de la plataforma tiene que existir ANTES de migrar: las migraciones
+-  // solo conceden permisos si lo encuentran (`IF EXISTS ... pg_roles`), asi que
+-  // creandolo despues el assert de EXECUTE pasaria por el motivo equivocado.
+-  await pool.query("DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='app_platform') THEN CREATE ROLE app_platform LOGIN; END IF; END $$");
+-  // Las migraciones se aplican todas, en orden y sin saltarse ninguna. La lista
+-  // se deriva del disco a proposito: escribirla a mano la dejo desfasada desde
+-  // la 0008 y, como esta prueba se salta sin base de datos, nada lo delato.
+-  const enDisco = readdirSync(MIGRATIONS_DIR).filter((f) => f.endsWith(".sql")).sort();
+-  const first = await migrate(pool);
+-  assert.deepEqual(first, enDisco);
+-  const second = await migrate(pool);
+-  assert.deepEqual(second, []);
+-  const { rows } = await pool.query("SELECT relrowsecurity, relforcerowsecurity FROM pg_class WHERE relname = 'sites'");
+-  assert.deepEqual(rows[0], { relrowsecurity: true, relforcerowsecurity: true });
+-  // Toda tabla con datos de sitio lleva RLS forzado.
+-  const forced = await pool.query(
+-    "SELECT relname FROM pg_class WHERE relname = ANY($1) AND relrowsecurity AND relforcerowsecurity ORDER BY relname",
+-    [["assets", "audit_log", "site_drafts", "site_members", "site_versions", "sites", "user_sessions", "users"]],
+-  );
+-  assert.deepEqual(forced.rows.map((r) => r.relname), ["assets", "audit_log", "site_drafts", "site_members", "site_versions", "sites", "user_sessions", "users"]);
++  test("applies migrations once and is idempotent", async () => {
++    await pool.query("DROP TABLE IF EXISTS sites, site_members, site_drafts, site_versions, assets, audit_log, users, schema_migrations CASCADE");
++    // El rol de la plataforma tiene que existir ANTES de migrar: las migraciones
++    // solo conceden permisos si lo encuentran (`IF EXISTS ... pg_roles`), asi que
++    // creandolo despues el assert de EXECUTE pasaria por el motivo equivocado.
++    await pool.query("DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='app_platform') THEN CREATE ROLE app_platform LOGIN; END IF; END $$");
++    // Las migraciones se aplican todas, en orden y sin saltarse ninguna. La lista
++    // se deriva del disco a proposito: escribirla a mano la dejo desfasada desde
++    // la 0008 y, como esta prueba se salta sin base de datos, nada lo delato.
++    const enDisco = readdirSync(MIGRATIONS_DIR).filter((f) => f.endsWith(".sql")).sort();
++    const first = await migrate(pool);
++    assert.deepEqual(first, enDisco);
++    const second = await migrate(pool);
++    assert.deepEqual(second, []);
++    const { rows } = await pool.query("SELECT relrowsecurity, relforcerowsecurity FROM pg_class WHERE relname = 'sites'");
++    assert.deepEqual(rows[0], { relrowsecurity: true, relforcerowsecurity: true });
++    // Toda tabla con datos de sitio lleva RLS forzado.
++    const forced = await pool.query(
++      "SELECT relname FROM pg_class WHERE relname = ANY($1) AND relrowsecurity AND relforcerowsecurity ORDER BY relname",
++      [["assets", "audit_log", "site_drafts", "site_members", "site_versions", "sites", "user_sessions", "users"]],
++    );
++    assert.deepEqual(forced.rows.map((r) => r.relname), ["assets", "audit_log", "site_drafts", "site_members", "site_versions", "sites", "user_sessions", "users"]);
+ 
+-  // El catalogo de diseno (spec 7.5) es lo contrario: datos globales de producto,
+-  // sin RLS. Si alguien le pusiera RLS forzado, el agente dejaria de ver el
+-  // catalogo y las recomendaciones saldrian vacias sin ningun error visible.
+-  const catalogo = await pool.query(
+-    "SELECT relname, relrowsecurity FROM pg_class WHERE relname = ANY($1) ORDER BY relname",
+-    [["design_antipatterns", "design_font_pairings", "design_landing_patterns", "design_palettes", "design_product_types", "design_styles", "design_ux_rules"]],
+-  );
+-  assert.deepEqual(catalogo.rows.map((r) => r.relname), ["design_antipatterns", "design_font_pairings", "design_landing_patterns", "design_palettes", "design_product_types", "design_styles", "design_ux_rules"]);
+-  assert.equal(catalogo.rows.every((r) => r.relrowsecurity === false), true);
++    // El catalogo de diseno (spec 7.5) es lo contrario: datos globales de producto,
++    // sin RLS. Si alguien le pusiera RLS forzado, el agente dejaria de ver el
++    // catalogo y las recomendaciones saldrian vacias sin ningun error visible.
++    const catalogo = await pool.query(
++      "SELECT relname, relrowsecurity FROM pg_class WHERE relname = ANY($1) ORDER BY relname",
++      [["design_antipatterns", "design_font_pairings", "design_landing_patterns", "design_palettes", "design_product_types", "design_styles", "design_ux_rules"]],
++    );
++    assert.deepEqual(catalogo.rows.map((r) => r.relname), ["design_antipatterns", "design_font_pairings", "design_landing_patterns", "design_palettes", "design_product_types", "design_styles", "design_ux_rules"]);
++    assert.equal(catalogo.rows.every((r) => r.relrowsecurity === false), true);
+ 
+-  // Toda fila del catalogo puede decir de donde salio y con que licencia (7.7.1).
+-  for (const t of ["design_product_types", "design_palettes", "design_font_pairings", "design_landing_patterns", "design_ux_rules", "design_antipatterns", "design_styles"]) {
+-    const cols = await pool.query("SELECT column_name FROM information_schema.columns WHERE table_name = $1", [t]);
+-    const nombres = cols.rows.map((r) => r.column_name);
+-    for (const c of ["source", "license", "verified_at", "status"]) {
+-      assert.equal(nombres.includes(c), true, `${t} no tiene ${c}`);
++    // Toda fila del catalogo puede decir de donde salio y con que licencia (7.7.1).
++    for (const t of ["design_product_types", "design_palettes", "design_font_pairings", "design_landing_patterns", "design_ux_rules", "design_antipatterns", "design_styles"]) {
++      const cols = await pool.query("SELECT column_name FROM information_schema.columns WHERE table_name = $1", [t]);
++      const nombres = cols.rows.map((r) => r.column_name);
++      for (const c of ["source", "license", "verified_at", "status"]) {
++        assert.equal(nombres.includes(c), true, `${t} no tiene ${c}`);
++      }
+     }
+-  }
+ 
+-  // Las dos comprobaciones publicas de 0019 son SECURITY DEFINER y solo las
+-  // puede ejecutar la plataforma. Si alguien las recreara sin `REVOKE ... FROM
++    // Las dos comprobaciones publicas de 0019 son SECURITY DEFINER y solo las
++    // puede ejecutar la plataforma. Si alguien las recreara sin `REVOKE ... FROM
+   // PUBLIC`, cualquiera con conexion leeria el conteo de leads de un sitio
+-  // ajeno: es justo lo que este bloque vigila.
+-  const funciones = await pool.query(
+-    `SELECT p.proname, p.prosecdef, p.provolatile, p.proconfig
++    // ajeno: es justo lo que este bloque vigila.
++    const funciones = await pool.query(
++      `SELECT p.proname, p.prosecdef, p.provolatile, p.proconfig
+      FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+      WHERE n.nspname = 'public' AND p.proname = ANY($1) ORDER BY p.proname`,
+-    [["app_lead_recent_count", "app_public_asset_visible"]],
+-  );
+-  assert.deepEqual(funciones.rows.map((r) => r.proname), ["app_lead_recent_count", "app_public_asset_visible"]);
+-  for (const f of funciones.rows) {
+-    assert.equal(f.prosecdef, true, `${f.proname} no es SECURITY DEFINER`);
+-    // STABLE: 's'. Una VOLATILE dasa el conteo por bueno dentro de la transaccion.
+-    assert.equal(f.provolatile, "s", `${f.proname} no es STABLE`);
+-    // search_path fijo: sin el, la sesion del llamante puede anteponer un esquema.
+-    assert.equal((f.proconfig ?? []).some((c) => c.startsWith("search_path=")), true, `${f.proname} sin search_path fijo`);
+-  }
+-  // `proacl` y no `has_function_privilege('public', ...)`: PUBLIC es un
+-  // pseudorol y no un nombre de rol que esa funcion resuelva. La entrada de
+-  // PUBLIC en el ACL se escribe sin destinatario (`=X/duenno`); tras el REVOKE
+-  // solo debe quedar `app_platform=X/duenno`.
+-  const permisos = await pool.query(
+-    `SELECT p.proname, p.proacl::text AS acl,
++      [["app_lead_recent_count", "app_public_asset_visible"]],
++    );
++    assert.deepEqual(funciones.rows.map((r) => r.proname), ["app_lead_recent_count", "app_public_asset_visible"]);
++    for (const f of funciones.rows) {
++      assert.equal(f.prosecdef, true, `${f.proname} no es SECURITY DEFINER`);
++      // STABLE: 's'. Una VOLATILE dasa el conteo por bueno dentro de la transaccion.
++      assert.equal(f.provolatile, "s", `${f.proname} no es STABLE`);
++      // search_path fijo: sin el, la sesion del llamante puede anteponer un esquema.
++      assert.equal((f.proconfig ?? []).some((c) => c.startsWith("search_path=")), true, `${f.proname} sin search_path fijo`);
++    }
++    // `proacl` y no `has_function_privilege('public', ...)`: PUBLIC es un
++    // pseudorol y no un nombre de rol que esa funcion resuelva. La entrada de
++    // PUBLIC en el ACL se escribe sin destinatario (`=X/duenno`); tras el REVOKE
++    // solo debe quedar `app_platform=X/duenno`.
++    const permisos = await pool.query(
++      `SELECT p.proname, p.proacl::text AS acl,
+             has_function_privilege('app_platform', p.oid, 'EXECUTE') AS plataforma
+      FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+      WHERE n.nspname = 'public' AND p.proname = ANY($1) ORDER BY p.proname`,
+-    [["app_lead_recent_count", "app_public_asset_visible"]],
+-  );
+-  assert.deepEqual(permisos.rows.map((r) => r.proname), ["app_lead_recent_count", "app_public_asset_visible"]);
+-  for (const p of permisos.rows) {
+-    assert.equal(p.plataforma, true, `app_platform no puede ejecutar ${p.proname}`);
+-    assert.match(p.acl ?? "", /app_platform=X\//, `${p.proname} sin GRANT a app_platform`);
+-    // PUBLIC como destinatario: el ACL va entre llaves y esa entrada se escribe
+-    // sin nombre delante, asi que puede ir tras `{` o tras una coma.
+-    assert.equal(/(?:[{,])=X\//.test(p.acl ?? ""), false, `${p.proname} sigue abierta a PUBLIC`);
+-  }
+-});
++      [["app_lead_recent_count", "app_public_asset_visible"]],
++    );
++    assert.deepEqual(permisos.rows.map((r) => r.proname), ["app_lead_recent_count", "app_public_asset_visible"]);
++    for (const p of permisos.rows) {
++      assert.equal(p.plataforma, true, `app_platform no puede ejecutar ${p.proname}`);
++      assert.match(p.acl ?? "", /app_platform=X\//, `${p.proname} sin GRANT a app_platform`);
++      // PUBLIC como destinatario: el ACL va entre llaves y esa entrada se escribe
++      // sin nombre delante, asi que puede ir tras `{` o tras una coma.
++      assert.equal(/(?:[{,])=X\//.test(p.acl ?? ""), false, `${p.proname} sigue abierta a PUBLIC`);
++    }
++  });
+ 
+-// 0021 existe porque las migraciones viejas conceden permisos dentro de bloques
+-// condicionados a que el rol exista: si no existia, el GRANT se saltaba en
+-// silencio y el permiso no se volvia a pedir nunca. Esta prueba aplica el
+-// archivo dos veces seguidas, que es lo que pasara en produccion cuando ya este
+-// aplicada y alguien lo relance a mano para reparar.
+-test("0021 se aplica dos veces y el permiso sigue concedido", async () => {
+-  const sql = readFileSync(join(MIGRATIONS_DIR, "0021_regrant_app_tables.sql"), "utf8");
+-  await pool.query(sql);
+-  // La segunda no rompe: no crea nada, solo repite GRANT y recomprueba.
+-  await pool.query(sql);
++  // 0021 existe porque las migraciones viejas conceden permisos dentro de bloques
++  // condicionados a que el rol exista: si no existia, el GRANT se saltaba en
++  // silencio y el permiso no se volvia a pedir nunca. Esta prueba aplica el
++  // archivo dos veces seguidas, que es lo que pasara en produccion cuando ya este
++  // aplicada y alguien lo relance a mano para reparar.
++  test("0021 se aplica dos veces y el permiso sigue concedido", async () => {
++    const sql = readFileSync(join(MIGRATIONS_DIR, "0021_regrant_app_tables.sql"), "utf8");
++    await pool.query(sql);
++    // La segunda no rompe: no crea nada, solo repite GRANT y recomprueba.
++    await pool.query(sql);
+ 
+-  const { rows } = await pool.query(
+-    `SELECT t AS tabla,
++    const { rows } = await pool.query(
++      `SELECT t AS tabla,
+             has_table_privilege('app_platform', t, 'SELECT') AS sel,
+             has_table_privilege('app_platform', t, 'INSERT') AS ins,
+             has_table_privilege('app_platform', t, 'UPDATE') AS upd,
+             has_table_privilege('app_platform', t, 'DELETE') AS del
+      FROM unnest($1::text[]) AS t ORDER BY t`,
+-    [["assets", "site_drafts", "site_members", "site_versions", "users", "sites", "user_sessions"]],
+-  );
+-  assert.equal(rows.length, 7);
+-  for (const r of rows) {
+-    assert.equal(r.sel && r.ins && r.upd && r.del, true, `app_platform sin permisos sobre ${r.tabla} tras 0021`);
+-  }
+-  // audit_log es la excepcion: se lee y se escribe, pero no se modifica ni se
+-  // borra nunca desde la aplicacion.
+-  const { rows: audit } = await pool.query(
+-    `SELECT has_table_privilege('app_platform', 'audit_log', 'SELECT,INSERT') AS ok,
++      [["assets", "site_drafts", "site_members", "site_versions", "users", "sites", "user_sessions"]],
++    );
++    assert.equal(rows.length, 7);
++    for (const r of rows) {
++      assert.equal(r.sel && r.ins && r.upd && r.del, true, `app_platform sin permisos sobre ${r.tabla} tras 0021`);
++    }
++    // audit_log es la excepcion: se lee y se escribe, pero no se modifica ni se
++    // borra nunca desde la aplicacion.
++    const { rows: audit } = await pool.query(
++      `SELECT has_table_privilege('app_platform', 'audit_log', 'SELECT,INSERT') AS ok,
+             has_table_privilege('app_platform', 'audit_log', 'UPDATE') AS modifica`,
+-  );
+-  assert.deepEqual(audit[0], { ok: true, modifica: false });
+-});
++    );
++    assert.deepEqual(audit[0], { ok: true, modifica: false });
++  });
++}
+diff --git a/packages/db/test/rls.test.mjs b/packages/db/test/rls.test.mjs
+index 9e1cce0..d149bbd 100644
+--- a/packages/db/test/rls.test.mjs
++++ b/packages/db/test/rls.test.mjs
+@@ -4,98 +4,100 @@ import pg from "pg";
+ import { withUser, migrate, ensureTestDatabase } from "../dist/index.js";
+ 
+ if (process.env.DB_TEST_CONFIRM !== "destroy-test-db" || !process.env.DB_TEST_URL) {
++  // Solo el caso saltado: sin `process.exit`, que mataba al runner antes de
++  // contabilizarlo, y sin arrancar nada del resto del archivo (pools, hooks).
+   test("pruebas de base omitidas: falta DB_TEST_URL o DB_TEST_CONFIRM", { skip: true }, () => {});
+-  process.exit(0);
+-}
+-let DB_URL = process.env.DB_TEST_URL;
+-const A = "11111111-1111-4111-8111-111111111111";
+-const B = "22222222-2222-4222-8222-222222222222";
+-let admin, app;
++} else {
++  let DB_URL = process.env.DB_TEST_URL;
++  const A = "11111111-1111-4111-8111-111111111111";
++  const B = "22222222-2222-4222-8222-222222222222";
++  let admin, app;
+ 
+-before(async () => {
+-  if (!DB_URL) throw new Error("DB_TEST_URL no definida");
+-  // Cada paquete usa su propia base: migrar y borrar tablas a la vez se pisaria.
+-  const bootstrap = new pg.Pool({ connectionString: process.env.DB_TEST_URL });
+-  DB_URL = await ensureTestDatabase(bootstrap, process.env.DB_TEST_URL, "db");
+-  await bootstrap.end();
+-  admin = new pg.Pool({ connectionString: DB_URL });
+-  await admin.query("DROP TABLE IF EXISTS sites, site_members, site_drafts, site_versions, assets, audit_log, users, user_sessions, schema_migrations CASCADE");
+-  await admin.query("DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='app_platform') THEN CREATE ROLE app_platform LOGIN; END IF; END $$");
+-  await admin.query("ALTER ROLE app_platform LOGIN PASSWORD 'test'");
+-  // Se aplican todas las migraciones reales, no una copia: lo que se prueba es lo que corre.
+-  await migrate(admin);
+-  await admin.query(`INSERT INTO sites (id, owner_id, name) VALUES
++  before(async () => {
++    if (!DB_URL) throw new Error("DB_TEST_URL no definida");
++    // Cada paquete usa su propia base: migrar y borrar tablas a la vez se pisaria.
++    const bootstrap = new pg.Pool({ connectionString: process.env.DB_TEST_URL });
++    DB_URL = await ensureTestDatabase(bootstrap, process.env.DB_TEST_URL, "db");
++    await bootstrap.end();
++    admin = new pg.Pool({ connectionString: DB_URL });
++    await admin.query("DROP TABLE IF EXISTS sites, site_members, site_drafts, site_versions, assets, audit_log, users, user_sessions, schema_migrations CASCADE");
++    await admin.query("DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='app_platform') THEN CREATE ROLE app_platform LOGIN; END IF; END $$");
++    await admin.query("ALTER ROLE app_platform LOGIN PASSWORD 'test'");
++    // Se aplican todas las migraciones reales, no una copia: lo que se prueba es lo que corre.
++    await migrate(admin);
++    await admin.query(`INSERT INTO sites (id, owner_id, name) VALUES
+     ('33333333-3333-4333-8333-333333333333', '${A}', 'de A'),
+     ('44444444-4444-4444-8444-444444444444', '${B}', 'de B')`);
+-  app = new pg.Pool({ connectionString: DB_URL.replace(/\/\/[^@]*@/, "//app_platform:test@") });
+-});
+-after(async () => { await app?.end(); await admin?.end(); });
++    app = new pg.Pool({ connectionString: DB_URL.replace(/\/\/[^@]*@/, "//app_platform:test@") });
++  });
++  after(async () => { await app?.end(); await admin?.end(); });
+ 
+-test("usuario A solo ve sus sitios", async () => {
+-  const rows = await withUser(app, A, async (tx) => (await tx.query("SELECT name FROM sites")).rows);
+-  assert.deepEqual(rows.map((r) => r.name), ["de A"]);
+-});
++  test("usuario A solo ve sus sitios", async () => {
++    const rows = await withUser(app, A, async (tx) => (await tx.query("SELECT name FROM sites")).rows);
++    assert.deepEqual(rows.map((r) => r.name), ["de A"]);
++  });
+ 
+-test("sin usuario fijado no se ve nada", async () => {
+-  const { rows } = await app.query("SELECT name FROM sites");
+-  assert.equal(rows.length, 0);
+-});
++  test("sin usuario fijado no se ve nada", async () => {
++    const { rows } = await app.query("SELECT name FROM sites");
++    assert.equal(rows.length, 0);
++  });
+ 
+-test("no se puede insertar un sitio de otro dueño", async () => {
+-  await assert.rejects(() =>
+-    withUser(app, A, (tx) => tx.query("INSERT INTO sites (id, owner_id, name) VALUES ('55555555-5555-4555-8555-555555555555', $1, 'ajeno')", [B]))
+-  );
+-});
++  test("no se puede insertar un sitio de otro dueño", async () => {
++    await assert.rejects(() =>
++      withUser(app, A, (tx) => tx.query("INSERT INTO sites (id, owner_id, name) VALUES ('55555555-5555-4555-8555-555555555555', $1, 'ajeno')", [B]))
++    );
++  });
+ 
+-test("userId inválido se rechaza", async () => {
+-  await assert.rejects(() => withUser(app, "x'; DROP TABLE sites; --", async () => 1));
+-});
++  test("userId inválido se rechaza", async () => {
++    await assert.rejects(() => withUser(app, "x'; DROP TABLE sites; --", async () => 1));
++  });
+ 
+-// --- Fase 1: aislamiento de las tablas de contenido ---
++  // --- Fase 1: aislamiento de las tablas de contenido ---
+ 
+-test("el borrador de un sitio ajeno no se ve ni se escribe", async () => {
+-  await admin.query(`INSERT INTO site_drafts (site_id, rev, doc, doc_hash, updated_by_type)
++  test("el borrador de un sitio ajeno no se ve ni se escribe", async () => {
++    await admin.query(`INSERT INTO site_drafts (site_id, rev, doc, doc_hash, updated_by_type)
+     VALUES ('44444444-4444-4444-8444-444444444444', 1, '{"schemaVersion":1}'::jsonb, 'h', 'user')`);
+-  const visible = await withUser(app, A, async (tx) => (await tx.query("SELECT site_id FROM site_drafts")).rows);
+-  assert.equal(visible.length, 0);
+-  await assert.rejects(() =>
+-    withUser(app, A, (tx) =>
+-      tx.query(`INSERT INTO site_drafts (site_id, rev, doc, doc_hash, updated_by_type)
++    const visible = await withUser(app, A, async (tx) => (await tx.query("SELECT site_id FROM site_drafts")).rows);
++    assert.equal(visible.length, 0);
++    await assert.rejects(() =>
++      withUser(app, A, (tx) =>
++        tx.query(`INSERT INTO site_drafts (site_id, rev, doc, doc_hash, updated_by_type)
+         VALUES ('44444444-4444-4444-8444-444444444444', 2, '{}'::jsonb, 'h', 'user')`)),
+-  );
+-});
++    );
++  });
+ 
+-test("las versiones publicadas de un sitio ajeno no se ven", async () => {
+-  await admin.query(`INSERT INTO site_versions (id, site_id, version, schema_version, doc, doc_hash)
++  test("las versiones publicadas de un sitio ajeno no se ven", async () => {
++    await admin.query(`INSERT INTO site_versions (id, site_id, version, schema_version, doc, doc_hash)
+     VALUES ('66666666-6666-4666-8666-666666666666', '44444444-4444-4444-8444-444444444444', 1, 1, '{}'::jsonb, 'h')`);
+-  const rows = await withUser(app, A, async (tx) => (await tx.query("SELECT version FROM site_versions")).rows);
+-  assert.equal(rows.length, 0);
+-});
++    const rows = await withUser(app, A, async (tx) => (await tx.query("SELECT version FROM site_versions")).rows);
++    assert.equal(rows.length, 0);
++  });
+ 
+-test("los assets ajenos no se ven", async () => {
+-  await admin.query(`INSERT INTO assets (id, site_id, path, kind, bytes, mime, source, license)
++  test("los assets ajenos no se ven", async () => {
++    await admin.query(`INSERT INTO assets (id, site_id, path, kind, bytes, mime, source, license)
+     VALUES ('77777777-7777-4777-8777-777777777777', '44444444-4444-4444-8444-444444444444', 'a/1.webp', 'image', 1000, 'image/webp', 'own', 'MIT')`);
+-  const rows = await withUser(app, A, async (tx) => (await tx.query("SELECT path FROM assets")).rows);
+-  assert.equal(rows.length, 0);
+-});
++    const rows = await withUser(app, A, async (tx) => (await tx.query("SELECT path FROM assets")).rows);
++    assert.equal(rows.length, 0);
++  });
+ 
+-test("el dueño sí ve su propio assets y su auditoria", async () => {
+-  await admin.query(`INSERT INTO assets (id, site_id, path, kind, bytes, mime, source)
++  test("el dueño sí ve su propio assets y su auditoria", async () => {
++    await admin.query(`INSERT INTO assets (id, site_id, path, kind, bytes, mime, source)
+     VALUES ('88888888-8888-4888-8888-888888888888', '33333333-3333-4333-8333-333333333333', 'a/2.webp', 'image', 10, 'image/webp', 'own')`);
+-  const rows = await withUser(app, A, async (tx) => (await tx.query("SELECT path FROM assets")).rows);
+-  assert.deepEqual(rows.map((r) => r.path), ["a/2.webp"]);
+-  await withUser(app, A, (tx) =>
+-    tx.query(`INSERT INTO audit_log (id, actor_type, site_id, action) VALUES ('99999999-9999-4999-8999-999999999999', 'user', '33333333-3333-4333-8333-333333333333', 'publish')`));
+-});
++    const rows = await withUser(app, A, async (tx) => (await tx.query("SELECT path FROM assets")).rows);
++    assert.deepEqual(rows.map((r) => r.path), ["a/2.webp"]);
++    await withUser(app, A, (tx) =>
++      tx.query(`INSERT INTO audit_log (id, actor_type, site_id, action) VALUES ('99999999-9999-4999-8999-999999999999', 'user', '33333333-3333-4333-8333-333333333333', 'publish')`));
++  });
+ 
+-test("la auditoria no se puede modificar ni borrar", async () => {
+-  await assert.rejects(() => withUser(app, A, (tx) => tx.query("UPDATE audit_log SET action = 'x'")));
+-  await assert.rejects(() => withUser(app, A, (tx) => tx.query("DELETE FROM audit_log")));
+-});
++  test("la auditoria no se puede modificar ni borrar", async () => {
++    await assert.rejects(() => withUser(app, A, (tx) => tx.query("UPDATE audit_log SET action = 'x'")));
++    await assert.rejects(() => withUser(app, A, (tx) => tx.query("DELETE FROM audit_log")));
++  });
+ 
+-test("una cuenta no puede tener dos sitios publicados", async () => {
+-  await admin.query("UPDATE sites SET status = 'active' WHERE id = '33333333-3333-4333-8333-333333333333'");
+-  await assert.rejects(() =>
+-    admin.query(`INSERT INTO sites (id, owner_id, name, status)
++  test("una cuenta no puede tener dos sitios publicados", async () => {
++    await admin.query("UPDATE sites SET status = 'active' WHERE id = '33333333-3333-4333-8333-333333333333'");
++    await assert.rejects(() =>
++      admin.query(`INSERT INTO sites (id, owner_id, name, status)
+       VALUES ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', '${A}', 'segundo', 'active')`));
+-});
++  });
++}
+diff --git a/packages/editor/test/save.test.mjs b/packages/editor/test/save.test.mjs
+index d21ab00..5e6cb3f 100644
+--- a/packages/editor/test/save.test.mjs
++++ b/packages/editor/test/save.test.mjs
+@@ -5,83 +5,85 @@ import { migrate, ensureTestDatabase, withUser } from "@webdesign/db";
+ import { saveDraft, loadDraft } from "../dist/save.js";
+ 
+ if (process.env.DB_TEST_CONFIRM !== "destroy-test-db" || !process.env.DB_TEST_URL) {
++  // Solo el caso saltado: sin `process.exit`, que mataba al runner antes de
++  // contabilizarlo, y sin arrancar nada del resto del archivo (pools, hooks).
+   test("pruebas de guardado omitidas: falta DB de pruebas", { skip: true }, () => {});
+-  process.exit(0);
+-}
++} else {
+ 
+-const OWNER = "11111111-1111-4111-8111-111111111111";
+-const SITE = "33333333-3333-4333-8333-333333333333";
+-let pool;
++  const OWNER = "11111111-1111-4111-8111-111111111111";
++  const SITE = "33333333-3333-4333-8333-333333333333";
++  let pool;
+ 
+-const doc = (headline) => ({
+-  schemaVersion: 1,
+-  meta: { name: "Café", lang: "es" },
+-  design: { brief: "b", idea: "i", presetId: "p", dials: { variance: 5, motion: 5, density: 5 } },
+-  theme: { colors: { ground: "#F4EFE6", ink: "#1B1B1B", accent: "#B3422B" },
+-    typography: { family: "Inter", scale: "s" }, spacing: { margin: 24, sectionGap: 160 }, radius: "square" },
+-  pages: [{ id: "p_home", slug: "/", seo: { title: "Inicio", description: "d", noindex: false },
+-    sections: [{ id: "s_hero", type: "hero", props: { headline } }] }],
+-  assets: [],
+-});
++  const doc = (headline) => ({
++    schemaVersion: 1,
++    meta: { name: "Café", lang: "es" },
++    design: { brief: "b", idea: "i", presetId: "p", dials: { variance: 5, motion: 5, density: 5 } },
++    theme: { colors: { ground: "#F4EFE6", ink: "#1B1B1B", accent: "#B3422B" },
++      typography: { family: "Inter", scale: "s" }, spacing: { margin: 24, sectionGap: 160 }, radius: "square" },
++    pages: [{ id: "p_home", slug: "/", seo: { title: "Inicio", description: "d", noindex: false },
++      sections: [{ id: "s_hero", type: "hero", props: { headline } }] }],
++    assets: [],
++  });
+ 
+-before(async () => {
+-  const admin = new pg.Pool({ connectionString: process.env.DB_TEST_URL });
+-  const url = await ensureTestDatabase(admin, process.env.DB_TEST_URL, "editor");
+-  await admin.end();
+-  pool = new pg.Pool({ connectionString: url });
+-  await pool.query("DROP TABLE IF EXISTS sites, site_members, site_drafts, site_versions, assets, audit_log, users, schema_migrations CASCADE");
+-  await migrate(pool);
+-  await pool.query(`INSERT INTO users (id, email, name) VALUES ('${OWNER}', 'a@b.co', 'Ana')`);
+-  await pool.query(`INSERT INTO sites (id, owner_id, name) VALUES ('${SITE}', '${OWNER}', 'Café')`);
+-});
+-after(() => pool?.end());
++  before(async () => {
++    const admin = new pg.Pool({ connectionString: process.env.DB_TEST_URL });
++    const url = await ensureTestDatabase(admin, process.env.DB_TEST_URL, "editor");
++    await admin.end();
++    pool = new pg.Pool({ connectionString: url });
++    await pool.query("DROP TABLE IF EXISTS sites, site_members, site_drafts, site_versions, assets, audit_log, users, schema_migrations CASCADE");
++    await migrate(pool);
++    await pool.query(`INSERT INTO users (id, email, name) VALUES ('${OWNER}', 'a@b.co', 'Ana')`);
++    await pool.query(`INSERT INTO sites (id, owner_id, name) VALUES ('${SITE}', '${OWNER}', 'Café')`);
++  });
++  after(() => pool?.end());
+ 
+-test("a first save creates rev 1 and writes audit", async () => {
+-  const r = await saveDraft(pool, { userId: OWNER, siteId: SITE, doc: doc("Hola"), expectedRev: 0, actorType: "user" });
+-  assert.equal(r.ok, true);
+-  assert.equal(r.rev, 1);
+-  const audit = await withUser(pool, OWNER, async (tx) => (await tx.query("SELECT action, meta FROM audit_log")).rows);
+-  assert.equal(audit.filter((a) => a.action === "draft.save").length, 1);
+-  assert.equal(audit[0].meta.rev, 1);
+-});
++  test("a first save creates rev 1 and writes audit", async () => {
++    const r = await saveDraft(pool, { userId: OWNER, siteId: SITE, doc: doc("Hola"), expectedRev: 0, actorType: "user" });
++    assert.equal(r.ok, true);
++    assert.equal(r.rev, 1);
++    const audit = await withUser(pool, OWNER, async (tx) => (await tx.query("SELECT action, meta FROM audit_log")).rows);
++    assert.equal(audit.filter((a) => a.action === "draft.save").length, 1);
++    assert.equal(audit[0].meta.rev, 1);
++  });
+ 
+-test("a stale revision is a conflict, not an overwrite", async () => {
+-  const r = await saveDraft(pool, { userId: OWNER, siteId: SITE, doc: doc("Pisado"), expectedRev: 0, actorType: "user" });
+-  assert.deepEqual(r, { ok: false, reason: "conflict", currentRev: 1 });
+-  const loaded = await loadDraft(pool, OWNER, SITE);
+-  assert.equal(loaded.doc.pages[0].sections[0].props.headline, "Hola");
+-});
++  test("a stale revision is a conflict, not an overwrite", async () => {
++    const r = await saveDraft(pool, { userId: OWNER, siteId: SITE, doc: doc("Pisado"), expectedRev: 0, actorType: "user" });
++    assert.deepEqual(r, { ok: false, reason: "conflict", currentRev: 1 });
++    const loaded = await loadDraft(pool, OWNER, SITE);
++    assert.equal(loaded.doc.pages[0].sections[0].props.headline, "Hola");
++  });
+ 
+-test("a valid revision advances and keeps only the latest draft", async () => {
+-  const r = await saveDraft(pool, { userId: OWNER, siteId: SITE, doc: doc("Segundo"), expectedRev: 1, actorType: "user" });
+-  assert.equal(r.ok, true);
+-  assert.equal(r.rev, 2);
+-  const loaded = await loadDraft(pool, OWNER, SITE);
+-  assert.equal(loaded.rev, 2);
+-  assert.equal(loaded.doc.pages[0].sections[0].props.headline, "Segundo");
+-});
++  test("a valid revision advances and keeps only the latest draft", async () => {
++    const r = await saveDraft(pool, { userId: OWNER, siteId: SITE, doc: doc("Segundo"), expectedRev: 1, actorType: "user" });
++    assert.equal(r.ok, true);
++    assert.equal(r.rev, 2);
++    const loaded = await loadDraft(pool, OWNER, SITE);
++    assert.equal(loaded.rev, 2);
++    assert.equal(loaded.doc.pages[0].sections[0].props.headline, "Segundo");
++  });
+ 
+-test("an invalid document never reaches the database", async () => {
+-  const bad = doc("x");
+-  bad.pages[0].sections[0].type = "raw_html";
+-  const r = await saveDraft(pool, { userId: OWNER, siteId: SITE, doc: bad, expectedRev: 2, actorType: "agent" });
+-  assert.equal(r.ok, false);
+-  assert.equal(r.reason, "invalid");
+-  assert.equal((await loadDraft(pool, OWNER, SITE)).rev, 2);
+-});
++  test("an invalid document never reaches the database", async () => {
++    const bad = doc("x");
++    bad.pages[0].sections[0].type = "raw_html";
++    const r = await saveDraft(pool, { userId: OWNER, siteId: SITE, doc: bad, expectedRev: 2, actorType: "agent" });
++    assert.equal(r.ok, false);
++    assert.equal(r.reason, "invalid");
++    assert.equal((await loadDraft(pool, OWNER, SITE)).rev, 2);
++  });
+ 
+-test("findings come back on save but do not block it", async () => {
+-  const d = doc("x");
+-  d.pages[0].seo.title = "";
+-  const r = await saveDraft(pool, { userId: OWNER, siteId: SITE, doc: d, expectedRev: 2, actorType: "user" });
+-  assert.equal(r.ok, true);
+-  assert.ok(r.findings.some((f) => f.code === "MISSING_TITLE"));
+-});
++  test("findings come back on save but do not block it", async () => {
++    const d = doc("x");
++    d.pages[0].seo.title = "";
++    const r = await saveDraft(pool, { userId: OWNER, siteId: SITE, doc: d, expectedRev: 2, actorType: "user" });
++    assert.equal(r.ok, true);
++    assert.ok(r.findings.some((f) => f.code === "MISSING_TITLE"));
++  });
+ 
+-test("an agent save is recorded as agent in audit", async () => {
+-  const r = await saveDraft(pool, { userId: OWNER, siteId: SITE, doc: doc("Agente"), expectedRev: 3, actorType: "agent" });
+-  assert.equal(r.ok, true);
+-  const rows = await withUser(pool, OWNER, async (tx) =>
+-    (await tx.query("SELECT actor_type FROM audit_log WHERE action = 'draft.save' ORDER BY at DESC LIMIT 1")).rows);
+-  assert.equal(rows[0].actor_type, "agent");
+-});
++  test("an agent save is recorded as agent in audit", async () => {
++    const r = await saveDraft(pool, { userId: OWNER, siteId: SITE, doc: doc("Agente"), expectedRev: 3, actorType: "agent" });
++    assert.equal(r.ok, true);
++    const rows = await withUser(pool, OWNER, async (tx) =>
++      (await tx.query("SELECT actor_type FROM audit_log WHERE action = 'draft.save' ORDER BY at DESC LIMIT 1")).rows);
++    assert.equal(rows[0].actor_type, "agent");
++  });
++}
+diff --git a/packages/publish/package.json b/packages/publish/package.json
+index e6015b2..0a73d97 100644
+--- a/packages/publish/package.json
++++ b/packages/publish/package.json
+@@ -8,7 +8,7 @@
+   "scripts": {
+     "build": "tsc -p tsconfig.json",
+     "typecheck": "tsc -p tsconfig.json --noEmit",
+-    "test": "node --test test/publish.test.mjs test/visual.test.mjs test/another-active.test.mjs"
++    "test": "node --test test/publish.test.mjs test/visual.test.mjs test/another-active.test.mjs test/publish-db.test.mjs"
+   },
+   "dependencies": {
+     "@webdesign/db": "workspace:*",
+diff --git a/packages/publish/test/publish-db.test.mjs b/packages/publish/test/publish-db.test.mjs
+index 148c2b0..82faace 100644
+--- a/packages/publish/test/publish-db.test.mjs
++++ b/packages/publish/test/publish-db.test.mjs
+@@ -9,110 +9,112 @@ import { publish, rollbackTo } from "../dist/index.js";
+ import { currentVersion } from "@webdesign/releases";
+ 
+ if (process.env.DB_TEST_CONFIRM !== "destroy-test-db" || !process.env.DB_TEST_URL) {
++  // Solo el caso saltado: sin `process.exit`, que mataba al runner antes de
++  // contabilizarlo, y sin arrancar nada del resto del archivo (pools, hooks).
+   test("pruebas de publicacion omitidas: falta DB de pruebas", { skip: true }, () => {});
+-  process.exit(0);
+-}
++} else {
+ 
+-const OWNER = "11111111-1111-4111-8111-111111111111";
+-const SITE = "33333333-3333-4333-8333-333333333333";
+-let pool, root;
++  const OWNER = "11111111-1111-4111-8111-111111111111";
++  const SITE = "33333333-3333-4333-8333-333333333333";
++  let pool, root;
+ 
+-const doc = (headline) => ({
+-  schemaVersion: 1,
+-  meta: { name: "Café", lang: "es" },
+-  design: { brief: "b", idea: "i", presetId: "p", dials: { variance: 5, motion: 5, density: 5 } },
+-  theme: {
+-    colors: { ground: "#F4EFE6", ink: "#1B1B1B", accent: "#B3422B" },
+-    typography: { family: "Inter", scale: "s" },
+-    spacing: { margin: 24, sectionGap: 160 },
+-    radius: "square",
+-  },
+-  pages: [{ id: "p_home", slug: "/", seo: { title: "Inicio", description: "d", noindex: false },
+-    sections: [{ id: "s_hero", type: "hero", props: { headline, cta: { label: "Ir", href: "https://x.com" } } }] }],
+-  assets: [],
+-});
++  const doc = (headline) => ({
++    schemaVersion: 1,
++    meta: { name: "Café", lang: "es" },
++    design: { brief: "b", idea: "i", presetId: "p", dials: { variance: 5, motion: 5, density: 5 } },
++    theme: {
++      colors: { ground: "#F4EFE6", ink: "#1B1B1B", accent: "#B3422B" },
++      typography: { family: "Inter", scale: "s" },
++      spacing: { margin: 24, sectionGap: 160 },
++      radius: "square",
++    },
++    pages: [{ id: "p_home", slug: "/", seo: { title: "Inicio", description: "d", noindex: false },
++      sections: [{ id: "s_hero", type: "hero", props: { headline, cta: { label: "Ir", href: "https://x.com" } } }] }],
++    assets: [],
++  });
+ 
+-before(async () => {
+-  const admin = new pg.Pool({ connectionString: process.env.DB_TEST_URL });
+-  const url = await ensureTestDatabase(admin, process.env.DB_TEST_URL, "publish");
+-  await admin.end();
+-  pool = new pg.Pool({ connectionString: url });
+-  await pool.query("DROP TABLE IF EXISTS sites, site_members, site_drafts, site_versions, assets, audit_log, users, schema_migrations CASCADE");
+-  await migrate(pool);
+-  await pool.query(`INSERT INTO users (id, email, name) VALUES ('${OWNER}', 'a@b.co', 'Ana')`);
+-  await pool.query(`INSERT INTO sites (id, owner_id, name) VALUES ('${SITE}', '${OWNER}', 'Café')`);
+-  root = mkdtempSync(join(tmpdir(), "pub-"));
+-});
+-after(() => pool?.end());
++  before(async () => {
++    const admin = new pg.Pool({ connectionString: process.env.DB_TEST_URL });
++    const url = await ensureTestDatabase(admin, process.env.DB_TEST_URL, "publish");
++    await admin.end();
++    pool = new pg.Pool({ connectionString: url });
++    await pool.query("DROP TABLE IF EXISTS sites, site_members, site_drafts, site_versions, assets, audit_log, users, schema_migrations CASCADE");
++    await migrate(pool);
++    await pool.query(`INSERT INTO users (id, email, name) VALUES ('${OWNER}', 'a@b.co', 'Ana')`);
++    await pool.query(`INSERT INTO sites (id, owner_id, name) VALUES ('${SITE}', '${OWNER}', 'Café')`);
++    root = mkdtempSync(join(tmpdir(), "pub-"));
++  });
++  after(() => pool?.end());
+ 
+-test("publica, registra version y auditoria, y activa el sitio", async () => {
+-  const r = await publish(pool, { sitesRoot: root, userId: OWNER, siteId: SITE, doc: doc("Hola") });
+-  assert.equal(r.ok, true);
+-  assert.equal(r.version, 1);
+-  const rows = await withUser(pool, OWNER, async (tx) => (await tx.query("SELECT version, doc_hash FROM site_versions")).rows);
+-  assert.equal(rows.length, 1);
+-  const audit = await withUser(pool, OWNER, async (tx) => (await tx.query("SELECT action FROM audit_log")).rows);
+-  assert.ok(audit.some((a) => a.action === "site.publish"));
+-  const site = await pool.query("SELECT status, published_version FROM sites WHERE id = $1", [SITE]);
+-  assert.equal(site.rows[0].status, "active");
+-  assert.equal(site.rows[0].published_version, 1);
+-});
++  test("publica, registra version y auditoria, y activa el sitio", async () => {
++    const r = await publish(pool, { sitesRoot: root, userId: OWNER, siteId: SITE, doc: doc("Hola") });
++    assert.equal(r.ok, true);
++    assert.equal(r.version, 1);
++    const rows = await withUser(pool, OWNER, async (tx) => (await tx.query("SELECT version, doc_hash FROM site_versions")).rows);
++    assert.equal(rows.length, 1);
++    const audit = await withUser(pool, OWNER, async (tx) => (await tx.query("SELECT action FROM audit_log")).rows);
++    assert.ok(audit.some((a) => a.action === "site.publish"));
++    const site = await pool.query("SELECT status, published_version FROM sites WHERE id = $1", [SITE]);
++    assert.equal(site.rows[0].status, "active");
++    assert.equal(site.rows[0].published_version, 1);
++  });
+ 
+-test("bloquea un documento con un error del linter", async () => {
+-  const bad = doc("Hola");
+-  bad.pages[0].seo.title = "";
+-  const r = await publish(pool, { sitesRoot: root, userId: OWNER, siteId: SITE, doc: bad });
+-  assert.equal(r.ok, false);
+-  assert.ok(r.findings.some((f) => f.code === "MISSING_TITLE"));
+-  assert.equal(currentVersion(root, SITE), 1);
+-});
++  test("bloquea un documento con un error del linter", async () => {
++    const bad = doc("Hola");
++    bad.pages[0].seo.title = "";
++    const r = await publish(pool, { sitesRoot: root, userId: OWNER, siteId: SITE, doc: bad });
++    assert.equal(r.ok, false);
++    assert.ok(r.findings.some((f) => f.code === "MISSING_TITLE"));
++    assert.equal(currentVersion(root, SITE), 1);
++  });
+ 
+-test("el dueno puede publicar confirmando el aviso, y queda en auditoria", async () => {
+-  const bad = doc("Hola");
+-  bad.pages[0].seo.title = "";
+-  const r = await publish(pool, { sitesRoot: root, userId: OWNER, siteId: SITE, doc: bad, confirmWarnings: true });
+-  assert.equal(r.ok, true);
+-  assert.equal(r.version, 2);
+-  const audit = await withUser(pool, OWNER, async (tx) =>
+-    (await tx.query("SELECT meta FROM audit_log WHERE action = 'site.publish' ORDER BY at DESC LIMIT 1")).rows);
+-  assert.equal(audit[0].meta.confirmed, true);
+-});
++  test("el dueno puede publicar confirmando el aviso, y queda en auditoria", async () => {
++    const bad = doc("Hola");
++    bad.pages[0].seo.title = "";
++    const r = await publish(pool, { sitesRoot: root, userId: OWNER, siteId: SITE, doc: bad, confirmWarnings: true });
++    assert.equal(r.ok, true);
++    assert.equal(r.version, 2);
++    const audit = await withUser(pool, OWNER, async (tx) =>
++      (await tx.query("SELECT meta FROM audit_log WHERE action = 'site.publish' ORDER BY at DESC LIMIT 1")).rows);
++    assert.equal(audit[0].meta.confirmed, true);
++  });
+ 
+-test("revierte a la version anterior", async () => {
+-  const r = await rollbackTo(pool, { sitesRoot: root, userId: OWNER, siteId: SITE });
+-  assert.equal(r.ok, true);
+-  assert.equal(r.version, 1);
+-  assert.equal(currentVersion(root, SITE), 1);
+-  const audit = await withUser(pool, OWNER, async (tx) => (await tx.query("SELECT action FROM audit_log WHERE action = 'site.rollback'")).rows);
+-  assert.equal(audit.length, 1);
+-});
++  test("revierte a la version anterior", async () => {
++    const r = await rollbackTo(pool, { sitesRoot: root, userId: OWNER, siteId: SITE });
++    assert.equal(r.ok, true);
++    assert.equal(r.version, 1);
++    assert.equal(currentVersion(root, SITE), 1);
++    const audit = await withUser(pool, OWNER, async (tx) => (await tx.query("SELECT action FROM audit_log WHERE action = 'site.rollback'")).rows);
++    assert.equal(audit.length, 1);
++  });
+ 
+-test("una version inexistente no mueve el symlink ni escribe auditoria", async () => {
+-  // Regresion: `switchRelease` se llamaba antes de validar, y con el siteId de
+-  // la URL. Revertir a v99 dejaba `public` movido y una fila de auditoria.
+-  const r = await rollbackTo(pool, { sitesRoot: root, userId: OWNER, siteId: SITE }, 99);
+-  assert.equal(r.ok, false);
+-  assert.equal(r.reason, "invalid_version");
+-  assert.equal(currentVersion(root, SITE), 1);
+-});
++  test("una version inexistente no mueve el symlink ni escribe auditoria", async () => {
++    // Regresion: `switchRelease` se llamaba antes de validar, y con el siteId de
++    // la URL. Revertir a v99 dejaba `public` movido y una fila de auditoria.
++    const r = await rollbackTo(pool, { sitesRoot: root, userId: OWNER, siteId: SITE }, 99);
++    assert.equal(r.ok, false);
++    assert.equal(r.reason, "invalid_version");
++    assert.equal(currentVersion(root, SITE), 1);
++  });
+ 
+-test("un sitio ajeno no se puede revertir y no se toca su symlink", async () => {
+-  const OTHER_SITE = "66666666-6666-4666-8666-666666666666";
+-  const OTHER_OWNER = "22222222-2222-4222-8222-222222222222";
+-  await pool.query(`INSERT INTO users (id, email, name) VALUES ('${OTHER_OWNER}', 'l@b.co', 'Luis')`);
+-  await pool.query(`INSERT INTO sites (id, owner_id, name) VALUES ('${OTHER_SITE}', '${OTHER_OWNER}', 'Ajeno')`);
+-  // OWNER intenta revertir el sitio de OTHER_OWNER.
+-  const r = await rollbackTo(pool, { sitesRoot: root, userId: OWNER, siteId: OTHER_SITE });
+-  assert.equal(r.ok, false);
+-  assert.equal(r.reason, "not_found");
+-  // Sin las releases de ese sitio en disco, nada pudo escribirse.
+-  assert.equal(currentVersion(root, OTHER_SITE), 0);
+-  assert.equal(currentVersion(root, SITE), 1);
+-});
++  test("un sitio ajeno no se puede revertir y no se toca su symlink", async () => {
++    const OTHER_SITE = "66666666-6666-4666-8666-666666666666";
++    const OTHER_OWNER = "22222222-2222-4222-8222-222222222222";
++    await pool.query(`INSERT INTO users (id, email, name) VALUES ('${OTHER_OWNER}', 'l@b.co', 'Luis')`);
++    await pool.query(`INSERT INTO sites (id, owner_id, name) VALUES ('${OTHER_SITE}', '${OTHER_OWNER}', 'Ajeno')`);
++    // OWNER intenta revertir el sitio de OTHER_OWNER.
++    const r = await rollbackTo(pool, { sitesRoot: root, userId: OWNER, siteId: OTHER_SITE });
++    assert.equal(r.ok, false);
++    assert.equal(r.reason, "not_found");
++    // Sin las releases de ese sitio en disco, nada pudo escribirse.
++    assert.equal(currentVersion(root, OTHER_SITE), 0);
++    assert.equal(currentVersion(root, SITE), 1);
++  });
+ 
+-test("rechaza un documento invalido sin tocar ficheros", async () => {
+-  const r = await publish(pool, { sitesRoot: root, userId: OWNER, siteId: SITE, doc: { schemaVersion: 1 } });
+-  assert.equal(r.ok, false);
+-  assert.equal(r.version, undefined);
+-  assert.equal(currentVersion(root, SITE), 1);
+-});
++  test("rechaza un documento invalido sin tocar ficheros", async () => {
++    const r = await publish(pool, { sitesRoot: root, userId: OWNER, siteId: SITE, doc: { schemaVersion: 1 } });
++    assert.equal(r.ok, false);
++    assert.equal(r.version, undefined);
++    assert.equal(currentVersion(root, SITE), 1);
++  });
++}
