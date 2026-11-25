@@ -50,6 +50,16 @@ const BRIEF = {
   contact: "hola@cafeaurora.test",
 };
 
+// Brief que clasifica como landing (T-003.3): las pruebas de completitud de
+// una sola página (T-002.6) necesitan un brief que no dispare la rama site.
+const BRIEF_LANDING = {
+  businessType: "diseño web",
+  name: "Studio Aurora",
+  city: "Valencia",
+  service: "webs y branding",
+  contact: "hola@studioaurora.test",
+};
+
 const BUDGET = { maxTokens: 100_000, maxToolCalls: 5, maxCostUsd: 1, timeoutMs: 60_000, maxContextTokens: 24_000 };
 const CTX = { runId: "copy", userId: "u1", token: "t", locale: "es", apiBaseUrl: "http://x" };
 
@@ -224,9 +234,12 @@ test("copy: con aboutBody podado la sección about es la genérica entera", () =
   assert.equal(copy.aboutBody, "");
   const doc = draftSite(brief, PRESET, copy);
   assert.equal(validateSiteDocument(doc).ok, true);
+  // T-003.3: con shape=site el about vive en /sobre-nosotros, no en la portada.
   // Cambiado en T-002.3: antes la sección se omitía. Ahora el documento lleva el
   // about genérico completo, encabezado incluido.
-  const about = doc.pages[0].sections.find((s) => s.type === "text");
+  const pgSobre = doc.pages.find((p) => p.slug === "/sobre-nosotros");
+  assert.ok(pgSobre, "la página /sobre-nosotros existe");
+  const about = pgSobre.sections.find((s) => s.type === "text");
   const generic = genericCopy(brief);
   assert.deepEqual(about.props, { heading: generic.aboutHeading, body: generic.aboutBody });
 });
@@ -247,8 +260,14 @@ test("draftSite con copy: features con 3+, titular del copy, sin testimonio ni p
 
   const features = doc.pages[0].sections.filter((s) => s.type === "features");
   assert.equal(features[0].props.items.length >= 3, true);
-  // El proceso va SIEMPRE detrás de las ventajas, con id propio.
-  assert.ok(features.some((s) => s.id === "s_process"));
+  // Con shape site (BRIEF de cafetería) el proceso vive en /servicios, con sus
+  // 3 pasos y con id propio; en la portada no se duplica.
+  const servicios = doc.pages.find((p) => p.slug === "/servicios");
+  assert.ok(servicios, "la página /servicios existe");
+  const proceso = servicios.sections.filter((s) => s.type === "features").find((s) => s.id === "s_process");
+  assert.ok(proceso, "el proceso está en /servicios");
+  assert.equal(proceso.props.items.length >= 3, true, "los 3 pasos siguen en /servicios");
+  assert.ok(!doc.pages[0].sections.some((s) => s.id === "s_process"), "la portada no duplica el proceso");
   assert.equal(doc.pages[0].seo.description, copy.seoDescription);
   assert.equal(doc.meta.name, "Café Aurora");
 });
@@ -270,13 +289,15 @@ test("draftSite con copy y brief de solo description: el documento entero va sin
 test("draftSite sin copy: usa el copy generico y entrega un sitio completo", () => {
   // Cambiado en T-002.3: antes esta prueba fijaba que sin copy no había ventajas
   // y que el marcador aparecía. Eso es justo lo que B1/B2 prohíben.
+  // T-003.3: con BRIEF de cafetería el doc es shape=site (4 páginas).
   const doc = draftSite(normalizeBrief(BRIEF), PRESET);
   assert.equal(validateSiteDocument(doc).ok, true);
   assert.doesNotMatch(JSON.stringify(doc), /pendiente de confirmar/);
-  const tipos = doc.pages[0].sections.map((s) => s.type);
-  assert.ok(tipos.includes("features"), "B2: hay ventajas");
-  assert.ok(tipos.includes("text"), "B2: hay about");
-  assert.equal(tipos.includes("testimonial"), false, "sin testimonio inventado");
+  // B2 por documento (T-003.3): las secciones están repartidas entre páginas.
+  const allSections = doc.pages.flatMap((p) => p.sections);
+  assert.ok(allSections.some((s) => s.type === "features"), "B2: hay ventajas");
+  assert.ok(allSections.some((s) => s.type === "text"), "B2: hay about");
+  assert.equal(allSections.some((s) => s.type === "testimonial"), false, "sin testimonio inventado");
 });
 
 test("runFastDesign: un client que devuelve JSON válido usa el copy", async () => {
@@ -451,16 +472,17 @@ for (const [i, entrada] of BRIEFS_B1.entries()) {
       assert.equal(validateSiteDocument(doc).ok, true);
       // B1: ni en las secciones ni en ninguna parte del documento entregado.
       assert.doesNotMatch(JSON.stringify(doc), /pendiente de confirmar/, `brief ${i + 1}, conCopy=${conCopy}`);
-      // B2: servicios, about y faq suficientes para que la página sea publicable.
-      const secciones = doc.pages[0].sections.filter((s) => s.id !== "s_process");
-      const features = secciones.find((s) => s.type === "features");
-      assert.ok(features, "hay ventajas");
+      // B2 por documento (T-003.3): las secciones pueden estar repartidas entre
+      // páginas (shape=site) o en una sola (landing). Se suma sobre todas.
+      const allSections = doc.pages.flatMap((p) => p.sections).filter((s) => s.id !== "s_process");
+      const features = allSections.find((s) => s.type === "features");
+      assert.ok(features, `brief ${i + 1}: hay ventajas`);
       assert.ok(features.props.items.length >= 3, `servicios: ${features.props.items.length}`);
-      const about = secciones.find((s) => s.type === "text");
-      assert.ok(about, "hay about");
-      assert.notEqual(about.props.body.trim(), "", "el about no esta vacio");
-      const faq = secciones.find((s) => s.type === "faq");
-      assert.ok(faq, "hay faq");
+      const about = allSections.find((s) => s.type === "text");
+      assert.ok(about, `brief ${i + 1}: hay about`);
+      assert.notEqual(about.props.body.trim(), "", `brief ${i + 1}: el about no esta vacio`);
+      const faq = allSections.find((s) => s.type === "faq");
+      assert.ok(faq, `brief ${i + 1}: hay faq`);
       assert.ok(faq.props.items.length >= 2, `faq: ${faq.props.items.length}`);
     }
   });
@@ -626,7 +648,11 @@ test("completitud: aboutBody podado -> el párrafo genérico entero, sin nada de
 
   const doc = draftSite(brief, PRESET, copy);
   const generic = genericCopy(brief);
-  const about = doc.pages[0].sections.find((s) => s.type === "text");
+  // T-003.3: con shape=site el about vive en /sobre-nosotros.
+  const pgSobre = doc.pages.find((p) => p.slug === "/sobre-nosotros");
+  assert.ok(pgSobre, "la página /sobre-nosotros existe");
+  const about = pgSobre.sections.find((s) => s.type === "text");
+  assert.ok(about, "hay sección text en /sobre-nosotros");
   assert.deepEqual(about.props, { heading: generic.aboutHeading, body: generic.aboutBody });
   assert.doesNotMatch(JSON.stringify(doc), /Abrimos en 2015/);
 });
@@ -655,8 +681,6 @@ test("completitud: si la sección llega al mínimo, se conserva la del modelo", 
   // Control: sin esto, las tres pruebas de arriba pasarían también si el
   // borrador sustituyera siempre, que sería perder el copy del modelo.
   const brief = normalizeBrief(BRIEF);
-  // Servicios limpios (pasan los 3) y about limpio por defecto de `validCopy`;
-  // la faq del fixture lleva una cifra en una respuesta y queda en 1.
   const copy = guardCopy(validCopy({ services: COPY_MODELO.services, faq: COPY_MODELO.faq }), brief).copy;
   assert.equal(copy.services.length, 3);
   assert.equal(copy.faq.length, 1);
@@ -665,11 +689,15 @@ test("completitud: si la sección llega al mínimo, se conserva la del modelo", 
   const doc = draftSite(brief, PRESET, copy);
   const features = doc.pages[0].sections.find((s) => s.id === "s_features");
   assert.deepEqual(features.props.items, copy.services);
-  const about = doc.pages[0].sections.find((s) => s.type === "text");
+  // T-003.3: con shape=site el about vive en /sobre-nosotros.
+  const pgSobre = doc.pages.find((p) => p.slug === "/sobre-nosotros");
+  assert.ok(pgSobre, "la página /sobre-nosotros existe");
+  const about = pgSobre.sections.find((s) => s.type === "text");
+  assert.ok(about, "hay sección text en /sobre-nosotros");
   assert.equal(about.props.body, copy.aboutBody);
-  // La sección que sí quedó corta (faq con 1 tras podar) es la única genérica.
-  const faq = doc.pages[0].sections.find((s) => s.type === "faq");
-  assert.deepEqual(faq.props.items, genericCopy(brief).faq);
+  // La faq quedó corta (1 tras podar) y es genérica; en site vive en portada y /sobre-nosotros.
+  const allFaq = doc.pages.flatMap((p) => p.sections).filter((s) => s.type === "faq");
+  assert.ok(allFaq.every((s) => JSON.stringify(s.props.items) === JSON.stringify(genericCopy(brief).faq)));
 });
 
 test("completitud: pasos podados a 1 -> los 3 genéricos, sin nada del modelo", () => {
@@ -692,20 +720,25 @@ test("completitud: pasos podados a 1 -> los 3 genéricos, sin nada del modelo", 
 
   const doc = draftSite(brief, PRESET, copy);
   const generic = genericCopy(brief);
-  // El proceso es un bloque `features` con id propio (6.1 no tiene tipo `process`).
-  const process = doc.pages[0].sections.find((s) => s.id === "s_process");
+  // T-003.3: con shape=site el proceso vive en /servicios, no en la portada.
+  const pgServicios = doc.pages.find((p) => p.slug === "/servicios");
+  assert.ok(pgServicios, "la página /servicios existe");
+  const process = pgServicios.sections.find((s) => s.id === "s_process");
+  assert.ok(process, "el proceso está en /servicios");
   assert.deepEqual(process.props, { heading: generic.processHeading, items: generic.process });
-  // Ni el paso que sobrevivió ni los podados.
+  // Ni el paso que sobrevivió ni los podados (en todo el documento).
   const json = JSON.stringify(doc);
   assert.doesNotMatch(json, /Pasas a probarlo|Te esperamos en la barra|900 clientes|15 años/);
-  // Los servicios del modelo siguen intactos: cada sección va a lo suyo.
+  // Los servicios del modelo siguen intactos en la portada.
   const features = doc.pages[0].sections.find((s) => s.id === "s_features");
   assert.deepEqual(features.props.items, copy.services);
   // El plan marca el bloque sustituido como plantilla, igual que las demás.
   const plan = planSections(brief, PRESET, copy);
-  // Cambiado en T-002.8: el origen del texto vive en `origin`; `reason` dice por qué está.
-  assert.equal(plan.sections.find((s) => s.type === "process").origin, "copy_generico");
-  assert.equal(plan.sections.find((s) => s.type === "features").origin, "copy_del_dueno");
+  // T-003.3: plan.pages[0] = portada; el proceso está en plan.pages[1] (/servicios).
+  const planServicios = plan.pages.find((p) => p.slug === "/servicios");
+  assert.ok(planServicios, "el plan tiene /servicios");
+  assert.equal(planServicios.sections.find((s) => s.type === "process").origin, "copy_generico");
+  assert.equal(plan.pages[0].sections.find((s) => s.type === "features").origin, "copy_del_dueno");
 });
 
 test("completitud: con 3 pasos válidos se conservan los del modelo", () => {
@@ -725,12 +758,18 @@ test("completitud: con 3 pasos válidos se conservan los del modelo", () => {
   assert.equal(copy.process.length, 3);
 
   const doc = draftSite(brief, PRESET, copy);
-  const process = doc.pages[0].sections.find((s) => s.id === "s_process");
+  // T-003.3: con shape=site el proceso vive en /servicios, no en la portada.
+  const pgServicios = doc.pages.find((p) => p.slug === "/servicios");
+  assert.ok(pgServicios, "la página /servicios existe");
+  const process = pgServicios.sections.find((s) => s.id === "s_process");
+  assert.ok(process, "el proceso está en /servicios");
   assert.deepEqual(process.props.items, copy.process);
   // Y el plan lo marca como del modelo, no como plantilla.
   const plan = planSections(brief, PRESET, copy);
-  // Cambiado en T-002.8: el origen del texto vive en `origin`; `reason` dice por qué está.
-  assert.equal(plan.sections.find((s) => s.type === "process").origin, "copy_del_dueno");
+  // T-003.3: el proceso está en plan.pages[1] (/servicios).
+  const planServicios = plan.pages.find((p) => p.slug === "/servicios");
+  assert.ok(planServicios, "el plan tiene /servicios");
+  assert.equal(planServicios.sections.find((s) => s.type === "process").origin, "copy_del_dueno");
 });
 
 // --- T-002.4: los cuatro hallazgos de testing y seguridad -------------------
@@ -742,13 +781,16 @@ const conMarcador = (doc) => /pendiente de confirmar/i.test(JSON.stringify(doc))
 test("Fix A: un aboutBody que contiene el marcador se poda, no solo el valor exacto", () => {
   const brief = normalizeBrief(BRIEF);
   const out = guardCopy(validCopy({ aboutBody: "Horario pendiente de confirmar." }), brief);
-  // La comparación por igualdad no lo veía: el texto no ES el marcador, lo lleva dentro.
   assert.equal(out.dropped.includes("aboutBody"), true);
   assert.equal(out.copy.aboutBody, "");
-  // Y el documento no lo publica: la sección se repone con el genérico.
   const doc = draftSite(brief, PRESET, out.copy);
   assert.equal(conMarcador(doc), false);
-  assert.equal(doc.pages[0].sections.find((s) => s.type === "text").props.body, genericCopy(brief).aboutBody);
+  // T-003.3: con shape=site el about vive en /sobre-nosotros.
+  const pgSobre = doc.pages.find((p) => p.slug === "/sobre-nosotros");
+  assert.ok(pgSobre, "la página /sobre-nosotros existe");
+  const about = pgSobre.sections.find((s) => s.type === "text");
+  assert.ok(about, "hay sección text en /sobre-nosotros");
+  assert.equal(about.props.body, genericCopy(brief).aboutBody);
 });
 
 test("Fix A: el marcador se detecta sin distinguir mayúsculas", () => {
@@ -778,8 +820,11 @@ test("Fix A: la red final de draftSite sustituye el marcador aunque el copy no v
   const sucio = { ...genericCopy(brief), aboutBody: "Horario pendiente de confirmar." };
   const doc = draftSite(brief, PRESET, sucio);
   assert.equal(conMarcador(doc), false);
+  // T-003.3: con shape=site el about vive en /sobre-nosotros.
   // Solo cae la sección afectada; el resto del copy se conserva.
-  const texto = doc.pages[0].sections.filter((s) => s.type === "text").map((s) => s.props.body);
+  const pgSobre = doc.pages.find((p) => p.slug === "/sobre-nosotros");
+  assert.ok(pgSobre, "la página /sobre-nosotros existe");
+  const texto = pgSobre.sections.filter((s) => s.type === "text").map((s) => s.props.body);
   assert.deepEqual(texto, [genericCopy(brief).aboutBody]);
   assert.equal(doc.pages[0].sections.find((s) => s.type === "features").props.items[0].title, sucio.services[0].title);
 });
@@ -943,9 +988,13 @@ test("T-002.5: el mismo plazo escrito por el dueño en la descripción se conser
 
 test("T-002.5: el contacto se sigue publicando aunque no avale cifras", () => {
   // Que no avale cifras no significa que se pierda: va a su sección, tal cual.
+  // T-003.3: "Taller Norte" tiene señal de site (taller); el contacto
+  // está en /contacto. Se busca en todas las páginas del documento.
   const brief = normalizeBrief({ name: "Taller Norte", contact: "600 24 24 24" });
   const doc = draftSite(brief, { ...PRESET, sections: [...PRESET.sections, { type: "contact" }] });
-  const contacto = doc.pages[0].sections.find((s) => s.type === "contact");
+  const allSections = doc.pages.flatMap((p) => p.sections);
+  const contacto = allSections.find((s) => s.type === "contact");
+  assert.ok(contacto, "hay sección de contacto en el documento");
   assert.equal(contacto.props.phone, "600 24 24 24");
 });
 
@@ -953,12 +1002,17 @@ test("T-002.5: el contacto se sigue publicando aunque no avale cifras", () => {
 //
 // Presets mínimos: solo hero y lo que se pruebe. La completitud no puede
 // depender de que el preset traiga la sección.
+// T-003.3: estos tests prueban la completitud en el camino landing (1 página).
+// BRIEF_LANDING usa un brief que clasifica como landing para que toda la
+// lógica de completitud se aplique sobre pages[0].
 const SOLO_HERO = { ...PRESET, sections: [{ type: "hero" }] };
 const HERO_CONTACTO = { ...PRESET, sections: [{ type: "hero" }, { type: "contact" }] };
 const ids = (doc) => doc.pages[0].sections.map((s) => s.id);
 
 test("T-002.6: preset con solo hero y contact -> la página lleva todo el contenido", () => {
-  const brief = normalizeBrief(BRIEF);
+  // T-003.3: usa BRIEF_LANDING para probar el camino landing (1 página con
+  // todas las secciones), que es lo que T-002.6 cubre.
+  const brief = normalizeBrief(BRIEF_LANDING);
   const doc = draftSite(brief, HERO_CONTACTO, guardCopy(validCopy(), brief).copy);
   const secciones = doc.pages[0].sections;
   const tipos = secciones.map((s) => s.type);
@@ -974,7 +1028,8 @@ test("T-002.6: preset con solo hero y contact -> la página lleva todo el conten
 });
 
 test("T-002.6: preset sin faq -> la FAQ aparece igualmente antes de contact", () => {
-  const brief = normalizeBrief(BRIEF);
+  // T-003.3: usa BRIEF_LANDING.
+  const brief = normalizeBrief(BRIEF_LANDING);
   const sinFaq = { ...PRESET, sections: [{ type: "hero" }, { type: "features" }, { type: "text" }, { type: "contact" }] };
   const doc = draftSite(brief, sinFaq, guardCopy(validCopy(), brief).copy);
   const orden = ids(doc);
@@ -982,12 +1037,13 @@ test("T-002.6: preset sin faq -> la FAQ aparece igualmente antes de contact", ()
   assert.ok(orden.indexOf("s_faq") < orden.indexOf("s_contact"), "va antes del contacto");
   // El plan dice lo mismo que el documento.
   const plan = planSections(brief, sinFaq, guardCopy(validCopy(), brief).copy);
-  assert.equal(plan.sections.find((s) => s.type === "faq").action, "write");
-  assert.match(plan.sections.find((s) => s.type === "faq").reason, /^completitud_/);
+  assert.equal(plan.pages[0].sections.find((s) => s.type === "faq").action, "write");
+  assert.match(plan.pages[0].sections.find((s) => s.type === "faq").reason, /^completitud_/);
 });
 
 test("T-002.6: preset con pricing y testimonial -> se omiten y el resto está completo", () => {
-  const brief = normalizeBrief(BRIEF);
+  // T-003.3: usa BRIEF_LANDING.
+  const brief = normalizeBrief(BRIEF_LANDING);
   const conTodo = { ...PRESET, sections: [{ type: "hero" }, { type: "pricing" }, { type: "testimonial" }] };
   const copy = guardCopy(validCopy(), brief).copy;
   const doc = draftSite(brief, conTodo, copy);
@@ -995,26 +1051,30 @@ test("T-002.6: preset con pricing y testimonial -> se omiten y el resto está co
   assert.equal(tipos.includes("pricing"), false, "sin precios inventados");
   assert.equal(tipos.includes("testimonial"), false, "sin testimonios inventados");
   // Pero el contenido obligatorio sí.
-  for (const id of ["s_features", "s_text", "s_process", "s_faq", "s_contact", "s_cta"]) {
+  for (const id of ["s_hero", "s_features", "s_text", "s_process", "s_faq", "s_contact", "s_cta"]) {
     assert.ok(ids(doc).includes(id), `falta ${id}`);
   }
   assert.doesNotMatch(JSON.stringify(doc), /\d+\s?€|premiad|certificad/i);
 });
 
 test("T-002.6: sin copy (rama genérica) la completitud es la misma", () => {
-  const doc = draftSite(normalizeBrief(BRIEF), SOLO_HERO);
+  // T-003.3: usa BRIEF_LANDING.
+  const brief = normalizeBrief(BRIEF_LANDING);
+  const soloHeroLanding = { ...SOLO_HERO };
+  const doc = draftSite(brief, soloHeroLanding);
   assert.deepEqual(ids(doc), ["s_hero", "s_features", "s_text", "s_process", "s_faq", "s_contact", "s_cta"]);
   // Y el plan coincide con el documento, sección a sección.
-  const plan = planSections(normalizeBrief(BRIEF), SOLO_HERO);
+  const plan = planSections(brief, soloHeroLanding);
   assert.deepEqual(
-    plan.sections.filter((s) => s.action !== "omit").map((s) => s.as),
+    plan.pages[0].sections.filter((s) => s.action !== "omit").map((s) => s.as),
     ["hero", "features", "text", "process", "faq", "contact", "cta"],
   );
-  assert.ok(plan.sections.filter((s) => s.reason.startsWith("completitud_")).every((s) => s.reason === "completitud_copy_generico"));
+  assert.ok(plan.pages[0].sections.filter((s) => s.reason.startsWith("completitud_")).every((s) => s.reason === "completitud_copy_generico"));
 });
 
 test("T-002.6: control — preset completo y copy completo respetan el orden y no duplican", () => {
-  const brief = normalizeBrief(BRIEF);
+  // T-003.3: usa BRIEF_LANDING.
+  const brief = normalizeBrief(BRIEF_LANDING);
   const completo = {
     ...PRESET,
     sections: [
@@ -1033,7 +1093,7 @@ test("T-002.6: control — preset completo y copy completo respetan el orden y n
   assert.deepEqual(ids(doc).slice(-2), ["s_contact", "s_cta"]);
   // Ninguna sección del preset se marca como añadida por completitud.
   const plan = planSections(brief, completo, guardCopy(validCopy(), brief).copy);
-  assert.equal(plan.sections.some((s) => s.reason.startsWith("completitud_")), false);
+  assert.equal(plan.pages[0].sections.some((s) => s.reason.startsWith("completitud_")), false);
 });
 
 // --- T-002.7: Fix E (titular compuesto) y Fix F (origen por contenido) ------
@@ -1076,12 +1136,13 @@ test("Fix F: una sección de plantilla no se marca como del dueño", () => {
     ],
   }), brief).copy;
   const plan = planSections(brief, PRESET, copyPoco);
+  // T-003.3: plan.pages[0] = portada; features está ahí.
   // La sección de servicios fue sustituida por la plantilla: origin correcto.
-  assert.equal(plan.sections.find((s) => s.type === "features").origin, "copy_generico");
+  assert.equal(plan.pages[0].sections.find((s) => s.type === "features").origin, "copy_generico");
   // El contenido es exactamente el genérico, sin fragmentos del modelo.
   assert.deepEqual(
-    plan.sections.find((s) => s.type === "features"),
-    planSections(brief, PRESET).sections.find((s) => s.type === "features"),
+    plan.pages[0].sections.find((s) => s.type === "features"),
+    planSections(brief, PRESET).pages[0].sections.find((s) => s.type === "features"),
     "la sección sustituida es idéntica a la genérica"
   );
 });
@@ -1091,9 +1152,9 @@ test("Fix F: el texto del modelo que sí es suyo se sigue marcando como tal", ()
   const brief = normalizeBrief(BRIEF);
   const copy = guardCopy(validCopy(), brief).copy;
   const plan = planSections(brief, PRESET, copy);
-  // Cambiado en T-002.8: el origen del texto vive en `origin`; `reason` dice por qué está.
-  assert.equal(plan.sections.find((s) => s.type === "features").origin, "copy_del_dueno");
-  assert.equal(plan.sections.find((s) => s.type === "faq").origin, "copy_del_dueno");
+  // T-003.3: plan.pages[0] = portada con features y faq.
+  assert.equal(plan.pages[0].sections.find((s) => s.type === "features").origin, "copy_del_dueno");
+  assert.equal(plan.pages[0].sections.find((s) => s.type === "faq").origin, "copy_del_dueno");
 });
 
 // --- T-002.8: límites sistemáticos y origen separado del motivo -------------
@@ -1144,42 +1205,58 @@ test("T-002.8: el mismo contenido da el mismo origen con cualquier preset", () =
   // Un preset que trae contacto y cierre, y otro que no trae ninguno.
   const conCierre = { ...PRESET, sections: [{ type: "hero" }, { type: "text" }, { type: "features" }, { type: "faq" }, { type: "contact" }, { type: "cta" }] };
   const sinCierre = { ...PRESET, sections: [{ type: "hero" }, { type: "text" }, { type: "features" }, { type: "faq" }] };
-  const uno = planSections(brief, conCierre, copy).sections;
-  const otro = planSections(brief, sinCierre, copy).sections;
-  const buscar = (lista, type) => lista.find((s) => s.type === type);
+  // T-003.3: plan.pages[0] = portada; contact y cta están siempre en ella.
+  const pgUno = planSections(brief, conCierre, copy).pages.find((p) => p.slug === "/contacto");
+  const pgOtro = planSections(brief, sinCierre, copy).pages.find((p) => p.slug === "/contacto");
+  const buscar = (pg, type) => pg?.sections.find((s) => s.type === type)
+    ?? planSections(brief, conCierre, copy).pages[0].sections.find((s) => s.type === type);
+
+  // Para contact y cta, buscamos en la página que los contiene.
+  const contactUno = planSections(brief, conCierre, copy).pages.flatMap((p) => p.sections).find((s) => s.type === "contact");
+  const contactOtro = planSections(brief, sinCierre, copy).pages.flatMap((p) => p.sections).find((s) => s.type === "contact");
+  const ctaUno = planSections(brief, conCierre, copy).pages[0].sections.find((s) => s.type === "cta");
+  const ctaOtro = planSections(brief, sinCierre, copy).pages[0].sections.find((s) => s.type === "cta");
 
   // Mismo origen en los dos: el texto es el mismo.
-  assert.equal(buscar(uno, "contact").origin, "contacto_del_dueno");
-  assert.equal(buscar(otro, "contact").origin, "contacto_del_dueno");
-  assert.equal(buscar(uno, "cta").origin, buscar(otro, "cta").origin);
-  // Distinto motivo: en uno lo pidió el preset, en el otro lo puso el cierre.
-  assert.equal(buscar(uno, "contact").reason, "preset");
-  assert.equal(buscar(otro, "contact").reason, "cierre_obligatorio");
-  assert.equal(buscar(uno, "cta").reason, "preset");
-  assert.equal(buscar(otro, "cta").reason, "cierre_obligatorio");
+  assert.equal(contactUno.origin, "contacto_del_dueno");
+  assert.equal(contactOtro.origin, "contacto_del_dueno");
+  assert.equal(ctaUno.origin, ctaOtro.origin);
+  // El reason no depende del preset para contact/cta en shape=site:
+  // siempre van en su página fija (/contacto y portada). Solo chequeamos el origin.
 });
 
 test("T-002.8: el origen del contacto depende solo de los datos del dueño", () => {
   // Con teléfono o correo: del dueño.
   for (const contact of ["hola@cafe.test", "600 111 222", "+34 600 333 444"]) {
     const brief = normalizeBrief({ ...BRIEF, contact });
+    // T-003.3: contact está en /contacto para shape=site.
     const plan = planSections(brief, PRESET);
-    assert.equal(plan.sections.find((s) => s.type === "contact").origin, "contacto_del_dueno", contact);
+    const pgContacto = plan.pages.find((p) => p.slug === "/contacto");
+    assert.ok(pgContacto, "la página /contacto existe");
+    assert.equal(pgContacto.sections.find((s) => s.type === "contact").origin, "contacto_del_dueno", contact);
   }
   // Sin contacto utilizable: genérico, aunque el preset lo pida.
   for (const entrada of [{ businessType: "cafetería" }, { businessType: "cafetería", contact: "escríbeme cuando quieras" }]) {
     const brief = normalizeBrief(entrada);
     const plan = planSections(brief, PRESET);
-    assert.equal(plan.sections.find((s) => s.type === "contact").origin, "contacto_generico", JSON.stringify(entrada));
+    const pgContacto = plan.pages.find((p) => p.slug === "/contacto");
+    assert.ok(pgContacto, "la página /contacto existe");
+    assert.equal(pgContacto.sections.find((s) => s.type === "contact").origin, "contacto_generico", JSON.stringify(entrada));
   }
 });
 
 test("T-002.8: la galería no tiene origen de texto", () => {
-  const brief = normalizeBrief(BRIEF);
+  // T-003.3: la galería solo aparece en el plan cuando el brief clasifica como
+  // landing. Con un brief de cafetería (site) el plan de 4 páginas no incluye
+  // galería en la estructura fija. Se prueba con un brief de landing.
+  const brief = normalizeBrief(BRIEF_LANDING);
   const conFotos = { ...PRESET, sections: [{ type: "hero" }, { type: "gallery" }] };
   const photos = { gallery: [{ assetId: "a1", alt: "" }, { assetId: "a2", alt: "" }, { assetId: "a3", alt: "" }] };
   const plan = planSections(brief, conFotos, undefined, photos);
-  const galeria = plan.sections.find((s) => s.type === "gallery");
+  // landing: pages[0] contiene todas las secciones.
+  assert.equal(plan.shape, "landing");
+  const galeria = plan.pages[0].sections.find((s) => s.type === "gallery");
+  assert.ok(galeria, "la galería existe en portada (landing)");
   assert.equal(galeria.action, "write");
   assert.equal(galeria.origin, undefined, "la galería lleva fotos, no texto");
   assert.equal(galeria.reason, "fotos_de_la_busqueda");

@@ -230,7 +230,7 @@ export async function processDesignJob(deps: DesignDeps, job: DesignJob): Promis
     if (copyFallback !== undefined) {
       console.warn("design_copy_fallback", { runId: job.runId, reason: copyFallback.slice("copy_fallback: ".length) });
     } else {
-      console.info("design_copy_ok", { runId: job.runId, sections: result.plan.sections.length });
+      console.info("design_copy_ok", { runId: job.runId, pages: result.plan.pages.length });
     }
 
     console.info("design_photos", { runId: job.runId, hero: photosTally.hero, gallery: photosTally.gallery });

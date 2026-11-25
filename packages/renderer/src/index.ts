@@ -48,6 +48,21 @@ type AssetResolver = (assetId: string) => { src: string; alt: string } | undefin
 export const CSP =
   "default-src 'self'; img-src 'self' https:; style-src 'self' 'unsafe-inline'; script-src 'none'; frame-src https://www.youtube-nocookie.com";
 
+/**
+ * Convierte un slug en etiqueta de navegación (T-003.1).
+ *
+ * Reglas: quita barras, toma el último segmento, cambia guiones por espacios,
+ * pone en mayúscula la primera letra. Si el resultado queda vacío → "Inicio".
+ */
+function slugToLabel(slug: string): string {
+  const segments = slug.split("/").filter((s) => s.length > 0);
+  if (segments.length === 0) return "Inicio";
+  const last = segments[segments.length - 1] ?? "";
+  if (last === "") return "Inicio";
+  const text = last.replaceAll("-", " ");
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
 export function renderPage(input: unknown, pageId: string, resolveAsset: AssetResolver = () => undefined): string {
   const r = validateSiteDocument(input);
   if (!r.ok) throw new Error(`invalid site document: ${r.errors.join("; ")}`);
@@ -59,6 +74,23 @@ export function renderPage(input: unknown, pageId: string, resolveAsset: AssetRe
     .map((section) => htmlAttributeCase(renderToStaticMarkup(renderSection(section, { resolveAsset }) as ReactElement)))
     .join("\n");
 
+  // Barra de navegación entre páginas (T-003.1): solo cuando hay más de una.
+  // El orden es el del array doc.pages. El slug se escapa aunque el esquema
+  // solo admite minúsculas y barras: se escapa igual por consistencia.
+  const nav =
+    doc.pages.length > 1
+      ? `<nav class="site-nav" aria-label="Secciones del sitio">\n` +
+        doc.pages
+          .map((p) => {
+            const href = escapeHtml(p.slug);
+            const label = escapeHtml(slugToLabel(p.slug));
+            const current = p.id === pageId ? ` aria-current="page"` : "";
+            return `  <a href="${href}"${current}>${label}</a>`;
+          })
+          .join("\n") +
+        `\n</nav>`
+      : "";
+
   const title = escapeHtml(page.seo.title || doc.meta.name);
   const year = new Date().getFullYear();
   const siteName = escapeHtml(doc.meta.name);
@@ -69,8 +101,9 @@ export function renderPage(input: unknown, pageId: string, resolveAsset: AssetRe
   const footer =
     `<footer class="site-footer">` +
     `<div><p class="site-footer__brand">${siteName}</p><p>© ${year} ${siteName}. Todos los derechos reservados.</p></div>` +
-    `<nav><a href="#contacto">Contacto</a></nav>` +
+    `<nav aria-label="Contacto"><a href="#contacto">Contacto</a></nav>` +
     `</footer>`;
+  const bodyContent = nav ? `${nav}\n${body}` : body;
   return (
     `<!DOCTYPE html><html lang="${escapeHtml(doc.meta.lang)}"><head>` +
     `<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">` +
@@ -81,6 +114,6 @@ export function renderPage(input: unknown, pageId: string, resolveAsset: AssetRe
     // El CSS se genera del tema del documento: sin esto el sitio sale sin
     // estilos, porque no hay hoja compartida que servir.
     `<style>${themeCss(doc.theme)}</style>` +
-    `</head><body>\n${body}\n${footer}\n</body></html>`
+    `</head><body>\n${bodyContent}\n${footer}\n</body></html>`
   );
 }

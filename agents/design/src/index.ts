@@ -32,8 +32,11 @@ export {
   type Missing,
   type Plan,
   type PlanAction,
+  type PlannedPage,
   type PlannedSection,
 } from "./plan.js";
+
+export { classifyShape, type SiteShape } from "./classify.js";
 
 export {
   createStore,

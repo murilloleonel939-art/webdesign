@@ -217,6 +217,15 @@ function themeLayoutCss(theme: Theme): string {
 .contact .lead-form{margin-inline:auto;text-align:left}
 .contact > a{display:inline-flex;align-items:center;gap:.5em;margin:0 .6rem 1rem;padding:.7em 1.2em;border:1px solid color-mix(in srgb,var(--ink) 20%,transparent);border-radius:var(--radius);text-decoration:none;font-weight:600}
 
+/* Barra de navegacion entre paginas (T-003.1): solo aparece cuando el sitio
+   tiene mas de una pagina. Fila horizontal con separacion inferior, enlaces con
+   el color de tinta del tema para no competir con el acento, y el enlace de la
+   pagina actual en negrita. flex-wrap evita el desbordamiento en movil. */
+.site-nav{display:flex;flex-wrap:wrap;gap:.3rem 1.4rem;padding:calc(var(--gap) * .35) var(--margin);border-bottom:1px solid color-mix(in srgb,var(--ink) 12%,transparent);max-width:1140px;margin-inline:auto;margin-bottom:0}
+.site-nav a{color:inherit;text-decoration:none;font-size:.93rem;font-weight:500;opacity:.72;padding:.25em 0}
+.site-nav a:hover{opacity:1}
+.site-nav a[aria-current="page"]{font-weight:700;opacity:1;text-decoration:underline;text-underline-offset:.2em}
+
 /* Pie: siempre oscuro respecto al tema, con columnas y el enlace de vuelta al
    contacto. Vive en una clase propia porque el renderer lo anade fuera de las
    secciones del documento. */

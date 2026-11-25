@@ -4,6 +4,7 @@ import type { SiteCopy } from "./copy.js";
 import { briefValueOk } from "./copy.js";
 import { genericCopy } from "./generic-copy.js";
 import { GALLERY_MIN, completeCopy, ownerContact, plannedTypes, planSections } from "./plan.js";
+import { classifyShape } from "./classify.js";
 
 // Borrador del modo rápido (spec 9.1, paso 6).
 //
@@ -234,52 +235,131 @@ function designBrief(brief: QuickBrief): string {
 /**
  * Construye y valida un `SiteDocument` a partir del brief y de un preset.
  *
+ * Para `landing`: una sola página (`p_home`, `/`), idéntica al comportamiento
+ * anterior. Para `site`: cuatro páginas según el contrato de T-003.3.
+ *
  * Se valida antes de devolver: un borrador que no pasa `site-schema` no sale de
  * esta función, así que el agente nunca muta el sitio con algo inválido.
  */
 export function draftSite(brief: QuickBrief, preset: Preset, copy?: SiteCopy, photos?: SitePhotos): SiteDocument {
-  // Un preset sin id es un error del llamador (el catálogo siempre lo trae), no
-  // un dato del dueño que se pueda dejar "pendiente". Se corta aquí, en vez de
-  // escribir el marcador en `design.presetId`.
   if (preset.id.trim() === "") throw new Error("draftSite: preset sin id");
-  // Sin copy del modelo, el copy genérico. Con copy, `completeCopy` repone por
-  // sección lo que la guardia dejó por debajo del mínimo (T-002.3): nunca se
-  // mezcla un texto del modelo con uno de plantilla dentro del mismo bloque.
   const { copy: text } = completeCopy(copy, brief);
-  const sections: Section[] = [];
-  const used = new Set<string>();
-  // Respaldo neutro para el nombre: el titular del copy genérico, que ya filtra
-  // cada dato del brief con la guardia y nunca lleva el marcador.
+  const shape = classifyShape(brief);
   const neutralName = cut(genericCopy(brief).heroHeadline, 80);
-  const push = (type: string) => {
-    let id = `s_${type}`;
-    let n = 2;
-    while (used.has(id)) id = `s_${type}_${n++}`;
-    const section = copySection(type, id, brief, text, photos ?? { gallery: [] });
-    if (!section) return;
-    used.add(id);
-    sections.push(section);
-  };
+  const name = safeText(docName(brief, text), neutralName);
+  const noPhotos: SitePhotos = { gallery: [] };
 
-  // El plan decide qué se escribe; el borrador no vuelve a decidirlo. Si lo
-  // hiciera, `plan` y documento podrían discrepar y el dueño vería un plan que
-  // no es el que se aplicó.
-  for (const type of plannedTypes(planSections(brief, preset, copy, photos))) push(type);
-
-  // Solo las fotos que el documento usa quedan registradas como assets.
-  // El hero siempre lleva la foto cuando hay una (copySection la escribe).
   const usedPhotos: PhotoRef[] = [];
-  if (photos?.hero && sections.some((s) => s.type === "hero")) usedPhotos.push(photos.hero);
-  if (sections.some((s) => s.type === "gallery")) usedPhotos.push(...(photos?.gallery ?? []));
+
+  function buildPage(id: string, slug: string, seoTitle: string, seoDesc: string, types: string[]): { id: string; slug: string; seo: { title: string; description: string; noindex: boolean }; sections: Section[] } {
+    const sections: Section[] = [];
+    const used = new Set<string>();
+    const push = (type: string) => {
+      let sid = `s_${type}`;
+      let n = 2;
+      while (used.has(sid)) sid = `s_${type}_${n++}`;
+      const section = copySection(type, sid, brief, text, photos ?? noPhotos);
+      if (!section) return;
+      used.add(sid);
+      sections.push(section);
+    };
+    for (const t of types) push(t);
+    return {
+      id,
+      slug,
+      seo: { title: cut(seoTitle, 70), description: cut(seoDesc, 160), noindex: false },
+      sections,
+    };
+  }
+
+  let pages: Array<{ id: string; slug: string; seo: { title: string; description: string; noindex: boolean }; sections: Section[] }>;
+
+  if (shape === "landing") {
+    // Landing: exactamente una página, misma lógica que antes.
+    const sections: Section[] = [];
+    const used = new Set<string>();
+    const push = (type: string) => {
+      let id = `s_${type}`;
+      let n = 2;
+      while (used.has(id)) id = `s_${type}_${n++}`;
+      const section = copySection(type, id, brief, text, photos ?? noPhotos);
+      if (!section) return;
+      used.add(id);
+      sections.push(section);
+    };
+    for (const t of plannedTypes(planSections(brief, preset, copy, photos))) push(t);
+
+    if (photos?.hero && sections.some((s) => s.type === "hero")) usedPhotos.push(photos.hero);
+    if (sections.some((s) => s.type === "gallery")) usedPhotos.push(...(photos?.gallery ?? []));
+
+    pages = [{
+      id: "p_home",
+      slug: "/",
+      seo: {
+        title: cut(name, 70),
+        description: cut(safeText(text.seoDescription, genericCopy(brief).seoDescription), 160),
+        noindex: false,
+      },
+      sections,
+    }];
+  } else {
+    // Site: cuatro páginas según T-003.3.
+    // El hero de páginas distintas a la portada usa la etiqueta de la página
+    // como titular. Si no llega al mínimo del esquema (8), se añade el nombre.
+    const pageLabel = (label: string): string => {
+      if (label.length >= 8) return label;
+      return cut(`${label} · ${name}`, 120);
+    };
+
+    // Para cada página subinterna usamos un copy con heroHeadline sustituido
+    // por la etiqueta, así `copySection("hero", ...)` escribe el título correcto.
+    const textWith = (headline: string): SiteCopy => ({ ...text, heroHeadline: headline });
+
+    const homeTypes = plannedTypes(planSections(brief, preset, copy, photos));
+    const homeSections: Section[] = [];
+    const usedH = new Set<string>();
+    const pushH = (type: string) => {
+      let id = `s_${type}`; let n = 2;
+      while (usedH.has(id)) id = `s_${type}_${n++}`;
+      const s = copySection(type, id, brief, text, photos ?? noPhotos);
+      if (s) { usedH.add(id); homeSections.push(s); }
+    };
+    for (const t of homeTypes) pushH(t);
+    if (photos?.hero && homeSections.some((s) => s.type === "hero")) usedPhotos.push(photos.hero);
+    if (homeSections.some((s) => s.type === "gallery")) usedPhotos.push(...(photos?.gallery ?? []));
+
+    const serviciosLabel = pageLabel("Servicios");
+    const sobreLabel = pageLabel("Sobre nosotros");
+    const contactoLabel = pageLabel("Contacto");
+
+    pages = [
+      {
+        id: "p_home",
+        slug: "/",
+        seo: { title: cut(name, 70), description: cut(safeText(text.seoDescription, genericCopy(brief).seoDescription), 160), noindex: false },
+        sections: homeSections,
+      },
+      buildPage("p_servicios", "/servicios", `Servicios — ${name}`, safeText(text.servicesHeading, "Servicios"), ["hero", "features", "process", "cta"]),
+      buildPage("p_sobre", "/sobre-nosotros", `Sobre nosotros — ${name}`, safeText(text.aboutHeading, "Sobre nosotros"), ["hero", "text", "faq"]),
+      buildPage("p_contacto", "/contacto", `Contacto — ${name}`, "", ["hero", "contact"]),
+    ];
+    // Sobrescribir el heroHeadline de las páginas subinternas: buildPage usa
+    // el texto completo; reemplazamos las secciones hero con la etiqueta.
+    for (const [pageIdx, label] of [[1, serviciosLabel], [2, sobreLabel], [3, contactoLabel]] as [number, string][]) {
+      const pg = pages[pageIdx];
+      if (!pg) continue;
+      pg.sections = pg.sections.map((s) =>
+        s.type === "hero"
+          ? { ...s, props: { ...s.props as Record<string, unknown>, headline: cut(label, 120) } }
+          : s,
+      );
+    }
+  }
 
   const doc = {
     schemaVersion: 1 as const,
-    // El nombre lo pone el dueño; si no lo dijo, el que dedujo el copy; si
-    // tampoco hay, el titular del brief. Nunca un nombre inventado por el agente.
-    // Red final (Fix A): con el marcador dentro, el titular genérico.
     meta: { name: safeText(docName(brief, text), neutralName), lang: "es" as const },
     design: {
-      // Con el marcador dentro no se guarda: es un campo libre y vacío es válido.
       brief: safeText(designBrief(brief), ""),
       idea: safeText(preset.summary, ""),
       presetId: preset.id,
@@ -298,27 +378,12 @@ export function draftSite(brief: QuickBrief, preset: Preset, copy?: SiteCopy, ph
       },
       radius: preset.radius,
     },
-    pages: [
-      {
-        id: "p_home",
-        slug: "/",
-        seo: {
-          title: cut(safeText(docName(brief, text), neutralName), 70),
-          description: cut(safeText(text.seoDescription, genericCopy(brief).seoDescription), 160),
-          noindex: false,
-        },
-        sections,
-      },
-    ],
-    // El `alt` llega del proveedor de fotos: con el marcador dentro se omite (es
-    // opcional en 6.1), no se publica.
+    pages,
     assets: usedPhotos.map((p) => (containsMarker(p.alt) ? { id: p.assetId } : { id: p.assetId, alt: p.alt })),
   };
 
   const check = validateSiteDocument(doc);
   if (!check.ok) throw new Error(`borrador invalido: ${check.errors.join("; ")}`);
-  // Última comprobación, sin excepciones: si algo se escapó de todo lo anterior,
-  // el borrador no sale. Fallar aquí es preferible a entregar el marcador (B1).
   if (containsMarker(JSON.stringify(check.doc))) throw new Error("borrador invalido: contiene el marcador pendiente");
   return check.doc;
 }

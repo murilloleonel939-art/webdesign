@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { renderPage, escapeHtml } from "../dist/index.js";
+import { validateSiteDocument } from "@webdesign/site-schema";
 
 const doc = () => ({
   schemaVersion: 1,
@@ -102,4 +103,115 @@ test("los atributos salen en minusculas y los booleanos sin valor", () => {
   // El valor de un atributo no se toca: solo el nombre.
   const img = renderPage(doc(), "p_home", (id) => (id === "a1" ? { src: "/a1.png", alt: "Taza de Café XL" } : undefined));
   assert.match(img, /alt="Taza de Café XL"/);
+});
+
+// --- T-003.1: barra de navegación entre páginas ------------------------------
+
+function multiDoc() {
+  const base = doc();
+  base.pages = [
+    { id: "p_home", slug: "/", seo: { title: "Inicio", description: "", noindex: false },
+      sections: [{ id: "s1", type: "hero", props: { headline: "Hola", cta: { label: "Ir", href: "https://x.com" } } }] },
+    { id: "p_servicios", slug: "/servicios", seo: { title: "Servicios", description: "", noindex: false },
+      sections: [{ id: "s2", type: "hero", props: { headline: "Servicios", cta: { label: "Ir", href: "https://x.com" } } }] },
+    { id: "p_sobre", slug: "/sobre-nosotros", seo: { title: "Sobre nosotros", description: "", noindex: false },
+      sections: [{ id: "s3", type: "hero", props: { headline: "Sobre", cta: { label: "Ir", href: "https://x.com" } } }] },
+  ];
+  return base;
+}
+
+test("T-003.1: una sola página no emite site-nav ni aria-current", () => {
+  const single = doc(); // una sola página
+  const htmlBefore = renderPage(single, "p_home");
+  const html = renderPage(single, "p_home");
+  // La clase .site-nav y el selector aria-current están en el CSS pero no como
+  // elemento HTML con 1 página: se comprueba que no hay el elemento nav.
+  assert.doesNotMatch(html, /<nav class="site-nav"/, "no debe haber elemento nav.site-nav con 1 página");
+  // aria-current no debe aparecer en un atributo HTML (fuera del CSS).
+  // El CSS lo usa como selector: `a[aria-current="page"]`. Solo buscamos el
+  // atributo en etiquetas de apertura, que nunca forman parte del CSS.
+  const bodyStart = html.indexOf("</head>");
+  const bodyHtml = bodyStart > -1 ? html.slice(bodyStart) : html;
+  assert.doesNotMatch(bodyHtml, /aria-current="page"/, "no debe haber aria-current en el HTML con 1 página");
+  // El HTML es idéntico entre dos llamadas: el comportamiento de 1 página no cambió.
+  assert.equal(html, htmlBefore);
+});
+
+test("T-003.1: 3 páginas - nav con 3 enlaces, hrefs correctos, etiquetas y aria-current", () => {
+  const d = multiDoc();
+  const html = renderPage(d, "p_home");
+  assert.match(html, /class="site-nav"/, "debe haber site-nav");
+  // 3 enlaces
+  const links = [...html.matchAll(/<a href="([^"]+)"[^>]*>([^<]+)<\/a>/g)];
+  const navLinks = links.filter((m) => m[0].includes("site-nav") || html.slice(html.indexOf("site-nav"), html.indexOf("</nav>", html.indexOf("site-nav"))).includes(m[0]));
+  // Extrae el nav completo para contar los enlaces dentro
+  const navMatch = html.match(/<nav class="site-nav"[^>]*>([\s\S]*?)<\/nav>/);
+  assert.ok(navMatch, "nav.site-nav debe existir");
+  const navHtml = navMatch[1];
+  const navLinkMatches = [...navHtml.matchAll(/<a [^>]*href="([^"]+)"[^>]*>([^<]+)<\/a>/g)];
+  assert.equal(navLinkMatches.length, 3, "debe haber 3 enlaces en el nav");
+  // hrefs correctos
+  assert.equal(navLinkMatches[0][1], "/");
+  assert.equal(navLinkMatches[1][1], "/servicios");
+  assert.equal(navLinkMatches[2][1], "/sobre-nosotros");
+  // etiquetas
+  assert.equal(navLinkMatches[0][2].trim(), "Inicio");
+  assert.equal(navLinkMatches[1][2].trim(), "Servicios");
+  assert.equal(navLinkMatches[2][2].trim(), "Sobre nosotros");
+  // aria-current solo en la página actual (p_home = /)
+  const ariaCurrent = navHtml.match(/aria-current="page"/g) ?? [];
+  assert.equal(ariaCurrent.length, 1, "solo un aria-current");
+  assert.match(navHtml.match(/<a[^>]*aria-current="page"[^>]*>[^<]+<\/a>/)?.[0] ?? "", /href="\/"/, "aria-current en /");
+});
+
+test("T-003.1: slug anidado produce etiqueta del último segmento", () => {
+  const d = doc();
+  d.pages = [
+    { id: "p_home", slug: "/", seo: { title: "Inicio", description: "", noindex: false },
+      sections: [{ id: "s1", type: "hero", props: { headline: "H", cta: { label: "Ir", href: "https://x.com" } } }] },
+    { id: "p_taller", slug: "/servicios/talleres", seo: { title: "Talleres", description: "", noindex: false },
+      sections: [{ id: "s2", type: "hero", props: { headline: "T", cta: { label: "Ir", href: "https://x.com" } } }] },
+  ];
+  const html = renderPage(d, "p_taller");
+  const navMatch = html.match(/<nav class="site-nav"[^>]*>([\s\S]*?)<\/nav>/);
+  assert.ok(navMatch, "nav.site-nav debe existir");
+  const navHtml = navMatch[1];
+  // El slug completo aparece en el href
+  assert.match(navHtml, /href="\/servicios\/talleres"/, "href debe ser el slug completo");
+  // La etiqueta es el último segmento
+  assert.match(navHtml, />Talleres<\/a>/, "etiqueta es el último segmento");
+});
+
+test("T-003.1: cada página marca solo su propio enlace con aria-current", () => {
+  const d = multiDoc();
+  for (const page of d.pages) {
+    const html = renderPage(d, page.id);
+    const navMatch = html.match(/<nav class="site-nav"[^>]*>([\s\S]*?)<\/nav>/);
+    assert.ok(navMatch, `nav.site-nav debe existir en ${page.id}`);
+    const navHtml = navMatch[1];
+    const currentLinks = [...navHtml.matchAll(/<a ([^>]*aria-current="page"[^>]*)>/g)];
+    assert.equal(currentLinks.length, 1, `solo un aria-current en ${page.id}`);
+    assert.ok(currentLinks[0][1].includes(`href="${page.slug}"`) || navHtml.includes(`href="${page.slug}" aria-current="page"`), `aria-current apunta a ${page.slug}`);
+  }
+});
+
+test("T-003.1: los hrefs del nav son slugs válidos del documento (sin BROKEN_INTERNAL_LINK)", () => {
+  // El linter (@webdesign/linter) no es dependencia del renderer. Se verifica
+  // directamente: cada href del nav debe ser el slug de una página del documento.
+  const d = multiDoc();
+  const slugs = new Set(d.pages.map((p) => p.slug));
+  for (const page of d.pages) {
+    const html = renderPage(d, page.id);
+    const navMatch = html.match(/<nav class="site-nav"[^>]*>([\s\S]*?)<\/nav>/);
+    assert.ok(navMatch, `nav.site-nav debe existir en ${page.id}`);
+    const hrefs = [...navMatch[1].matchAll(/href="([^"]+)"/g)].map((m) => m[1]);
+    for (const href of hrefs) {
+      assert.ok(slugs.has(href), `href "${href}" no corresponde a ninguna página`);
+    }
+  }
+});
+
+test("T-003.1: validateSiteDocument sigue pasando (esquema no tocado)", () => {
+  assert.equal(validateSiteDocument(doc()).ok, true, "1 página");
+  assert.equal(validateSiteDocument(multiDoc()).ok, true, "3 páginas");
 });

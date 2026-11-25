@@ -1,0 +1,24 @@
+# Reporte T-003.2 — junior ([REDACTED])
+
+- Fecha: 2026-11-25T18:45:00Z
+- Resultado: DONE
+- Qué hice (3 a 5 líneas):
+  - Reescribí `isSafeUrl` en `packages/site-schema/src/index.ts` para aceptar rutas internas absolutas que empiecen por `/`, validando cada segmento con `SAFE_SEGMENT = /^([a-z0-9]+(-[a-z0-9]+)*)?$/`. Esto descarta de una vez travesías (`..`, `%2e`), espacios, comillas, backticks, backslashes y cualquier carácter fuera del conjunto, sin listas negras incompletas.
+  - Añadí el límite de 200 caracteres y el rechazo explícito de `//` y `/\` para rutas relativas al protocolo y backslash.
+  - Añadí 6 tests en `packages/site-schema/test/validate.test.mjs`: rutas válidas, rutas peligrosas (16 casos uno a uno), `javascript/data/vbscript/file` rechazados, documento con `/servicios` que valida, documento con `//evil.com` que no valida.
+- Archivos tocados:
+  - `packages/site-schema/src/index.ts`
+  - `packages/site-schema/test/validate.test.mjs`
+  - `docs/reports/T-003.2/junior.md` (este reporte)
+- Decisiones y por qué:
+  - Validación por segmento (`SAFE_SEGMENT`) en vez de lista negra: las listas negras siempre olvidan algo; un whitelist de carácter-por-carácter cierra el espacio de ataque completo.
+  - `%2e` y `%2f` quedan rechazados automáticamente por el regex: el `%` no está en `[a-z0-9-]`, así que no se necesita decodificar para detectar la travesía.
+  - `//` y `/\` se rechazan antes del regex para ser explícitos; el regex también los rechazaría (`/` y `\` no están en el charset), pero es más claro.
+  - `safeHref` en `ui-components/src/sections.tsx` es solo un wrapper que anula el href en modo editor (`editing ? undefined : href`); no valida y no hay incoherencia con el esquema. No fue necesario tocarlo ni consultarlo.
+- Pendientes y riesgos:
+  - `slugSchema` (ya existente) usa un regex similar para los slugs de página; sería bueno unificarlo con `SAFE_SEGMENT` en un refactor futuro. No lo toqué porque el comportamiento es el mismo y la tarea no lo pedía.
+  - Las rutas internas aceptadas no se cruzan contra `doc.pages` en el esquema (eso es el linter, `BROKEN_INTERNAL_LINK`). Un `href: "/no-existe"` valida contra el esquema pero el linter lo reportaría. Es el diseño correcto (esquema = forma; linter = semántica).
+- Entrego a: senior
+- Referencias:
+  - Contrato T-003.2 del lead.
+  - Verificación: build 22/22, `packages/site-schema` 11/11 (5 existentes + 6 nuevos), monorepo `typecheck test --force` → 67/67 tareas, exit 0 — **464 tests, 457 pass, 0 fail, 7 skipped**.

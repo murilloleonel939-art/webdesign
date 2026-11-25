@@ -2,6 +2,7 @@ import { BRIEF_FIELDS, FIELD_LABEL, PENDING_MARKER, type BriefField, type QuickB
 import type { SiteCopy } from "./copy.js";
 import type { Preset, SitePhotos } from "./draft.js";
 import { genericCopy } from "./generic-copy.js";
+import { classifyShape, type SiteShape } from "./classify.js";
 
 /** Mínimo de fotos de la galería para que exista como sección. */
 export const GALLERY_MIN = 3;
@@ -147,84 +148,113 @@ export interface PlannedSection {
   origin?: SectionOrigin;
 }
 
+export interface PlannedPage {
+  slug: string;
+  title: string;
+  sections: PlannedSection[];
+}
+
 export interface Plan {
   presetId: string;
-  sections: PlannedSection[];
+  shape: SiteShape;
+  pages: PlannedPage[];
 }
 
 /**
  * Decide qué hacer con cada sección del preset.
  *
- * Siempre hay un copy: el del modelo o, si no llegó, `genericCopy(brief)`, igual
- * que hace `draftSite`. Así plan y documento no pueden discrepar. El motivo dice
- * de dónde salió el texto (`copy_del_dueno` o `copy_generico`) para que el panel
- * no presente un texto genérico como si fuera del dueño.
- *
- * Se omiten las secciones que solo existen si se inventan (testimonio y precio)
- * y las que necesitan un asset propio. Escribir cualquiera de ellas sería
- * inventar, que es justo lo que 9.1 prohíbe.
+ * Para `landing`, devuelve una página (`p_home`, `/`) con la lista de secciones
+ * que ya producía antes. Para `site`, devuelve las cuatro páginas del contrato
+ * T-003.3. En ambos casos el resultado es coherente con lo que `draftSite`
+ * construirá: plan y documento no pueden discrepar.
  */
 export function planSections(brief: QuickBrief, preset: Preset, copy?: SiteCopy, photos?: SitePhotos): Plan {
-  const sections: PlannedSection[] = [];
-  const galleryPhotos = photos?.gallery.length ?? 0;
-  // El mismo copy que escribira el borrador: sin copy, el generico; con copy,
-  // completado por seccion. Asi el plan no puede prometer algo distinto.
+  const shape = classifyShape(brief);
   const { copy: text, substituted } = completeCopy(copy, brief);
-  // Una sección escrita: su `reason` (por qué está) y su `origin` (de dónde
-  // sale el texto). El origen se consulta al conjunto `substituted`, no por
-  // comparación de textos: así un CTA genérico que el modelo repitió por
-  // casualidad no oculta que ese campo vino de la plantilla (T-002.9).
+  const galleryPhotos = photos?.gallery.length ?? 0;
+
   const write = (type: string, as: string, reason: string): PlannedSection => {
     const origin = originFromSet(as, substituted, brief);
     return origin === undefined ? { type, as, action: "write", reason } : { type, as, action: "write", reason, origin };
   };
   const omit = (type: string, reason: string): PlannedSection => ({ type, as: type, action: "omit", reason });
 
-  for (const s of preset.sections) {
-    switch (s.type) {
-      case "image":
-        sections.push(omit(s.type, "sin_assets_del_dueno"));
-        break;
-      case "gallery":
-        sections.push(galleryPhotos >= GALLERY_MIN ? write(s.type, "gallery", "fotos_de_la_busqueda") : omit(s.type, "sin_fotos_suficientes"));
-        break;
-      case "features":
-        // Sin servicios validos no hay ventajas que escribir: el borrador omite
-        // la seccion y el plan lo dice igual.
-        sections.push(text.services.length >= MIN_SERVICES ? write(s.type, "features", "preset") : omit(s.type, "sin_servicios_del_dueno"));
-        // El proceso va siempre detras de las ventajas, como bloque propio.
-        sections.push(text.process.length >= MIN_PROCESS ? write("process", "process", "preset") : omit("process", "sin_pasos_del_dueno"));
-        break;
-      case "testimonial":
-        sections.push(omit(s.type, "testimonio_requiere_cliente_real"));
-        break;
-      case "pricing":
-        sections.push(omit(s.type, "precio_requiere_dato_del_dueno"));
-        break;
-      case "faq":
-        sections.push(text.faq.length >= MIN_FAQ ? write(s.type, "faq", "preset") : omit(s.type, "sin_preguntas_del_dueno"));
-        break;
-      case "hero":
-      case "contact":
-      case "cta":
-        sections.push(write(s.type, s.type, "preset"));
-        break;
-      default:
-        // El resto se escribe como `text` con el "sobre el negocio": sin
-        // aboutBody no hay texto y el borrador omite la seccion (draft.ts).
-        sections.push(text.aboutBody === "" ? omit(s.type, "sin_about_del_dueno") : write(s.type, s.type, "preset"));
+  // Construye la lista de secciones del preset (lógica preexistente).
+  function buildPresetSections(): PlannedSection[] {
+    const sections: PlannedSection[] = [];
+    for (const s of preset.sections) {
+      switch (s.type) {
+        case "image":
+          sections.push(omit(s.type, "sin_assets_del_dueno"));
+          break;
+        case "gallery":
+          sections.push(galleryPhotos >= GALLERY_MIN ? write(s.type, "gallery", "fotos_de_la_busqueda") : omit(s.type, "sin_fotos_suficientes"));
+          break;
+        case "features":
+          sections.push(text.services.length >= MIN_SERVICES ? write(s.type, "features", "preset") : omit(s.type, "sin_servicios_del_dueno"));
+          sections.push(text.process.length >= MIN_PROCESS ? write("process", "process", "preset") : omit("process", "sin_pasos_del_dueno"));
+          break;
+        case "testimonial":
+          sections.push(omit(s.type, "testimonio_requiere_cliente_real"));
+          break;
+        case "pricing":
+          sections.push(omit(s.type, "precio_requiere_dato_del_dueno"));
+          break;
+        case "faq":
+          sections.push(text.faq.length >= MIN_FAQ ? write(s.type, "faq", "preset") : omit(s.type, "sin_preguntas_del_dueno"));
+          break;
+        case "hero":
+        case "contact":
+        case "cta":
+          sections.push(write(s.type, s.type, "preset"));
+          break;
+        default:
+          sections.push(text.aboutBody === "" ? omit(s.type, "sin_about_del_dueno") : write(s.type, s.type, "preset"));
+      }
     }
+    const hasGallery = sections.some((s) => s.as === "gallery" && s.action === "write");
+    if (galleryPhotos >= GALLERY_MIN && !hasGallery) {
+      let at = 0;
+      sections.forEach((s, i) => {
+        if (s.as === "features" || s.as === "process") at = i + 1;
+      });
+      sections.splice(at, 0, write("gallery", "gallery", "fotos_de_la_busqueda"));
+    }
+    return closePlan(sections, text, write);
   }
-  // Un preset sin galería no impide las fotos: la galería va tras los servicios y el proceso.
-  const hasGallery = sections.some((s) => s.as === "gallery" && s.action === "write");
-  if (galleryPhotos >= GALLERY_MIN && !hasGallery) {
-    let at = 0;
-    sections.forEach((s, i) => {
-      if (s.as === "features" || s.as === "process") at = i + 1;
-    });
-    sections.splice(at, 0, write("gallery", "gallery", "fotos_de_la_busqueda"));
+
+  if (shape === "landing") {
+    return {
+      presetId: preset.id,
+      shape,
+      pages: [{ slug: "/", title: preset.id, sections: buildPresetSections() }],
+    };
   }
-  return { presetId: preset.id, sections: closePlan(sections, text, write) };
+
+  // shape === "site": cuatro páginas del contrato T-003.3.
+  // Cada página lleva solo las secciones que el copy sostiene (completeCopy),
+  // sin pricing ni testimonial, y sin el marcador.
+  const makeSections = (...types: string[]): PlannedSection[] => {
+    const result: PlannedSection[] = [];
+    for (const t of types) {
+      const supports = sectionSupported(t, text, galleryPhotos);
+      if (supports) result.push(write(t, t, "preset"));
+      // No se añade omit: en el plan de sitio las páginas ya están definidas,
+      // no hay que justificar cada hueco al panel.
+    }
+    return result;
+  };
+
+  return {
+    presetId: preset.id,
+    shape,
+    pages: [
+      { slug: "/",              title: preset.id, sections: makeSections("hero", "features", "faq", "cta") },
+      { slug: "/servicios",     title: "Servicios",       sections: makeSections("hero", "features", "process", "cta") },
+      { slug: "/sobre-nosotros",title: "Sobre nosotros",  sections: makeSections("hero", "text", "faq") },
+      { slug: "/contacto",      title: "Contacto",        sections: makeSections("hero", "contact") },
+    ],
+  };
 }
 
 /**
@@ -339,5 +369,34 @@ function closePlan(
 
 /** Los tipos que el borrador debe escribir, en orden y ya resueltos. */
 export function plannedTypes(plan: Plan): string[] {
-  return plan.sections.filter((s) => s.action !== "omit").map((s) => s.as);
+  // Compatibilidad: para landing devuelve las secciones de la primera página.
+  const first = plan.pages[0];
+  if (!first) return [];
+  return first.sections.filter((s) => s.action !== "omit").map((s) => s.as);
+}
+
+/**
+ * ¿El copy sostiene esta sección para las páginas de sitio (T-003.3)?
+ * Distinción respecto a `supports`: también acepta hero, contact y cta que
+ * siempre se escriben, y gallery que depende de las fotos disponibles.
+ */
+function sectionSupported(type: string, text: SiteCopy, galleryPhotos: number): boolean {
+  switch (type) {
+    case "hero":
+    case "contact":
+    case "cta":
+      return true;
+    case "features":
+      return text.services.length >= MIN_SERVICES;
+    case "process":
+      return text.process.length >= MIN_PROCESS;
+    case "text":
+      return text.aboutBody.trim() !== "";
+    case "faq":
+      return text.faq.length >= MIN_FAQ;
+    case "gallery":
+      return galleryPhotos >= GALLERY_MIN;
+    default:
+      return false;
+  }
 }

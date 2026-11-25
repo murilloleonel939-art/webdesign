@@ -54,3 +54,51 @@ test("safe url helper", () => {
   assert.equal(isSafeUrl("mailto:a@b.co"), true);
   assert.equal(isSafeUrl("data:text/html,x"), false);
 });
+
+// T-003.2: rutas internas aceptadas
+test("isSafeUrl: rutas internas válidas se aceptan", () => {
+  assert.equal(isSafeUrl("/"), true, "/");
+  assert.equal(isSafeUrl("/servicios"), true, "/servicios");
+  assert.equal(isSafeUrl("/servicios/talleres"), true, "/servicios/talleres");
+  assert.equal(isSafeUrl("/servicios/"), true, "/servicios/ (barra final)");
+});
+
+// T-003.2: rutas internas rechazadas
+test("isSafeUrl: rutas internas peligrosas se rechazan", () => {
+  assert.equal(isSafeUrl("//evil.com"), false, "relativa al protocolo");
+  assert.equal(isSafeUrl("/\\evil.com"), false, "barra invertida");
+  assert.equal(isSafeUrl("/.."), false, "travesía raíz");
+  assert.equal(isSafeUrl("/../etc/passwd"), false, "travesía etc");
+  assert.equal(isSafeUrl("/a/../b"), false, "travesía intermedia");
+  assert.equal(isSafeUrl("/a/../../b"), false, "travesía doble");
+  assert.equal(isSafeUrl("/./x"), false, "punto simple");
+  assert.equal(isSafeUrl("/%2e%2e/x"), false, "travesía codificada %2e%2e");
+  assert.equal(isSafeUrl("/..%2f"), false, "travesía codificada %2f");
+  assert.equal(isSafeUrl("/a b"), false, "espacio");
+  assert.equal(isSafeUrl('/a"b'), false, "comilla doble");
+  assert.equal(isSafeUrl("/a'b"), false, "comilla simple");
+  assert.equal(isSafeUrl("/a<b"), false, "menor que");
+  assert.equal(isSafeUrl("/a>b"), false, "mayor que");
+  assert.equal(isSafeUrl("/a`b"), false, "backtick");
+  assert.equal(isSafeUrl("/" + "a".repeat(201)), false, "más de 200 chars");
+});
+
+test("isSafeUrl: javascript y data siguen rechazándose", () => {
+  assert.equal(isSafeUrl("javascript:alert(1)"), false);
+  assert.equal(isSafeUrl("data:text/html,x"), false);
+  assert.equal(isSafeUrl("vbscript:x"), false);
+  assert.equal(isSafeUrl("file:///etc/passwd"), false);
+});
+
+test("T-003.2: documento con cta href='/servicios' valida", () => {
+  const d = doc();
+  d.pages[0].sections[0].props = { headline: "h", cta: { label: "Ver", href: "/servicios" } };
+  const r = validateSiteDocument(d);
+  assert.equal(r.ok, true, r.ok ? "" : r.errors.join("; "));
+});
+
+test("T-003.2: documento con cta href='//evil.com' no valida", () => {
+  const d = doc();
+  d.pages[0].sections[0].props = { headline: "h", cta: { label: "x", href: "//evil.com" } };
+  assert.equal(validateSiteDocument(d).ok, false);
+});
