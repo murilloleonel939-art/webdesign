@@ -114,8 +114,9 @@ Dos pruebas afirmaban el aborto. Ahora afirman la entrega correcta:
 - **`origin/main` tras el push:** `751d51f630337371bc8bd8a40b27675c578409c7` — coincide con `HEAD`
 - **Rama:** `main`, sin PR y sin ramas nuevas. Sin `--force` y sin `reset --hard`.
 - **Archivos del commit:** los cinco previstos, ninguno más. Sin `.env`, claves ni credenciales.
-- **Grafo:** reconstruido desde `751d51f6` con `graphify update .` → **3345 nodos, 5476 aristas,
-  215 comunidades**.
+- **Grafo:** reconstruido con `graphify update .` → **3345 nodos, 5476 aristas, 215 comunidades**
+  desde `751d51f6`; tras publicar este reporte, **3346 nodos y 5477 aristas** desde
+  `34404e94` (el nodo extra es este mismo documento).
 
 ## Pendiente conocido
 
