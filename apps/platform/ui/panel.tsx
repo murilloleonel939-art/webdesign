@@ -8,6 +8,7 @@ import { buildEditorConfig } from "@webdesign/editor/config";
 import { documentToPuck, puckToDocument, mergeEditedPage } from "@webdesign/puck-adapter";
 import { StyleStart } from "./StyleStart";
 import { DesignChat } from "./DesignChat";
+import { ownerPrompt } from "./design-chat-flow";
 import { BuilderHome } from "./BuilderHome";
 import { themeCss } from "@webdesign/renderer";
 
@@ -64,9 +65,11 @@ function Dashboard({ sites, refresh }: { sites: Site[]; refresh: () => void }) {
   /**
    * Crea el sitio y abre su editor con el prompt que escribio el dueno.
    *
-   * La idea se guarda en el servidor (doc.design.idea, hasta 500 caracteres)
-   * en vez de en sessionStorage: asi sobrevive a una recarga o a volver mas
-   * tarde. El editor la lee de doc.design.idea para arrancar el chat.
+   * El texto se guarda en el servidor (doc.design.idea al crear, hasta 500
+   * caracteres) en vez de en sessionStorage: asi sobrevive a una recarga o a
+   * volver mas tarde. El editor lo lee con `ownerPrompt`, que prefiere
+   * `design.brief` porque el agente reescribe `design.idea` con el resumen del
+   * preset al diseñar.
    */
   async function start(prompt: string): Promise<void> {
     setError("");
@@ -315,10 +318,22 @@ function Editor({ siteId }: { siteId: string }) {
   const [chatCollapsed, setChatCollapsed] = useState(false);
   const [mobileView, setMobileView] = useState<"chat" | "site">("chat");
   const [designing, setDesigning] = useState(false);
+  // El chat avisa de que el run termino antes de que el documento nuevo este
+  // aqui: `onDraftChanged` no trae el `doc`, hay que pedirlo. Ese hueco es el
+  // parpadeo: el lienzo pintaba el documento anterior (Outline: No items,
+  // lienzo gris) y el sitio aparecia unos segundos despues. Mientras
+  // `pendingDoc` este puesto, el lienzo se queda en el esqueleto que ya existe.
+  const [pendingDoc, setPendingDoc] = useState(false);
+  // Si el run ha estado en marcha en esta sesion de pagina. Al reabrir un sitio
+  // ya disenado el chat tambien avisa de la ejecucion anterior, pero ahi el
+  // documento ya esta cargado: no hay hueco que tapar.
+  const runWasActive = useRef(false);
   // El prompt con el que el dueno creo el sitio desde BuilderHome viaja en el
-  // documento (doc.design.idea), no en sessionStorage: sobrevive a una
-  // recarga o a volver mas tarde al mismo sitio.
-  const initialPrompt = ((doc as { design?: { idea?: string } } | null)?.design?.idea ?? "").trim();
+  // documento, no en sessionStorage: sobrevive a una recarga o a volver mas
+  // tarde al mismo sitio. Se lee con `ownerPrompt` porque `design.idea` deja de
+  // ser su texto en cuanto el agente disena (lo reescribe con el resumen del
+  // preset) y el suyo pasa a `design.brief`.
+  const initialPrompt = ownerPrompt(doc as { design?: { brief?: string; idea?: string } } | null);
   async function refreshAssets() { try { const r = await api(`/api/sites/${siteId}/assets`); if (!r.ok) return; const body = await r.json() as { assets?: EditorAsset[] }; setAssets(Array.isArray(body.assets) ? body.assets : []); } catch { setAssets([]); } }
   async function removeAsset(id: string) { if (!confirm("¿Eliminar esta imagen?")) return; const r = await api(`/api/sites/${siteId}/assets?id=${encodeURIComponent(id)}`, { method: "DELETE" }); if (r.ok) { await refreshAssets(); setStatus("Imagen eliminada"); } }
   async function upload(file: File) { setUploading(true); const r = await api(`/api/sites/${siteId}/assets?kind=image`, { method: "POST", headers: { "content-type": file.type }, body: file }); setUploading(false); if (r.ok) { await refreshAssets(); setStatus("Imagen subida. Copia su ID en el bloque Imagen."); } else {
@@ -338,11 +353,40 @@ function Editor({ siteId }: { siteId: string }) {
   useEffect(() => { api(`/api/sites/${siteId}/leads`).then(async r => { if (!r.ok) return; const d = await r.json() as { newCount?: number }; setNewLeads(Number(d.newCount ?? 0)); }).catch(() => {}); }, [siteId, showInbox]);
   useEffect(() => { api(`/api/sites/${siteId}/draft`).then(async r => { if (r.status === 401) return go("/app"); if (!r.ok) throw new Error("No se pudo cargar"); const d = await r.json() as Draft; docRef.current = d.doc; revRef.current = d.rev; setDoc(d.doc); setRev(d.rev); setStatus("Listo para crear"); }).catch(() => setStatus("No se pudo cargar el editor")); }, [siteId]);
   if (!doc) return <div className="loading"><Brand/><p>{status}</p></div>;
-  async function reloadDraft() {
+  async function reloadDraft(): Promise<boolean> {
     const r = await api(`/api/sites/${siteId}/draft`);
-    if (!r.ok) return;
+    if (!r.ok) return false;
     const d = await r.json() as Draft;
     docRef.current = d.doc; revRef.current = d.rev; setDoc(d.doc); setRev(d.rev);
+    return true;
+  }
+  /**
+   * Se llama cuando el chat dice que la ejecucion termino (o cuando se
+   * deshace): a partir de ahi hay un documento nuevo en el servidor, pero el
+   * panel todavia no lo tiene. En ese hueco no se puede pintar el editor con el
+   * documento viejo, asi que se mantiene el esqueleto hasta que la revision del
+   * borrador avanza de verdad.
+   *
+   * La revision solo sube al guardar (saveDraft y el deshacer), asi que "rev
+   * mayor que antes" es la unica prueba fiable de que llego lo nuevo. Si el
+   * borrador no cambia -- un run que no guardo nada o un fetch que falla -- se
+   * suelta el esqueleto en vez de dejarlo pegado para siempre.
+   */
+  async function afterDocChange() {
+    const before = revRef.current;
+    const justFinished = runWasActive.current;
+    runWasActive.current = false;
+    // Solo tapa el lienzo el aviso de un run que acaba de terminar aqui.
+    if (justFinished) setPendingDoc(true);
+    for (let attempt = 0; attempt < (justFinished ? 5 : 1); attempt++) {
+      const ok = await reloadDraft();
+      if (!ok || revRef.current > before) break;
+      // El agente escribe el borrador al cerrar el run: la primera lectura puede
+      // adelantársele. Se reintenta con una espera corta, sin sondeo infinito.
+      await new Promise((resolve) => setTimeout(resolve, 400));
+    }
+    setPendingDoc(false);
+    setDesignPending(pendingFromDoc(docRef.current));
   } const save = async (data: any) => { lastData.current = data; pending.current = data; if (saving.current) return; saving.current = true; while (pending.current) { const current = pending.current; pending.current = null; const next = mergeEditedPage(docRef.current ?? doc, puckToDocument({ content: current.content, root: current.root }, PAGE)); setStatus("Guardando…"); const r = await api(`/api/sites/${siteId}/draft`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ doc: next, expectedRev: revRef.current }) }); if (r.status === 409) { setStatus("Otro cambio fue guardado. Recargando…"); const d = await (await api(`/api/sites/${siteId}/draft`)).json() as Draft; docRef.current = d.doc; revRef.current = d.rev; setDoc(d.doc); setRev(d.rev); continue; } if (!r.ok) { setStatus("No se pudo guardar"); continue; } const d = await r.json() as { rev: number }; docRef.current = next; revRef.current = d.rev; setDoc(next); setRev(d.rev); setStatus("Guardado"); } saving.current = false; };
   // Publicar devuelve el hostname asignado. Sin el, el dueno no sabe donde
   // esta su sitio: se le muestra en un aviso y queda en el estado.
@@ -520,8 +564,11 @@ function Editor({ siteId }: { siteId: string }) {
         siteId={siteId}
         {...(initialPrompt ? { initialPrompt } : {})}
         collapsed={chatCollapsed}
-        onDraftChanged={() => { void reloadDraft().then(() => setDesignPending(pendingFromDoc(docRef.current))); }}
-        onRunningChange={setDesigning}
+        onDraftChanged={() => { void afterDocChange(); }}
+        onRunningChange={(running) => {
+          if (running) runWasActive.current = true;
+          setDesigning(running);
+        }}
         pending={designPending}
         onAskLogo={() => setShowAssets(true)}
       />
@@ -551,8 +598,8 @@ function Editor({ siteId }: { siteId: string }) {
                   ? <>Tu sitio está en <strong>{publishedUrl.replace("https://", "")}</strong>. Cada cuenta puede tener un sitio publicado a la vez.</>
                   : "Publica el sitio y te damos una dirección. Mientras tanto, el borrador no se sirve en ningún dominio."}</p>
               </div></div>
-            : designing
-              ? <div className="builder-skeleton" role="status" aria-label="Diseñando tu sitio">
+            : designing || pendingDoc
+              ? <div className="builder-skeleton" role="status" aria-label={designing ? "Diseñando tu sitio" : "Cargando tu sitio"}>
                   <div className="builder-skel builder-skel--hero"/>
                   <div className="builder-skel builder-skel--line w70"/>
                   <div className="builder-skel builder-skel--line w45"/>

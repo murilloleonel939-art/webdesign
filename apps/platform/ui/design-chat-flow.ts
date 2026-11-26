@@ -74,6 +74,30 @@ export function isSendKey(e: { key: string; shiftKey: boolean; isComposing: bool
   return e.key === "Enter" && !e.shiftKey && !e.isComposing;
 }
 
+/**
+ * El mensaje del dueno tal como debe verse en el chat: lo que el escribio, no
+ * la descripcion del preset elegido.
+ *
+ * `doc.design.idea` solo guarda su texto hasta el primer diseno: el agente lo
+ * sobrescribe con el resumen del preset ("Terracota y crema: cercano,
+ * artesanal…", agents/design/src/draft.ts:364) y deja el texto del cliente en
+ * `doc.design.brief` (draft.ts:363). Pintar `idea` como burbuja del cliente
+ * ensenaba la idea del diseno como si la hubiera escrito el.
+ *
+ * Un `brief` vacio es un documento sin disenar: `initialDoc` crea el sitio con
+ * `brief: ""` y el texto crudo en `idea` (apps/platform/src/api.ts:118), y ahi
+ * la caida a `idea` es lo unico que conserva la frase del cliente (y lo que
+ * hace que el chat arranque solo). Un run que guarda documento deja `brief`
+ * siempre con algo, asi que despues de disenar la caida no entra.
+ */
+export function ownerPrompt(
+  doc: { design?: { brief?: string; idea?: string } } | null | undefined,
+): string {
+  const brief = (doc?.design?.brief ?? "").trim();
+  if (brief) return brief;
+  return (doc?.design?.idea ?? "").trim();
+}
+
 /** Lo que devuelve GET /design-runs/latest, o null si no hubo ninguna ejecucion. */
 export interface LatestRun {
   runId: string;

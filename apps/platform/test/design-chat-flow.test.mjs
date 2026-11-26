@@ -10,7 +10,7 @@ const out = await build({
   platform: "node",
 });
 const mod = await import("data:text/javascript;base64," + Buffer.from(out.outputFiles[0].text).toString("base64"));
-const { QUESTIONS, buildPayload, isSendKey, undoMessage, resumeFrom, pollDecision, pollDelay, shouldAutoStart } = mod;
+const { QUESTIONS, buildPayload, isSendKey, undoMessage, resumeFrom, pollDecision, pollDelay, shouldAutoStart, ownerPrompt } = mod;
 
 test("QUESTIONS tiene solo 2 preguntas y sin keys city/service", () => {
   assert.equal(QUESTIONS.length, 2);
@@ -141,4 +141,32 @@ test("shouldAutoStart: false si ya hubo una ejecucion previa", () => {
 test("shouldAutoStart: false sin prompt", () => {
   assert.equal(shouldAutoStart("", false), false);
   assert.equal(shouldAutoStart("   ", false), false);
+});
+
+// Bug: el chat pintaba la idea del diseno (doc.design.idea) como si fuera el
+// mensaje del cliente. El texto del cliente esta en doc.design.brief.
+test("ownerPrompt: usa design.brief, no la idea del diseno", () => {
+  const doc = {
+    design: { brief: "buffet de abogados en barranquilla", idea: "Terracota y crema: cercano, artesanal, sin estridencias." },
+  };
+  assert.equal(ownerPrompt(doc), "buffet de abogados en barranquilla");
+});
+
+test("ownerPrompt: un sitio recien creado trae el texto del dueno en idea y brief vacio", () => {
+  // initialDoc (apps/platform/src/api.ts): design: { brief: "", idea, ... }
+  const doc = { design: { brief: "", idea: "quiero una pagina web para un buffet de abogados" } };
+  assert.equal(ownerPrompt(doc), "quiero una pagina web para un buffet de abogados");
+});
+
+test("ownerPrompt: recorta espacios de los dos campos", () => {
+  assert.equal(ownerPrompt({ design: { brief: "  con brief  ", idea: "idea" } }), "con brief");
+  assert.equal(ownerPrompt({ design: { brief: "   ", idea: "  con idea  " } }), "con idea");
+});
+
+test("ownerPrompt: sin datos devuelve cadena vacia (el chat no pinta burbuja)", () => {
+  assert.equal(ownerPrompt({ design: { brief: "", idea: "" } }), "");
+  assert.equal(ownerPrompt({ design: {} }), "");
+  assert.equal(ownerPrompt(null), "");
+  assert.equal(ownerPrompt(undefined), "");
+  assert.equal(ownerPrompt({}), "");
 });
