@@ -43,3 +43,75 @@ para que pase.
 - Ningún dato inventado llega al sitio; la garantía que importa no se relaja.
 - Si más adelante se quiere SEO siempre derivado, se cambia la guardia y su prueba en el
   mismo commit, nunca solo una de las dos.
+
+## Revisión — 2026-11-26 (P0-transporte-y-fotos)
+
+Estado: la Decisión 1 se mantiene; se corrige su segunda mitad. La Decisión 2 no cambia.
+
+### Qué decía la decisión original
+
+La Decisión 1 dejaba escrito que «el corte por `transport_` se mantiene, porque sin
+presupuesto no tiene sentido gastar otra llamada». Entonces era razonable: el único
+motivo de transporte que se había visto en las pruebas era el presupuesto agotado, y
+esa mitad del argumento sigue siendo cierta —sin saldo, una segunda llamada no se
+puede pagar—. Lo que no se vio es que el mismo corte atrapaba también los fallos de
+los que sí se sale con otra llamada.
+
+### Qué se descubrió en producción
+
+`LlmClient.complete` devuelve `{ ok: false, stop: { kind: "done" }, error }` en cuatro
+situaciones distintas: `invalid_request`, `refused`, reintentos agotados (`timeout`,
+`rate_limit`, `provider_error`, 502 incluido) y fallo sin error asociado. El agente
+construía el motivo con `stop.kind`, que solo vale `done` o `budget`, así que los
+cuatro llegaban al panel como `transport_done`: un rechazo del modelo y un 502 del
+proveedor eran indistinguibles. Como la condición de corte era
+`reason.startsWith("transport_")`, cualquier fallo de transporte cerraba el
+reintento. Con `maxRetries: 0` en el worker
+(`apps/workers/src/pg-store.ts`), un solo 502 perdía el sitio entero; en producción
+se veía como `design_copy_fallback { reason: 'transport_done' }`.
+
+La causa real del fallo nunca se perdió: vive en `error.code`, que es un valor cerrado
+(`timeout`, `rate_limit`, `invalid_request`, `provider_error`, `refused`). El contrato de
+`LlmClient` no cambia.
+
+### Decisión 3 — el corte lo decide la causa, no el prefijo
+
+El motivo se construye con la causa real: `budget` si `stop.kind` es `"budget"`,
+`error.code` si el fallo trae error, y `unknown` si no lo trae
+(`agents/design/src/agent.ts:340`). El corte pasa a una lista explícita de causas
+reintentables
+(`agents/design/src/agent.ts:301`), aplicada en `agents/design/src/agent.ts:377`: solo se
+corta cuando reintentar no puede cambiar el resultado.
+
+| Causa (`stop.kind` / `error.code`) | Motivo publicado | ¿Reintenta? | Por qué |
+|---|---|---|---|
+| `budget` (cualquier límite) | `transport_budget` | No | Sin saldo no hay 2ª llamada. |
+| `invalid_request` | `transport_invalid_request` | No | La petición no cambia. |
+| `refused` | `transport_refused` | No | El modelo ya dijo que no. |
+| `timeout` | `transport_timeout` | Sí | Fallo de red o latencia momentánea. |
+| `rate_limit` | `transport_rate_limit` | Sí | Límite momentáneo. |
+| `provider_error` (502 incluido) | `transport_provider_error` | Sí | Caída transitoria. |
+| Sin error | `transport_unknown` | Sí | Causa desconocida: vale otro intento. |
+
+Motivo: los tres motivos que no se reintentan tienen en común que el segundo intento
+repite el mismo resultado —o el mismo gasto que no se puede pagar—; los cuatro que sí
+se reintentan son justo los que un segundo intento puede salvar, y son los que dejan
+al dueño sin sitio cuando fallan una sola vez.
+
+### Consecuencias
+
+- `packages/llm` no cambia: el arreglo es del agente y el contrato de `LlmClient` sigue
+  igual.
+- El panel deja de ver `transport_done`: verá `transport_<causa>` con los siete valores
+  de la tabla, que es lo que hace legible el `design_copy_fallback` del runbook.
+- El reintento gasta como mucho una llamada más que antes, y solo en los fallos
+  recuperables; el tope de presupuesto de `FAST_BUDGET` ya contemplaba los dos intentos
+  del copy.
+- Un `refused`, un `invalid_request` o un `budget` no gastan la segunda llamada: el contador
+  de llamadas del copy se queda en una y la prueba lo comprueba.
+- Si aparece una causa nueva en `error.code`, sin tocar nada cae en el `?? "unknown"` y se
+  reintenta; para que no se reintente hay que añadirla al corte a propósito.
+- Pruebas: `agents/design/test/transport.test.mjs` cubre el reintento por `provider_error`,
+  el corte por `budget`, `refused` e `invalid_request` con el contador de llamadas, y los
+  siete motivos de la tabla.
+

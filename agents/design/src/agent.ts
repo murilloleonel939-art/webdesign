@@ -8,6 +8,7 @@ import { validateSiteDocument, type SiteDocument } from "@webdesign/site-schema"
 import { FIELD_LABEL, PENDING_MARKER, briefDescriptionContext, containsMarker, hasBriefData, normalizeBrief, quickBriefSchema, type BriefField, type QuickBrief } from "./brief.js";
 import { copyPrompt, guardCopy, readCopy, retryLine, type SiteCopy } from "./copy.js";
 import { draftSite, type PhotoRef, type Preset, type SitePhotos } from "./draft.js";
+import { genericCopy } from "./generic-copy.js";
 import { inventory, planSections, type Inventory, type Plan } from "./plan.js";
 import { createStore, saveCheckpoint } from "./store.js";
 import { makeDesignTools } from "./tools.js";
@@ -147,7 +148,7 @@ export async function runFastDesign(deps: FastDesignDeps): Promise<FastDesignRes
   const copy = "copy" in copyOutcome ? copyOutcome.copy : undefined;
 
   // 2b. Fotos del sitio: las pide el llamador con las busquedas del copy.
-  const photos = await loadPhotos(copy, deps.fetchPhotos, warnings);
+  const photos = await loadPhotos(brief, copy, deps.fetchPhotos, warnings);
 
   // 2c. Recomendación: la elige la herramienta, no el modelo. El tipo de negocio
   // del dueño manda; si esta pendiente, vale el que dedujo el copy; si no hay ni
@@ -296,6 +297,9 @@ function assertDeliverable(doc: SiteDocument): SiteDocument {
 /** Lo que devuelve `generateCopy`: el copy listo o el motivo cerrado del fallo. */
 type CopyOutcome = { copy: SiteCopy } | { reason: string };
 
+/** Un fallo así puede salir bien a la segunda: red, 5xx, límite momentáneo. */
+const RETRYABLE_TRANSPORT = new Set(["timeout", "rate_limit", "provider_error", "unknown"]);
+
 /**
  * Una llamada al modelo para los textos del sitio (9.1, `generate_copy`).
  *
@@ -305,9 +309,11 @@ type CopyOutcome = { copy: SiteCopy } | { reason: string };
  *
  * La lectura la hace `readCopy`, que devuelve el motivo cerrado del fallo. Si el
  * fallo es de lectura (json, truncado o esquema) se reintenta UNA vez con el
- * mismo prompt mas la linea que lo explica; un fallo de transporte no se
- * reintenta cuando el corte es de presupuesto, porque no queda saldo para otra
- * llamada. Los motivos nunca llevan texto del dueño.
+ * mismo prompt mas la linea que lo explica; un fallo de transporte solo se
+ * reintenta cuando puede salir bien a la segunda (timeout, rate limit, error del
+ * proveedor, causa desconocida). Presupuesto agotado, peticion invalida y
+ * rechazo del modelo no se reintentan: otra llamada no cambia el resultado y, sin
+ * saldo, no se puede pagar. Los motivos nunca llevan texto del dueño.
  */
 async function generateCopy(
   brief: QuickBrief,
@@ -327,8 +333,12 @@ async function generateCopy(
 
   const read = (out: Awaited<ReturnType<typeof ask>>): CopyOutcome => {
     if (!out.ok) {
-      // `stop.kind` es "done" o "budget": el sufijo dice cual, sin texto libre.
-      return { reason: `transport_${out.stop.kind}` };
+      // `stop.kind` solo dice "done" o "budget": NO distingue la causa. Un 502, un
+      // timeout, un limite y un rechazo del modelo llegan los cuatro como "done",
+      // y con `transport_done` el reintento no sabia si valia la pena. La causa
+      // real vive en `error.code`; de ahi sale el sufijo, sin texto libre.
+      const cause = out.stop.kind === "budget" ? "budget" : (out.error?.code ?? "unknown");
+      return { reason: `transport_${cause}` };
     }
     const result = readCopy(out.result.text, out.result.finishReason);
     return result.ok ? { copy: result.copy } : { reason: result.reason };
@@ -356,11 +366,15 @@ async function generateCopy(
   const first = settle(await ask(prompt));
   if ("copy" in first.outcome) return win(first);
 
-  // El reintento es solo para motivos de LECTURA (y de la guardia). Un fallo de
-  // transporte se devuelve tal cual: si el corte es de presupuesto
-  // (`transport_budget`) no queda saldo, y reintentar seria pedir una llamada
-  // que ya se sabe que no se puede pagar.
-  if (first.outcome.reason.startsWith("transport_")) return win(first);
+  const transportCause = first.outcome.reason.startsWith("transport_")
+    ? first.outcome.reason.slice("transport_".length)
+    : undefined;
+  // Un fallo de transporte SOLO se corta cuando reintentar no puede cambiar el
+  // resultado: presupuesto agotado (no queda saldo para otra llamada), peticion
+  // invalida y rechazo del modelo. Timeout, rate limit, error del proveedor y
+  // motivo desconocido si se reintentan: antes cualquier `transport_*` cortaba y
+  // un solo 502 con `maxRetries: 0` en el worker perdia el sitio entero.
+  if (transportCause !== undefined && !RETRYABLE_TRANSPORT.has(transportCause)) return win(first);
 
   // Segundo y ultimo intento: lo que salga (copy, motivo de lectura, motivo de
   // la guardia o de transporte) es el final; un `reason` vuelve al llamador como
@@ -397,14 +411,23 @@ function finishCopy(copy: SiteCopy, brief: QuickBrief): Attempt {
  * Este paquete no hace fetch ni conoce ningun proveedor: `fetchPhotos` llega
  * inyectado. Un fallo o una lista vacia NO rompe el diseño: se avisa con
  * `photos_unavailable` y el sitio sale sin fotos, que es lo que habia antes.
+ *
+ * Las consultas NO salen solo del copy del modelo: si el modelo fallo (o no trajo
+ * `photoQueries`) se usan las de `genericCopy`, que siempre las tiene. Antes, sin
+ * copy del modelo, `queries === undefined` salia sin pedir nada y Pexels no se
+ * llamaba nunca: el mismo fallo se cobraba dos veces, textos y fotos.
  */
 async function loadPhotos(
+  brief: QuickBrief,
   copy: SiteCopy | undefined,
   fetchPhotos: FastDesignDeps["fetchPhotos"],
   warnings: string[],
 ): Promise<SitePhotos | undefined> {
-  const queries = copy?.photoQueries;
-  if (queries === undefined || fetchPhotos === undefined) return undefined;
+  // Sin `fetchPhotos` el llamador no sabe buscar fotos: eso no es un fallo y no
+  // se avisa. Es lo unico que deja el sitio sin fotos por decision.
+  if (fetchPhotos === undefined) return undefined;
+  const queries = copy?.photoQueries ?? genericCopy(brief).photoQueries;
+  if (queries === undefined) return undefined;
   try {
     const [hero, gallery] = await Promise.all([
       fetchPhotos({ query: queries.hero, orientation: "landscape", count: 1 }),
