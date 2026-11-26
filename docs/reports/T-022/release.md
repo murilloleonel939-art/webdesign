@@ -76,5 +76,5 @@ saber que existe.
 
 ## Grafo
 
-3588 nodos tras la reconstrucción automática posterior al commit («grafo» = nodos de
+3597 nodos tras la reconstrucción automática posterior al commit («grafo» = nodos de
 `graphify-out/graph.json`, que no se versiona).
