@@ -62,6 +62,9 @@ function positivePrice(raw: string | undefined): number | null {
 
 const isSet = (raw: string | undefined) => (raw ?? "").trim() !== "";
 
+/** Variables sin las que el servicio no puede atender una peticion real. */
+const REQUIRED_ENV = ["LLM_PROVIDER_API_KEY", "DATABASE_URL"] as const;
+
 /**
  * Precio del alias `design` para el calculo de coste de este servicio.
  *
@@ -245,13 +248,39 @@ async function recordUsage(runId: string, provider: string, used: { tokens: numb
   );
 }
 
-const server = createServer(async (req, res) => {
+/**
+ * Una linea en stderr cuando `LlmClient.complete` devuelve error, para poder
+ * diagnosticar un 502 sin tener que reproducirlo.
+ *
+ * Nunca escribe la clave del proveedor, la URL con credenciales ni el cuerpo
+ * de la peticion: solo el motivo ya clasificado (`reason`), el codigo y
+ * mensaje de `LlmError` (que es texto fijo nuestro, nunca el secreto), el
+ * `runId` y el `modelId`. El mensaje se recorta a 200 caracteres y se limpia
+ * de saltos de linea por si alguna vez trajera algo inesperado.
+ */
+function logProviderFailure(reason: string, error: { code: string; message: string } | undefined, runId: string, modelId: string): void {
+  const code = error?.code ?? "none";
+  const message = error === undefined ? "none" : error.message.replace(/[\r\n]+/g, " ").slice(0, 200);
+  process.stderr.write(`llm-gateway: fallo de proveedor reason=${reason} code=${code} message=${message} run=${runId} model=${modelId}\n`);
+}
+
+export const server = createServer(async (req, res) => {
   const send = (code: number, body: unknown) => {
     res.writeHead(code, { "content-type": "application/json" });
     res.end(JSON.stringify(body));
   };
 
-  if (req.url === "/healthz") return send(200, { ok: true });
+  // El healthcheck no debe mentir: si falta una variable imprescindible, el
+  // servicio no esta sano aunque el proceso responda. Reportarlo aqui hace que
+  // el fallo se vea en el despliegue (Coolify marca el contenedor `unhealthy`,
+  // ver `Dockerfile`), no en el primer cliente que llega y recibe un 502 sin
+  // explicacion. No se llama al proveedor: eso gastaria dinero y colgaria el
+  // chequeo con cada sondeo.
+  if (req.url === "/healthz") {
+    const missing = REQUIRED_ENV.filter((name) => !isSet(process.env[name]));
+    if (missing.length) return send(503, { ok: false, missing });
+    return send(200, { ok: true });
+  }
 
   if (req.method !== "POST" || req.url !== "/v1/complete") return send(404, { error: "not_found" });
 
@@ -303,6 +332,13 @@ const server = createServer(async (req, res) => {
 
   if (!out.ok) {
     const reason = out.error?.code === "timeout" ? "timeout" : out.error?.code === "refused" ? "refused" : "error";
+    // Una sola linea en stderr con el motivo real: sin esto, un 502 en
+    // produccion no deja rastro y un problema tan simple como una clave que
+    // falta tarda dias en diagnosticarse. Nunca se escribe la clave, la URL
+    // con credenciales ni el cuerpo de la peticion; `message` viene de
+    // `LlmError` (p.ej. "missing provider key") pero se recorta y se limpia
+    // por si algun dia trajera algo inesperado.
+    logProviderFailure(reason, out.error, body.runId, modelId);
     await recordUsage(body.runId, transport.provider, { tokens: 0, costUsd: 0 }, reason, modelId);
     return send(out.stop.kind === "budget" ? 429 : 502, { error: reason, stop: out.stop });
   }
