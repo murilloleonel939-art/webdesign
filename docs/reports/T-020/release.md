@@ -103,7 +103,10 @@ que es exactamente cómo descomprime el zip. En desarrollo se lee del repo.
 ## Grafo
 
 - `graphify-out/graph.json`: **3511 nodos**, 5760 aristas, 238 comunidades, construido
-  desde `a2c0e0c3352d874ce3f2c5bcac527b8692b35945` (el commit de esta release).
+  desde `a2c0e0c3352d874ce3f2c5bcac527b8692b35945` (el commit de código de esta release).
+- Con los commits de reporte encima, el grafo queda en **3522 nodos** y 5773 aristas
+  (construido desde `bcbdf0d0818b0b9ac803c3689a6b4a13d96defbd`); los 11 de más son este
+  reporte y su corrección.
 - Antes de esta release el grafo tenía 3442 nodos: +69 por la biblioteca, el código y las
   pruebas nuevas.
 
