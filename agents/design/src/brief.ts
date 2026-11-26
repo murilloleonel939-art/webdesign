@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { describeFromText } from "./describe.js";
+
 // Brief del modo rápido (spec 9.1, Fase 4).
 //
 // El dueño da cinco campos mínimos: tipo de negocio, nombre, ciudad, un servicio
@@ -96,16 +98,17 @@ export function normalizeBrief(input: unknown): QuickBrief {
     contact: PENDING_MARKER,
     pending: [],
   };
+  // Lo que el dueño dio por separado. Se guarda aparte de `out` porque primero
+  // hay que decidir qué falta: solo los huecos se pueden rellenar con la frase.
+  const given: Partial<Record<BriefField, string>> = {};
   for (const field of BRIEF_FIELDS) {
     const value = raw[field]?.trim();
-    if (!value || value.toLowerCase() === PENDING_MARKER) {
-      out.pending.push(field);
-      continue;
-    }
-    out[field] = value;
+    if (!value || value.toLowerCase() === PENDING_MARKER) continue;
+    given[field] = value;
   }
   // El texto libre no es un sexto dato: no entra en `pending` ni cambia ningún
-  // campo. Solo viaja al resumen, y vacío se omite igual que los demás.
+  // campo por sí mismo. Solo viaja al resumen, y vacío se omite igual que los
+  // demás.
   //
   // Si CONTIENE el marcador no se da por aportado (T-002.4, Fix A): "Horario
   // pendiente de confirmar" no es una descripción del negocio, es el propio
@@ -113,6 +116,28 @@ export function normalizeBrief(input: unknown): QuickBrief {
   // pasara, y acababa en el documento entregado.
   const description = parsed.success ? parsed.data.description?.trim() : undefined;
   if (description && !containsMarker(description)) out.description = description;
+  // T-011: de la frase se sacan tipo de negocio y ciudad, lo poco que una frase
+  // dice sin ambigüedad. Solo se rellena el hueco: lo que el dueño dio por
+  // separado manda siempre, porque lo escribió a propósito en su campo.
+  if (out.description !== undefined) {
+    const described = describeFromText(out.description);
+    if (given.businessType === undefined && described.businessType !== undefined) {
+      given.businessType = described.businessType;
+    }
+    if (given.city === undefined && described.city !== undefined) {
+      given.city = described.city;
+    }
+  }
+  // `pending` se construye al final, con los campos ya rellenados: lo que salió
+  // de la frase no se le vuelve a pedir al dueño en el panel.
+  for (const field of BRIEF_FIELDS) {
+    const value = given[field];
+    if (value === undefined) {
+      out.pending.push(field);
+      continue;
+    }
+    out[field] = value;
+  }
   return out;
 }
 

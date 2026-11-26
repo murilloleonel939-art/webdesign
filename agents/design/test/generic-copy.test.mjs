@@ -69,7 +69,10 @@ for (const [nombre, entrada] of Object.entries(BRIEFS)) {
 }
 
 test("genericCopy: sin ningun dato conocido usa los textos fijos y omite el nombre", () => {
-  const brief = normalizeBrief({ description: "somos una tienda de barrio que abre todos los dias" });
+  // T-011: una frase normal en `description` ya rellena `businessType`, asi que
+  // para seguir probando la caida a los textos fijos la frase tiene que ser una
+  // que el extractor descarta (solo digitos).
+  const brief = normalizeBrief({ description: "12345" });
   const copy = genericCopy(brief);
   // `businessName` es opcional: si el dueño no lo dio, la clave no se inventa.
   assert.equal("businessName" in copy, false);
@@ -122,7 +125,9 @@ test("genericCopy: sin nombre pero con tipo y ciudad el titular los usa", () => 
 test("genericCopy: sin nombre ni ciudad cae al tipo de negocio, y sin tipo al fijo 'negocio local'", () => {
   const conTipo = genericCopy(normalizeBrief({ businessType: "panadería artesanal" }));
   assert.equal(conTipo.heroHeadline, "panadería artesanal");
-  const sinNada = genericCopy(normalizeBrief({ description: "abrimos todos los dias" }));
+  // T-011: la frase de antes ya no cae al fijo porque el extractor saca de ella
+  // el tipo de negocio; el caso "sin nada" necesita una frase descartada.
+  const sinNada = genericCopy(normalizeBrief({ description: "12345" }));
   assert.equal(sinNada.heroHeadline, "negocio local");
 });
 

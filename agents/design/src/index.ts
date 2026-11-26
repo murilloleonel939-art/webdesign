@@ -15,6 +15,8 @@ export {
   type QuickBriefInput,
 } from "./brief.js";
 
+export { describeFromText, type Described } from "./describe.js";
+
 export { draftSite, heroHeadline, type PhotoRef, type Preset, type SitePhotos } from "./draft.js";
 
 export { copyPrompt, guardCopy, readCopy, retryLine, siteCopySchema, type SiteCopy } from "./copy.js";
