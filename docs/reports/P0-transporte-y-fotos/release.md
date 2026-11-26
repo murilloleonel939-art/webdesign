@@ -20,12 +20,14 @@ Push: `9293a96..3a93efc  main -> main`. El SHA remoto coincide con `HEAD`
 El hook de graphify se disparó al hacer el commit y reconstruyó el grafo
 (2026-11-26 15:59 UTC), sin intervención manual.
 
-- Nodos: **3388**
-- Aristas: **5549**
-- Comunidades: **217**
+- Nodos: **3397**
+- Aristas: **5559**
+- Comunidades: **234**
 
 `graphify-out/` está en `.gitignore` (línea 17), así que el grafo es artefacto local y no entra
-en el commit. El conteo es el del grafo ya reconstruido con este cambio.
+en el commit. Cifras del grafo final, con este reporte ya dentro (el hook reconstruyó dos veces:
+3388 nodos / 5549 aristas / 217 comunidades tras el commit de la corrección, y 3397 / 5559 / 234
+al añadir este archivo).
 
 ## Archivos commiteados
 
