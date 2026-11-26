@@ -121,6 +121,14 @@ export const siteDocumentSchema = z.object({
   design: z.object({
     brief: z.string().max(500),
     idea: z.string().max(500),
+    /**
+     * La frase literal del dueño, tal como la escribió al crear el sitio.
+     *
+     * Existe porque `brief` se compone con los campos ("tipo en ciudad; nombre:
+     * …") e `idea` guarda el resumen del preset: ninguno de los dos conserva sus
+     * palabras. Opcional para que los documentos ya guardados sigan validando.
+     */
+    ownerPrompt: z.string().max(500).optional(),
     presetId: z.string().max(60),
     dials: z.object({ variance: z.number().int().min(0).max(10), motion: z.number().int().min(0).max(10), density: z.number().int().min(0).max(10) }),
   }),

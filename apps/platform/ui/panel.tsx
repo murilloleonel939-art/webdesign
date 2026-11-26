@@ -20,36 +20,6 @@ const go = (path: string) => { history.pushState({}, "", path); window.dispatchE
 
 function Brand() { return <div className="brand"><span className="brand-mark">Z</span><span>Zottaweb</span></div>; }
 
-// El agente deja escrito "pendiente de confirmar" donde no tenia el dato: no
-// inventa testimonios, precios ni textos. Aqui se recorre el borrador para
-// decirle al dueno, en sus palabras, que le falta rellenar. Se mira el texto del
-// documento, no una lista que el servidor tenga que mantener aparte.
-const PENDING_TEXT = "pendiente de confirmar";
-const PENDING_PARTS: Array<{ test: RegExp; label: string }> = [
-  { test: /"plans"|"price"/, label: "Precios o tarifas" },
-  { test: /"testimonial|"quote"|"author"/, label: "Testimonios de clientes" },
-  { test: /"faq"|"questions"/, label: "Preguntas frecuentes" },
-  { test: /"body"/, label: "Texto de las secciones" },
-  { test: /"headline"/, label: "Titular de la portada" },
-  { test: /"name"|"businessName"/, label: "Nombre del negocio" },
-  { test: /"address"|"city"/, label: "Dirección o ciudad" },
-  { test: /"phone"|"email"|"href"/, label: "Datos de contacto" },
-];
-function pendingFromDoc(doc: unknown): string[] {
-  const pages = (doc as { pages?: Array<{ sections?: unknown[] }> })?.pages;
-  if (!Array.isArray(pages) || pages.length === 0) return [];
-  const found = new Set<string>();
-  for (const page of pages) {
-    for (const section of page?.sections ?? []) {
-      const json = JSON.stringify(section ?? {});
-      if (!json.toLowerCase().includes(PENDING_TEXT)) continue;
-      // Se etiqueta por el bloque que lo contiene: util y sin rutas internas.
-      const part = PENDING_PARTS.find((p) => p.test.test(json));
-      found.add(part ? part.label : "Contenido de una sección");
-    }
-  }
-  return [...found];
-}
 function Login({ onDone }: { onDone: () => void }) {
   const [email, setEmail] = useState(""); const [password, setPassword] = useState(""); const [busy, setBusy] = useState(false); const [error, setError] = useState("");
   async function submit(e: React.FormEvent) { e.preventDefault(); setBusy(true); setError(""); const r = await api("/api/login", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ email, password }) }); setBusy(false); if (!r.ok) { setError("El correo o la contraseña no son correctos."); return; } onDone(); }
@@ -417,10 +387,6 @@ function Editor({ siteId }: { siteId: string }) {
   // guarda id y nombre para ofrecer despublicarlo desde el mismo aviso, sin
   // `confirm()` del navegador.
   const [activeElsewhere, setActiveElsewhere] = useState<{ id: string; name: string }|null>(null);
-  // Diseñar con IA (9.1): el chat de la izquierda escribe en el borrador,
-  // nunca publica. `designPending` recuerda lo que el agente dejo sin
-  // confirmar para pedirlo tras recargar el borrador.
-  const [designPending, setDesignPending] = useState<string[]>([]);
   // Diseño del constructor (etapa C): pestaña activa, si el chat esta
   // colapsado (mas sitio para el lienzo), que ve el movil y si el agente
   // esta disenando ahora mismo (para el esqueleto animado del lienzo).
@@ -440,10 +406,10 @@ function Editor({ siteId }: { siteId: string }) {
   const runWasActive = useRef(false);
   // El prompt con el que el dueno creo el sitio desde BuilderHome viaja en el
   // documento, no en sessionStorage: sobrevive a una recarga o a volver mas
-  // tarde al mismo sitio. Se lee con `ownerPrompt` porque `design.idea` deja de
-  // ser su texto en cuanto el agente disena (lo reescribe con el resumen del
-  // preset) y el suyo pasa a `design.brief`.
-  const initialPrompt = ownerPrompt(doc as { design?: { brief?: string; idea?: string } } | null);
+  // tarde al mismo sitio. Se lee con `ownerPrompt`, que prefiere
+  // `design.ownerPrompt`: el agente guarda ahi la frase literal, porque
+  // `design.brief` es el compuesto y `design.idea` el resumen del preset.
+  const initialPrompt = ownerPrompt(doc as { design?: { ownerPrompt?: string; brief?: string; idea?: string } } | null);
   async function refreshAssets() { try { const r = await api(`/api/sites/${siteId}/assets`); if (!r.ok) return; const body = await r.json() as { assets?: EditorAsset[] }; setAssets(Array.isArray(body.assets) ? body.assets : []); } catch { setAssets([]); } }
   async function removeAsset(id: string) { if (!confirm("¿Eliminar esta imagen?")) return; const r = await api(`/api/sites/${siteId}/assets?id=${encodeURIComponent(id)}`, { method: "DELETE" }); if (r.ok) { await refreshAssets(); setStatus("Imagen eliminada"); } }
   async function upload(file: File) { setUploading(true); const r = await api(`/api/sites/${siteId}/assets?kind=image`, { method: "POST", headers: { "content-type": file.type }, body: file }); setUploading(false); if (r.ok) { await refreshAssets(); setStatus("Imagen subida. Copia su ID en el bloque Imagen."); } else {
@@ -513,7 +479,6 @@ function Editor({ siteId }: { siteId: string }) {
       await new Promise((resolve) => setTimeout(resolve, 400));
     }
     setPendingDoc(false);
-    setDesignPending(pendingFromDoc(docRef.current));
     // T-015: solo tras un run que acaba de terminar (justFinished) se abre el
     // overlay de entrega. Al reabrir un sitio ya diseñado no se abre nunca.
     if (justFinished) openDelivery();
@@ -655,13 +620,7 @@ function Editor({ siteId }: { siteId: string }) {
     {/* Avisos: un solo contenedor en columna bajo la barra. Primero lo que
         bloquea, luego lo que exige decision, al final el aviso de estilo
         (spec 6.5: ese nunca impide publicar). */}
-    {(blockers.length > 0 || activeElsewhere || visualNotice.length > 0 || designPending.length > 0) && <div className="publish-alerts">
-      {designPending.length > 0 && <div className="design-pending" role="status">
-        <strong>El diseño dejó datos por confirmar:</strong>
-        <ul className="builder-chips">{designPending.map((p) => <li key={p} className="builder-chip">{p}</li>)}</ul>
-        <p className="muted small">Rellénalos editando las secciones que dicen «pendiente de confirmar».</p>
-        <button className="ghost" onClick={() => setDesignPending([])} aria-label="Descartar aviso">×</button>
-      </div>}
+    {(blockers.length > 0 || activeElsewhere || visualNotice.length > 0) && <div className="publish-alerts">
       {blockers.length > 0 && <div className="publish-blockers" role="alert">
         <strong>Para publicar falta:</strong>
         <ul>{blockers.map((b) => <li key={b}>{b}</li>)}</ul>
@@ -700,7 +659,6 @@ function Editor({ siteId }: { siteId: string }) {
           setDesigning(running);
         }}
         onShowResult={openDelivery}
-        pending={designPending}
         onAskLogo={() => setShowAssets(true)}
       />
 

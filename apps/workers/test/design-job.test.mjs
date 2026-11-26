@@ -134,6 +134,10 @@ test("exito: guarda con la revision leida, cierra en ok y revoca el token", asyn
   // El motivo es legible, no un codigo, y NUNCA nombra el preset.
   assert.match(calls.finished[0].stopReason, /Tu web está lista/i);
   assert.doesNotMatch(calls.finished[0].stopReason, /editorial/i);
+  // Texto exacto de cierre: no cuenta datos que faltan ni habla de pendientes.
+  // El dueno no debe leer que le queda algo a medias al terminar.
+  assert.equal(calls.finished[0].stopReason, "Tu web está lista. Revísala cuando quieras y dime qué cambias.");
+  assert.doesNotMatch(calls.finished[0].stopReason, /pendiente|solo tú sabes|cámbial/i);
   assert.deepEqual(calls.revoked, [{ runId: RUN, userId: USER }]);
 });
 
@@ -273,18 +277,23 @@ test("presupuesto agotado con conflicto: no dice que guardo lo que no guardo", a
   assert.equal(calls.revoked.length, 1);
 });
 
-test("CopyUnavailableError (brief con descripcion y dos intentos rotos) deja el run fallido y no guarda", async () => {
-  // Texto sin "{": los dos intentos de `readCopy` fallan con `json_parse`, y
-  // con `description` presente `runFastDesign` lanza `CopyUnavailableError`.
+// Antes se esperaba un run fallido con «No pude escribir los textos»: eso
+// cambio en 751d51f (P0-copy-no-aborta). Este test se quedo con la conducta
+// vieja y llevaba rojo desde entonces. Lo que vale hoy: sin textos del modelo
+// NO se aborta -- el sitio se entrega con `genericCopy`, que existe para eso --
+// y queda constancia del motivo, sin marcador ni datos inventados.
+test("sin textos del modelo (brief con descripcion y dos intentos rotos) el sitio se entrega igual", async () => {
+  // Texto sin "{": los dos intentos de `readCopy` fallan con `json_parse`.
   const { deps, calls } = fakeDeps({ transport: fakeTransport({ text: "no hay json aqui" }) });
   const brief = { ...BRIEF, description: "Abrimos de 8 a 20, tueste propio cada semana." };
   const r = await processDesignJob(deps, { ...JOB, brief });
 
-  assert.equal(r.status, "error");
-  assert.match(r.stopReason, /no pude escribir los textos/i);
-  assert.equal(calls.saved.length, 0, "sin copy no se guarda ningun borrador");
+  assert.equal(r.status, "ok");
+  assert.equal(calls.saved.length, 1, "el sitio se guarda aunque el copy sea generico");
+  assert.doesNotMatch(JSON.stringify(calls.saved[0].doc), /pendiente de confirmar/i);
   assert.equal(calls.finished.length, 1);
-  assert.equal(calls.finished[0].status, "error");
+  assert.equal(calls.finished[0].status, "ok");
+  assert.equal(calls.finished[0].stopReason, "Tu web está lista. Revísala cuando quieras y dime qué cambias.");
   assert.equal(calls.revoked.length, 1);
 });
 

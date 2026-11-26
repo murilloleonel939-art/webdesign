@@ -158,3 +158,24 @@ test("T-003.2: documento con cta href='//evil.com' no valida", () => {
   d.pages[0].sections[0].props = { headline: "h", cta: { label: "x", href: "//evil.com" } };
   assert.equal(validateSiteDocument(d).ok, false);
 });
+
+// Campo nuevo y opcional: los documentos ya guardados (sin el) tienen que
+// seguir validando, y el que lo trae lo conserva en vez de perderlo.
+test("design.ownerPrompt es opcional y se conserva", () => {
+  const sin = doc();
+  const r1 = validateSiteDocument(sin);
+  assert.equal(r1.ok, true, r1.ok ? "" : r1.errors.join("; "));
+  assert.equal(r1.doc.design.ownerPrompt, undefined);
+
+  const con = doc();
+  con.design.ownerPrompt = "quiero una pagina web para un buffet de abogados";
+  const r2 = validateSiteDocument(con);
+  assert.equal(r2.ok, true, r2.ok ? "" : r2.errors.join("; "));
+  assert.equal(r2.doc.design.ownerPrompt, "quiero una pagina web para un buffet de abogados");
+});
+
+test("design.ownerPrompt no admite mas de 500 caracteres", () => {
+  const d = doc();
+  d.design.ownerPrompt = "a".repeat(501);
+  assert.equal(validateSiteDocument(d).ok, false);
+});

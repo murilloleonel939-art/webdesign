@@ -362,6 +362,12 @@ export function draftSite(brief: QuickBrief, preset: Preset, copy?: SiteCopy, ph
     design: {
       brief: safeText(designBrief(brief), ""),
       idea: safeText(preset.summary, ""),
+      // La frase del dueño va aparte porque los otros dos campos no la guardan:
+      // `brief` se compone con los campos y `idea` es el resumen del preset.
+      // Sin esto, su burbuja en el chat mostraba "buffet de abogados en
+      // barranquilla" en vez de la frase que escribió. `description` es el
+      // `prompt` del panel, ya recortado a 500 por el servidor.
+      ownerPrompt: safeText(brief.description ?? "", ""),
       presetId: preset.id,
       dials: {
         variance: clamp(preset.dials?.variance, 0, 10, 4),

@@ -406,3 +406,28 @@ test("T-002.9: CTA con closingHeadline del modelo -> copy_del_dueno en cta", () 
   // T-003.3: cta está en portada (pages[0]) para shape=site.
   assert.equal(plan.pages[0].sections.find((s) => s.type === "cta").origin, "copy_del_dueno");
 });
+
+// La frase literal del dueño: `brief` es el compuesto y `idea` el resumen del
+// preset, asi que ninguno la conservaba y su burbuja del chat mostraba
+// "buffet de abogados en barranquilla" en vez de lo que escribio.
+test("draft: ownerPrompt conserva la frase literal del dueño", () => {
+  const frase = "quiero una pagina web para un buffet de abogados en barranquilla";
+  const doc = draftSite(normalizeBrief({ description: frase }), PRESET);
+  assert.equal(doc.design.ownerPrompt, frase);
+  // Los dos campos viejos siguen significando lo mismo: no se cambia su sentido.
+  assert.equal(doc.design.idea, PRESET.summary);
+  assert.notEqual(doc.design.brief, frase);
+  assert.equal(validateSiteDocument(doc).ok, true);
+});
+
+test("draft: ownerPrompt no repite el marcador de pendiente", () => {
+  const doc = draftSite(normalizeBrief({ name: "Café Aurora", description: "horario pendiente de confirmar" }), PRESET);
+  assert.equal(doc.design.ownerPrompt, "");
+  assert.doesNotMatch(JSON.stringify(doc), /horario pendiente de confirmar/i);
+});
+
+test("draft: sin frase libre ownerPrompt queda vacio y el documento valida", () => {
+  const doc = draftSite(normalizeBrief(BRIEF), PRESET);
+  assert.equal(doc.design.ownerPrompt, "");
+  assert.equal(validateSiteDocument(doc).ok, true);
+});

@@ -324,12 +324,3 @@ button{cursor:pointer;border:0;background:none}
 .badge.draft{background:#f1f0ed;color:#4a4844;border-color:#e5e3df}
 .op-link{margin-right:10px}
 
-/* Datos que el diseño dejo por confirmar (9.1). El aviso vive DENTRO de
-   .publish-alerts y hereda su columna: asi no se pinta encima de nada. */
-.design-pending{padding:1rem 1.2rem;border-radius:12px;background:var(--surface,#fff);border:1px solid color-mix(in srgb,var(--ink, #111) 16%,transparent);border-left:3px solid var(--accent);box-shadow:0 8px 28px rgb(0 0 0 / .16);font-size:.9rem}
-.design-pending strong{display:block;margin-bottom:.4rem}
-.design-pending ul{margin:0 0 .5rem;padding-left:1.1rem}
-.design-pending li+li{margin-top:.3rem}
-.design-pending .small{margin:0}
-.design-pending button{float:right;margin-top:-.2rem;background:none;border:0;font-size:1.1rem;cursor:pointer;color:inherit}
-

@@ -245,7 +245,7 @@ export async function processDesignJob(deps: DesignDeps, job: DesignJob): Promis
       userId: job.userId, siteId: job.siteId, doc: result.doc, expectedRev: current.rev,
     });
     if (saved.ok) {
-      return await finish(deps, job, "ok", summary(result), saved.rev);
+      return await finish(deps, job, "ok", summary(), saved.rev);
     }
     if (saved.reason === "conflict") {
       // El dueno guardo mientras el agente trabajaba. Reintentar pisaria su
@@ -269,10 +269,10 @@ export async function processDesignJob(deps: DesignDeps, job: DesignJob): Promis
  * Nunca menciona el preset: al dueño no le dice nada el id de un estilo del
  * catálogo, y el mensaje es la primera cosa que lee al terminar.
  */
-function summary(result: FastDesignResult): string {
-  const pending = result.pending.length;
-  if (pending === 0) return "Tu web está lista. Revisa los textos y cámbialos cuando quieras.";
-  return `Tu web está lista. Hay ${pending} datos que solo tú sabes (marcados como pendientes); cámbialos cuando quieras.`;
+function summary(): string {
+  // Un solo texto, sin contar lo que falta: el panel ya le ensena al dueno las
+  // marcas del borrador, y el cierre no le echa en cara cuantos datos son.
+  return "Tu web está lista. Revísala cuando quieras y dime qué cambias.";
 }
 
 /**

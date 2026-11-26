@@ -21,7 +21,7 @@ export interface Question {
 /**
  * Solo dos pasos: con el tipo de negocio y una segunda tarjeta que pide nombre
  * y contacto a la vez, ya hay con que empezar a construir. El dueño no es
- * interrogado: lo que falte queda por confirmar en el borrador.
+ * interrogado: lo que falte no se inventa, se escribe con el copy genérico.
  */
 export const QUESTIONS: readonly Question[] = [
   {
@@ -76,23 +76,28 @@ export function isSendKey(e: { key: string; shiftKey: boolean; isComposing: bool
 
 /**
  * El mensaje del dueno tal como debe verse en el chat: lo que el escribio, no
- * la descripcion del preset elegido.
+ * un resumen que compone el agente.
  *
- * `doc.design.idea` solo guarda su texto hasta el primer diseno: el agente lo
- * sobrescribe con el resumen del preset ("Terracota y crema: cercano,
- * artesanal…", agents/design/src/draft.ts:364) y deja el texto del cliente en
- * `doc.design.brief` (draft.ts:363). Pintar `idea` como burbuja del cliente
- * ensenaba la idea del diseno como si la hubiera escrito el.
+ * Se lee `design.ownerPrompt`, que el agente escribe con su frase literal
+ * (agents/design/src/draft.ts). Los otros dos campos no sirven para esto:
+ * `brief` se compone con los datos ("buffet de abogados en barranquilla", sin
+ * el "quiero una pagina web para…") y `idea` guarda el resumen del preset. Por
+ * eso la burbuja mostraba un texto que el dueno no habia escrito.
  *
- * Un `brief` vacio es un documento sin disenar: `initialDoc` crea el sitio con
- * `brief: ""` y el texto crudo en `idea` (apps/platform/src/api.ts:118), y ahi
- * la caida a `idea` es lo unico que conserva la frase del cliente (y lo que
- * hace que el chat arranque solo). Un run que guarda documento deja `brief`
- * siempre con algo, asi que despues de disenar la caida no entra.
+ * El orden de la caida respeta lo que hay en cada momento:
+ * - `ownerPrompt`: documento disenado despues de este cambio.
+ * - `brief`: documento disenado antes, sin el campo nuevo. Sale compuesto, que
+ *   es lo mejor que hay guardado ahi.
+ * - `idea`: documento sin disenar. `initialDoc` pone su texto crudo en `idea`
+ *   y deja `brief` vacio (apps/platform/src/api.ts:118); caer aqui es lo que
+ *   conserva la frase en el primer render y lo que hace que el chat arranque
+ *   solo (`shouldAutoStart`).
  */
 export function ownerPrompt(
-  doc: { design?: { brief?: string; idea?: string } } | null | undefined,
+  doc: { design?: { ownerPrompt?: string; brief?: string; idea?: string } } | null | undefined,
 ): string {
+  const own = (doc?.design?.ownerPrompt ?? "").trim();
+  if (own) return own;
   const brief = (doc?.design?.brief ?? "").trim();
   if (brief) return brief;
   return (doc?.design?.idea ?? "").trim();

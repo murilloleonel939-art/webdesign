@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { build } from "esbuild";
 
 const out = await build({
@@ -169,4 +170,49 @@ test("ownerPrompt: sin datos devuelve cadena vacia (el chat no pinta burbuja)", 
   assert.equal(ownerPrompt(null), "");
   assert.equal(ownerPrompt(undefined), "");
   assert.equal(ownerPrompt({}), "");
+});
+
+// El agente compone `design.brief` con los campos, asi que la burbuja mostraba
+// "buffet de abogados en barranquilla" y no la frase que escribio el dueno. La
+// frase literal vive ahora en `design.ownerPrompt`.
+test("ownerPrompt: prefiere la frase literal guardada por el agente", () => {
+  const doc = {
+    design: {
+      ownerPrompt: "quiero una pagina web para un buffet de abogados en barranquilla",
+      brief: "buffet de abogados en barranquilla",
+      idea: "Terracota y crema: cercano, artesanal, sin estridencias.",
+    },
+  };
+  assert.equal(ownerPrompt(doc), "quiero una pagina web para un buffet de abogados en barranquilla");
+});
+
+test("ownerPrompt: documento disenado antes del campo, cae al brief compuesto", () => {
+  assert.equal(ownerPrompt({ design: { brief: "buffet de abogados en barranquilla", idea: "idea" } }),
+    "buffet de abogados en barranquilla");
+});
+
+test("ownerPrompt: documento sin disenar usa idea (brief vacio) y arranca solo", () => {
+  const frase = "quiero una pagina web para un buffet de abogados";
+  const doc = { design: { ownerPrompt: "", brief: "", idea: frase } };
+  assert.equal(ownerPrompt(doc), frase);
+  assert.equal(shouldAutoStart(ownerPrompt(doc), false), true);
+});
+
+// El producto no promete marcas ni pide confirmar datos que ya no existen: el
+// agente rechaza cualquier documento con el marcador
+// (agents/design/src/draft.ts: "borrador invalido: contiene el marcador
+// pendiente"), asi que no hay nada que anunciar ni que revisar por su nombre.
+// Si alguien vuelve a copiar esa frase en la interfaz, esto falla.
+const uiSrc = (f) => readFileSync(new URL(`../ui/${f}`, import.meta.url).pathname, "utf8");
+
+test("la interfaz no habla de datos pendientes ni de confirmar marcas", () => {
+  for (const f of ["panel.tsx", "DesignChat.tsx", "design-chat-flow.ts", "StyleStart.tsx"]) {
+    const src = uiSrc(f);
+    assert.doesNotMatch(src, /pendiente de confirmar/i, `${f} nombra el marcador`);
+    assert.doesNotMatch(src, /datos? por confirmar/i, `${f} pide confirmar datos`);
+  }
+});
+
+test("el cierre del chat invita a pedir cambios, sin contar nada", () => {
+  assert.match(uiSrc("DesignChat.tsx"), /Listo\. Si quieres cambiar algo, dímelo con tus palabras\./);
 });

@@ -36,7 +36,7 @@ interface RunStatus {
 function phaseText(run: RunStatus): string {
   const reason = (run.stopReason ?? "").trim();
   if (run.status === "ok") {
-    return reason || "Ya tienes un primer diseño. Revisa las secciones que dicen «pendiente de confirmar».";
+    return reason || "Listo. Si quieres cambiar algo, dímelo con tus palabras.";
   }
   if (run.status === "budget_exhausted") {
     return reason || "Se acabó el tiempo del diseño. Lo que dio tiempo a escribir está en tu borrador.";
@@ -54,8 +54,6 @@ export interface DesignChatProps {
   onDraftChanged: () => void;
   /** Avisa al panel para ensenar el esqueleto del sitio mientras se diseña. */
   onRunningChange?: (running: boolean) => void;
-  /** Datos que el diseño dejo como "pendiente de confirmar" (spec 6.5). */
-  pending?: string[];
   /** El panel decide que hacer al ver el resultado (por ejemplo, ir al lienzo). */
   onShowResult?: () => void;
   /** Boton secundario "¿Tienes logo?" tras un diseño ok con initialPrompt. Por
@@ -66,7 +64,7 @@ export interface DesignChatProps {
 /** El estado de la burbuja de deshacer, ya traducido a texto. Sin codigos crudos. */
 type UndoState = { kind: "ok" | "confirm" | "gone" | "retry"; text: string };
 
-export function DesignChat({ siteId, initialPrompt, collapsed = false, onDraftChanged, onRunningChange, pending, onShowResult, onAskLogo }: DesignChatProps) {
+export function DesignChat({ siteId, initialPrompt, collapsed = false, onDraftChanged, onRunningChange, onShowResult, onAskLogo }: DesignChatProps) {
   const [answers, setAnswers] = useState<Partial<Record<BriefKey, string>>>({});
   const [index, setIndex] = useState(0);
   const [phase, setPhase] = useState<Phase>("asking");
@@ -431,13 +429,6 @@ export function DesignChat({ siteId, initialPrompt, collapsed = false, onDraftCh
           >Reintentar</button>
           <button type="button" className="builder-opt" onClick={resetToAsking}>Diseñar de nuevo</button>
         </div>}
-      </div>}
-
-      {phase === "done" && runOk && pending && pending.length > 0 && <div className="builder-msg builder-msg--assistant">
-        <p>Listo. He marcado {pending.length} dato(s) como «pendiente de confirmar»; dime cuáles cambio o edítalos a mano.</p>
-        <ul className="builder-chips">
-          {pending.map((p) => <li key={p} className="builder-chip">{p}</li>)}
-        </ul>
       </div>}
 
       {undoState && <div className="builder-msg builder-msg--assistant">
