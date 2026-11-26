@@ -11,8 +11,12 @@ import {
   previewHeaders,
   previewHostMatches,
   consumeLink,
+  signAssetUrl,
+  verifyAssetUrl,
+  newAssetSigningKey,
   type PreviewConfig,
   type UsedLinkStore,
+  type AssetSigningKey,
 } from "@webdesign/preview";
 import { listStyles, getStyle, applyStyleToDocument, isStyleApplyMode } from "./catalog.js";
 import { listLeads, countNewLeads, setLeadStatus, isLeadStatus } from "./inbox.js";
@@ -113,6 +117,10 @@ function declareAssets(doc: unknown, known: Map<string, { id: string }>): unknow
 
 export function createApp(opts: AppOptions = {}) {
   const usedLinks = opts.usedLinks ?? memoryStore();
+  // Clave que firma las URL de asset de la vista previa (T-021). Se reutiliza el
+  // secreto de los enlaces de vista previa; sin `PREVIEW_SECRET` se usa una
+  // efimera del proceso, porque el HTML se regenera en cada edicion.
+  const assetKey: AssetSigningKey = opts.preview ?? newAssetSigningKey();
 
   return createServer(async (req: IncomingMessage, res: ServerResponse) => {
     const host = req.headers.host ?? "";
@@ -244,7 +252,7 @@ export function createApp(opts: AppOptions = {}) {
     // `/_f/` falta aqui y el formulario nunca llegaba a handleApi: respondia
     // 404 antes de entrar. Va en la misma condicion que /api/.
     if (opts.pool && (url.pathname.startsWith("/api/") || url.pathname.startsWith("/assets/") || url.pathname.startsWith("/_f/"))) {
-      const handled = await handleApi(opts.pool, opts.sitesRoot ?? "/data/sites", req, res, url);
+      const handled = await handleApi(opts.pool, opts.sitesRoot ?? "/data/sites", req, res, url, assetKey);
       if (handled) return;
     }
 
@@ -277,7 +285,19 @@ async function readJson(req: IncomingMessage): Promise<unknown> {
   return JSON.parse(Buffer.concat(chunks).toString("utf8"));
 }
 
-async function handleApi(pool: import("pg").Pool, sitesRoot: string, req: IncomingMessage, res: ServerResponse, url: URL): Promise<boolean> {
+// Devuelve el archivo del asset. La ruta y el sitio ya vienen validados por el
+// patron de la URL (sin `..` posible) y por el permiso de quien pide.
+async function sendAssetFile(res: ServerResponse, sitesRoot: string, siteId: string, relative: string): Promise<void> {
+  const physical = join(sitesRoot, siteId, "assets", relative);
+  try {
+    const body = await readFile(physical);
+    const mime = { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp" }[extname(physical).toLowerCase()] ?? "application/octet-stream";
+    res.writeHead(200, { "content-type": mime, "cache-control": "private, max-age=3600" });
+    res.end(body);
+  } catch { json(res, 404, { error: "not_found" }); }
+}
+
+async function handleApi(pool: import("pg").Pool, sitesRoot: string, req: IncomingMessage, res: ServerResponse, url: URL, assetKey: AssetSigningKey): Promise<boolean> {
   // --- Formularios publicos (Fase 2) ---
   // El sitio se resuelve por `Host`, nunca por un parametro del cliente.
   // Caddy reenvia /_f/* aqui conservando el Host (spec linea 403).
@@ -388,6 +408,22 @@ async function handleApi(pool: import("pg").Pool, sitesRoot: string, req: Incomi
     const siteId = publicAssetMatch[1]!;
     const relative = `${publicAssetMatch[2]}/${publicAssetMatch[3]}`;
 
+    // Via firmada de la vista previa (T-021). Es una via ADICIONAL de lectura:
+    // el iframe de la vista previa corre aislado y no manda cookie, asi que no
+    // puede pasar el control del dueno de abajo. El token ata sitio, ruta y
+    // caducidad, y solo sirve para leer ese asset: no lista, no escribe, no
+    // abre otras rutas. Cualquier fallo responde 404, igual que un asset
+    // inexistente, para no revelar cual de las tres cosas fallo.
+    const pv = url.searchParams.get("pv");
+    if (pv !== null) {
+      if (!verifyAssetUrl(assetKey, pv, siteId, relative)) {
+        json(res, 404, { error: "not_found" });
+        return true;
+      }
+      await sendAssetFile(res, sitesRoot, siteId, relative);
+      return true;
+    }
+
     let allowed = false;
     if (session) {
       // Se pregunta por la fila, no por el sitio: `withUser` pone `app.user_id`
@@ -413,13 +449,7 @@ async function handleApi(pool: import("pg").Pool, sitesRoot: string, req: Incomi
       return true;
     }
 
-    const physical = join(sitesRoot, siteId, "assets", relative);
-    try {
-      const body = await readFile(physical);
-      const mime = { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp" }[extname(physical).toLowerCase()] ?? "application/octet-stream";
-      res.writeHead(200, { "content-type": mime, "cache-control": "private, max-age=3600" });
-      res.end(body);
-    } catch { json(res, 404, { error: "not_found" }); }
+    await sendAssetFile(res, sitesRoot, siteId, relative);
     return true;
   }
 
@@ -686,17 +716,25 @@ async function handleApi(pool: import("pg").Pool, sitesRoot: string, req: Incomi
     }
     const pageId = url.searchParams.get("page") ?? "p_home";
     const assets = await activeAssets(pool, session.userId, siteId, sitesRoot);
+    // El texto alternativo se declara en `doc.assets`, y es de ahi de donde lo
+    // saca la publicacion (packages/publish). La vista previa devolvia `""`
+    // fijo, asi que el hero y la galeria salian con `alt=""` aunque el
+    // documento lo declarase. La seccion puede sobrescribirlo con `props.alt`;
+    // este es solo el valor de partida.
+    const altById = new Map(
+      ((d.doc as { assets?: Array<{ id: string; alt?: string }> }).assets ?? []).map((a) => [a.id, a.alt ?? ""]),
+    );
     try {
       const rendered = renderPage(d.doc, pageId, (id) => {
-        // El iframe de vista previa corre aislado: una ruta relativa no resolveria.
-        // Se incrusta la imagen como data URI para que se vea igual que al publicar.
+        // La vista previa sirve la foto por URL, igual que el sitio publicado.
+        // El iframe va con `sandbox` sin `allow-same-origin`, asi que su origen
+        // es opaco y no manda la cookie de sesion: por eso la URL lleva una
+        // firma acotada a este sitio, esta ruta y 15 minutos. Incrustarla en
+        // base64 costaba 960 KB de HTML para cuatro fotos y no se cacheaba.
         const path = assets.resolveAssetPath(id);
-        if (!path) return undefined;
-        const mime = { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp" }[extname(path).toLowerCase()] ?? "image/png";
-        const found = assets.assetFilesById.get(id);
-        return found
-          ? { src: `data:${mime};base64,${found.toString("base64")}`, alt: "" }
-          : { src: path, alt: "" };
+        const known = assets.known.get(id);
+        if (!path || !known) return undefined;
+        return { src: `${path}?pv=${signAssetUrl(assetKey, siteId, known.path)}`, alt: altById.get(id) ?? "" };
       });
       send(res, 200, rendered, previewHeaders(PREVIEW_CSP));
     } catch {

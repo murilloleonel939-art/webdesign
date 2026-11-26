@@ -101,3 +101,69 @@ export async function consumeLink(store: UsedLinkStore, jti: string): Promise<bo
   await store.mark(jti);
   return true;
 }
+
+// --- URL de asset firmadas (T-021) -----------------------------------------
+// El iframe de la vista previa va con `sandbox` y sin `allow-same-origin`: su
+// origen es opaco, asi que el navegador NO manda la cookie de sesion en lo que
+// pide desde dentro (comprobado en Chromium). Por eso `/assets/<sitio>/...` no
+// puede pasar alli el control del dueno y la vista previa incrustaba cada foto
+// en base64: 960 KB de HTML para cuatro fotos.
+//
+// La salida es la misma firma HMAC de los enlaces de vista previa, atada al
+// sitio, a la ruta exacta del asset y a una caducidad corta. No hay mecanismo
+// criptografico nuevo: es el mismo `sign()` con otro juego de claims.
+
+export interface AssetSigningKey {
+  secret: string;
+  ttlMinutes: number;
+}
+
+interface AssetClaims {
+  // Discrimina el proposito: una firma de asset nunca vale como enlace de
+  // vista previa, y al reves tampoco.
+  kind: "asset";
+  siteId: string;
+  assetPath: string;
+  exp: number; // epoch ms
+}
+
+// Clave efimera para procesos sin `PREVIEW_SECRET`. La vista previa se
+// regenera en cada edicion, asi que la firma solo tiene que durar lo que dure
+// el proceso; no hay nada que persistir.
+export function newAssetSigningKey(ttlMinutes: number = DEFAULT_TTL_MINUTES): AssetSigningKey {
+  return { secret: randomBytes(32).toString("base64url"), ttlMinutes };
+}
+
+export function signAssetUrl(key: AssetSigningKey, siteId: string, assetPath: string, nowMs: number = Date.now()): string {
+  const claims: AssetClaims = { kind: "asset", siteId, assetPath, exp: nowMs + key.ttlMinutes * 60_000 };
+  const payload = Buffer.from(JSON.stringify(claims)).toString("base64url");
+  return `${payload}.${sign(payload, key.secret)}`;
+}
+
+/**
+ * Comprueba una firma de asset contra el sitio y la ruta que se estan pidiendo.
+ *
+ * Devuelve `false` ante cualquier discrepancia: firma, caducidad, sitio o ruta.
+ * El que llama no debe distinguir el motivo: la respuesta es siempre 404, para
+ * no revelar si el asset existe.
+ */
+export function verifyAssetUrl(key: AssetSigningKey, token: string, siteId: string, assetPath: string, nowMs: number = Date.now()): boolean {
+  const parts = token.split(".");
+  if (parts.length !== 2 || !parts[0] || !parts[1]) return false;
+  const [payload, sig] = parts as [string, string];
+  const expected = sign(payload, key.secret);
+  const a = Buffer.from(sig);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length || !timingSafeEqual(a, b)) return false;
+  let claims: AssetClaims;
+  try {
+    claims = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as AssetClaims;
+  } catch {
+    return false;
+  }
+  if (claims?.kind !== "asset") return false;
+  if (typeof claims.exp !== "number" || claims.exp < nowMs) return false;
+  if (claims.siteId !== siteId) return false;
+  if (claims.assetPath !== assetPath) return false;
+  return true;
+}

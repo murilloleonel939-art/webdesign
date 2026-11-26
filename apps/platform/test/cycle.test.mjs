@@ -490,4 +490,44 @@ if (process.env.DB_TEST_CONFIRM !== "destroy-test-db" || !process.env.DB_TEST_UR
     assert.equal(unknown.status, 200);
     assert.equal(unknown.text, "ok");
   });
+
+  test("la vista previa lleva el alt de doc.assets, no alt vacio", async () => {
+    // Regresion (T-021): el resolvedor de la vista previa devolvia `alt: ""`
+    // fijo, asi que el hero y la galeria salian con `alt=""` aunque el
+    // documento declarase el texto alternativo en `doc.assets`.
+    const up = await new Promise((resolve, reject) => {
+      const req = http.request(
+        { host: "127.0.0.1", port, path: `/api/sites/${pool.siteId}/assets?kind=image`, method: "POST",
+          headers: { host: "panel.example.com", cookie, "content-type": "image/png", "content-length": PNG.length } },
+        (res) => {
+          let text = "";
+          res.setEncoding("utf8");
+          res.on("data", (c) => (text += c));
+          res.on("end", () => resolve({ status: res.statusCode, json: text ? JSON.parse(text) : undefined }));
+        },
+      );
+      req.on("error", reject);
+      req.write(Buffer.from(PNG));
+      req.end();
+    });
+    assert.equal(up.status, 201);
+
+    const alt = "Fachada de la clinica";
+    const doc = siteDoc("Hola");
+    doc.assets = [{ id: up.json.id, alt, credit: null }];
+    doc.pages[0].sections = [
+      { id: "s_hero", type: "hero", props: { headline: "Hola", image: up.json.id } },
+      { id: "s_gal", type: "gallery", props: { assetIds: [up.json.id] } },
+    ];
+    const rev = await call("GET", `/api/sites/${pool.siteId}/draft`);
+    const saved = await call("PUT", `/api/sites/${pool.siteId}/draft`, { doc, expectedRev: rev.json.rev });
+    assert.equal(saved.status, 200);
+
+    const r = await callRaw("GET", `/api/sites/${pool.siteId}/preview?page=p_home`, true);
+    assert.equal(r.status, 200);
+    // El img del hero y el de la galeria llevan el alt declarado.
+    const alts = [...r.text.matchAll(/<img[^>]*\salt="([^"]*)"/g)].map((m) => m[1]);
+    assert.equal(alts.length, 2, "hero y galeria deben renderizar dos img");
+    for (const a of alts) assert.equal(a, alt);
+  });
 }
