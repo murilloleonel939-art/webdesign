@@ -1,0 +1,6 @@
+{
+  "license": "Unsplash License",
+  "source": "https://picsum.photos",
+  "note": "Banco vacío a propósito: las fotos de Picsum son aleatorias y sus alt mentían. Se llenará con fotos curadas, verificadas una a una. Mientras esté vacío, listBankPhotos devuelve [] y el sitio se genera sin fotos.",
+  "photos": []
+}

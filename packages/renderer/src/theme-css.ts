@@ -118,11 +118,10 @@ section{padding:var(--gap) var(--margin);max-width:1140px;margin-inline:auto}
 // ---------------------------------------------------------------------------
 function themeLayoutCss(theme: Theme): string {
   const s = scaleValue(theme.typography.scale);
-  return `/* Hero: degradado generado, sin imagenes. El color sale del acento del
-   propio cliente, asi que el degradado no puede confundirse con una plantilla. */
-.hero{position:relative;min-height:78vh;display:flex;flex-direction:column;justify-content:flex-end;align-items:flex-start;gap:0;padding-top:calc(var(--gap) * 1.6);padding-bottom:calc(var(--gap) * 1.2);background-color:var(--ground);background-image:radial-gradient(62% 68% at 10% 4%,color-mix(in srgb,var(--accent) 35%,transparent),transparent 70%),radial-gradient(54% 58% at 88% 26%,color-mix(in srgb,color-mix(in srgb,var(--accent) 55%,#22d3ee) 32%,transparent),transparent 74%)}
-/* Malla de puntos sutil: da textura sin descargar nada y sin tapar el texto. */
-.hero::before{content:"";position:absolute;inset:0;background-image:radial-gradient(color-mix(in srgb,var(--ink) 14%,transparent) 1px,transparent 1px);background-size:24px 24px;opacity:.45;pointer-events:none}
+  return `/* Hero: se compone con los tokens del tema, sin imagenes. Con foto manda la
+   foto; sin foto manda la tipografia y el acento dibuja el resto (ver
+   \`.hero--graphic\`). */
+.hero{position:relative;min-height:78vh;display:flex;flex-direction:column;justify-content:flex-end;align-items:flex-start;gap:0;padding-top:calc(var(--gap) * 1.6);padding-bottom:calc(var(--gap) * 1.2);background-color:var(--ground)}
 .hero > *{position:relative;z-index:10}
 .hero h1{font-size:calc(clamp(2.6rem,6vw,5.2rem) * ${s});letter-spacing:-.035em;line-height:1.02;font-weight:800;max-width:18ch;margin-bottom:.3em}
 .hero p{font-size:calc(1.25rem * ${s});opacity:.75;max-width:52ch;margin-bottom:0}
@@ -130,10 +129,35 @@ function themeLayoutCss(theme: Theme): string {
 .hero--center{text-align:center;align-items:center}
 .hero--center h1,.hero--center p{margin-inline:auto}
 /* Si el hero lleva imagen, el texto se queda a la izquierda y la imagen
-   respira a la derecha. Sin imagen, el flex de arriba manda. */
+   respira a la derecha. */
 .hero--image{display:grid;grid-template-columns:1.1fr .9fr;align-items:center;gap:calc(var(--gap) * .5)}
 .hero img{width:100%;height:auto;border-radius:calc(var(--radius) + 10px);box-shadow:0 30px 60px -30px color-mix(in srgb,var(--ink) 45%,transparent);object-fit:cover}
 .hero--full{min-height:92vh}
+
+/* Hero SIN foto. El defecto no era el fondo liso: era que un titular suelto
+   sobre un lienzo vacio se lee como pagina a medias. La respuesta es una
+   composicion de pliego, no un adorno: reticula de filetes que ordena, barra
+   de acento que abre el texto y un circulo grande recortado por el borde.
+   Todo sale de --accent, --ink y --ground: ni un color nuevo, ni una imagen,
+   ni un SVG. Los filetes de la reticula van al 12 % de tinta y el velo del
+   circulo al 12 % de acento, sobre el fondo del tema: el par titular/fondo no
+   cambia y el contraste AA que ya cumple el preset se mantiene intacto. */
+.hero--graphic{min-height:82vh;overflow:hidden}
+.hero--graphic::before{content:"";position:absolute;inset:0;z-index:0;pointer-events:none;background-image:repeating-linear-gradient(90deg,color-mix(in srgb,var(--ink) 12%,transparent) 0 1px,transparent 1px 25%)}
+/* El circulo es el unico gesto grande: media luna hundida en la esquina
+   inferior derecha, comida por el borde. Su arco pasa por el aire que queda
+   bajo el titular; cuando un titular muy largo llega hasta ahi, el velo del
+   12 % lo deja legible y la superposicion se lee como portada, no como error. */
+.hero--graphic::after{content:"";position:absolute;z-index:0;pointer-events:none;bottom:-22%;right:calc(var(--margin) * -.45);width:min(62vw,560px);aspect-ratio:1;border-radius:50%;border:1px solid color-mix(in srgb,var(--accent) 60%,transparent);background:color-mix(in srgb,var(--accent) 12%,transparent)}
+/* La barra de acento abre el bloque de texto: un gesto de portada impresa que
+   no depende de ninguna foto y que respeta el radio del preset. */
+.hero--graphic > div::before{content:"";display:block;width:clamp(56px,8vw,112px);height:.55rem;margin-bottom:1.4rem;border-radius:min(var(--radius),3px);background:var(--accent)}
+.hero--graphic h1{font-size:calc(clamp(2.7rem,6.6vw,5.6rem) * ${s});max-width:17ch}
+.hero--graphic.hero--center > div::before{margin-inline:auto}
+/* Centrado: el circulo se sube al borde superior, detras del aire, y el texto
+   respira debajo. Nunca queda debajo del titular, que es lo que bajaria el
+   contraste. */
+.hero--graphic.hero--center::after{top:-40%;bottom:auto;right:auto;left:50%;transform:translateX(-50%);width:min(72vw,460px)}
 
 /* Ventajas en bento: seis columnas, la primera pieza ocupa cuatro y el resto
    dos. No es una rejilla uniforme de tarjetas iguales, que es el tic que hace
@@ -242,6 +266,14 @@ function themeLayoutCss(theme: Theme): string {
 .features li,.features li:first-child{grid-column:span 1;grid-row:span 1}
 .features--steps ul{grid-template-columns:1fr}
 .hero--image{grid-template-columns:1fr}
+/* Hero grafico en movil: el titular mantiene el tamano de cartel y la reticula
+   de cuartos se conserva, que en 390 px son cuatro lineas y no una trama. */
+.hero--graphic{min-height:76vh;padding-top:calc(var(--gap) * 1.2);padding-bottom:calc(var(--gap) * 1.9)}
+/* En un movil no hay hueco al lado del titular: el circulo baja y se convierte
+   en el arco que cierra la portada por abajo, donde solo hay aire. */
+.hero--graphic::after{width:min(88vw,380px);top:auto;bottom:-44%;right:calc(var(--margin) * -.5)}
+.hero--graphic h1{font-size:calc(clamp(2.2rem,9.4vw,3.4rem) * ${s})}
+.hero--graphic.hero--center::after{width:min(88vw,380px);top:auto;bottom:-44%;left:50%}
 .text:has(h2){grid-template-columns:1fr}
 .text:has(h2) h2{position:static}
 .site-footer{grid-template-columns:1fr}

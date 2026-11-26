@@ -31,12 +31,13 @@ export function HeroSection({ section, editing, resolveAsset }: SectionProps & {
   const headline = typeof p.headline === "string" ? p.headline : "";
   const subline = typeof p.subline === "string" ? p.subline : undefined;
   // B3: con imagen, el hero pasa a dos columnas (texto + foto); sin imagen,
-  // el degradado generado por CSS es todo el fondo. `image` guarda un id de
-  // asset, igual que `ImageSection`: sin resolver no hay URL que inventar.
+  // el tema dibuja una composicion grafica con el acento del cliente. `image`
+  // guarda un id de asset, igual que `ImageSection`: sin resolver no hay URL que
+  // inventar, y un id huerfano cuenta como hero sin foto, no como foto rota.
   const assetId = typeof p.image === "string" ? p.image : undefined;
   const resolved = assetId ? resolveAsset?.(assetId) : undefined;
   const variant = section.variant ?? "default";
-  const className = resolved ? `hero hero--${variant} hero--image` : `hero hero--${variant}`;
+  const className = resolved ? `hero hero--${variant} hero--image` : `hero hero--${variant} hero--graphic`;
   return (
     <section className={className} data-section-id={section.id}>
       <div>

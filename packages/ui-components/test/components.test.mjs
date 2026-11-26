@@ -105,3 +105,30 @@ test("el formulario no se pinta dentro del editor", () => {
   // En el editor solo se ve el bloque, no un formulario que enviaria a medias.
   assert.equal(out.includes("/_f/lead"), false);
 });
+
+test("un hero sin foto se marca con hero--graphic", () => {
+  // Sin imagen no hay nada que ensenar a la derecha: el tema dibuja una
+  // composicion propia y necesita un selector que no afecte al hero con foto.
+  const sin = html({ id: "s1", type: "hero", props: { headline: "h" } });
+  assert.match(sin, /class="hero hero--default hero--graphic"/);
+  assert.equal(sin.includes("hero--image"), false);
+
+  // Un id de asset que no resuelve tampoco es una foto: mismo tratamiento.
+  const huerfano = html({ id: "s1", type: "hero", props: { headline: "h", image: "a1" } });
+  assert.match(huerfano, /hero--graphic/);
+  assert.equal(huerfano.includes("<img"), false);
+});
+
+test("un hero con foto lleva hero--image y no el grafico", () => {
+  const out = html(
+    { id: "s1", type: "hero", props: { headline: "h", image: "a1" } },
+    { resolveAsset: (id) => (id === "a1" ? { src: "/a/1.webp", alt: "Foto" } : undefined) },
+  );
+  assert.match(out, /hero--image/);
+  assert.equal(out.includes("hero--graphic"), false);
+});
+
+test("el hero grafico se estila por clase, nunca por style en linea (CSP)", () => {
+  const out = html({ id: "s1", type: "hero", props: { headline: "h", subline: "s" } });
+  assert.equal(/\sstyle=/.test(out), false);
+});

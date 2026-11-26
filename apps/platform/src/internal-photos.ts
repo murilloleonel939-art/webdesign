@@ -23,6 +23,7 @@ import { registerAsset } from "@webdesign/assets";
 import { downloadPhoto, isPexelsConfigured, searchPhotos, type PexelsOrientation } from "./pexels.js";
 import { appendFuente } from "./fuentes.js";
 import { readFromLibrary, saveToLibrary } from "./library.js";
+import { bankRoot, listBankPhotos, readBankPhoto, type BankPhoto } from "./photo-bank.js";
 
 // El agente de diseno escribe en el sitio, y esta ruta escribe en el sitio: el
 // scope tiene que ser el mismo que usan sus herramientas (`site:write`).
@@ -149,27 +150,10 @@ export async function handleInternalPhotos(
     return true;
   }
 
-  // Sin clave no hay banco: se dice sin fingir que no habia fotos.
-  if (!isPexelsConfigured()) {
-    json(res, 503, { error: "pexels_not_configured" });
-    return true;
-  }
-
   const { userId } = authz.auth;
 
-  // Se piden de mas para poder descartar las ya usadas sin quedarse corto.
-  const candidates = await searchPhotos(body.query, {
-    orientation: body.orientation,
-    perPage: Math.min(24, body.count * 4),
-  });
-  if (candidates.length === 0) {
-    json(res, 200, { photos: [] });
-    return true;
-  }
-
-  // Fotos ya usadas en ESTE sitio: por `source_url` (la ficha de Pexels) y por
-  // `credit_text`, que es donde queda la atribucion. Cualquiera de las dos basta
-  // para no repetir, y asi una fila antigua sin `source_url` tambien cuenta.
+  // Fotos ya usadas en ESTE sitio: por `source_url` y por `credit_text`.
+  // Cualquiera de las dos basta para no repetir dentro del mismo sitio.
   const used = await withUser(pool, userId, async (tx) => {
     const r = await tx.query<{ source_url: string | null; credit_text: string | null }>(
       "SELECT source_url, credit_text FROM assets WHERE site_id = $1",
@@ -183,53 +167,156 @@ export async function handleInternalPhotos(
     return urls;
   });
 
+  // ---- FUENTE DE CANDIDATOS -----------------------------------------------
+  // 1. Pexels, solo si está configurado.
+  // 2. Banco local si Pexels no está o devuelve cero candidatos.
+  // -------------------------------------------------------------------------
+
+  // Orientación del banco: landscape para "landscape", square para "square",
+  // landscape para "portrait" y sin orientación (el banco no tiene portrait).
+  const bankOrientation: "landscape" | "square" =
+    body.orientation === "square" ? "square" : "landscape";
+
+  type Candidate = {
+    id: number;
+    url: string;           // source_url para Pexels; "https://picsum.photos/id/<id>" para banco
+    photographer: string;
+    alt: string;
+    width: number;
+    height: number;
+    src: { original: string; large2x: string; large: string; medium: string; tiny: string };
+    _bankPhoto?: BankPhoto; // presente solo para candidatos del banco
+  };
+
+  let candidates: Candidate[] = [];
+  let usePexels = false;
+
+  if (isPexelsConfigured()) {
+    const pexelsCandidates = await searchPhotos(body.query, {
+      orientation: body.orientation,
+      perPage: Math.min(24, body.count * 4),
+    });
+    if (pexelsCandidates.length > 0) {
+      usePexels = true;
+      candidates = pexelsCandidates.map((p) => ({
+        id: p.id,
+        url: p.url,
+        photographer: p.photographer,
+        alt: p.alt,
+        width: p.width,
+        height: p.height,
+        src: p.src,
+      }));
+    }
+  }
+
+  if (!usePexels) {
+    // Banco local: construimos candidatos en el mismo formato que Pexels para
+    // que el bucle de abajo sea idéntico para ambas fuentes.
+    const bankPhotos = await listBankPhotos(bankOrientation);
+    candidates = bankPhotos.map((bp) => ({
+      id: bp.id,
+      url: `https://picsum.photos/id/${bp.id}`,
+      photographer: bp.author,
+      alt: bp.alt,
+      width: bp.width,
+      height: bp.height,
+      src: { original: "", large2x: "", large: "", medium: "", tiny: "" },
+      _bankPhoto: bp,
+    }));
+  }
+
+  if (candidates.length === 0) {
+    json(res, 200, { photos: [] });
+    return true;
+  }
+
+  // ---- BUCLE UNIFICADO (Pexels o banco) ------------------------------------
+
   const photos: Array<{ assetId: string; alt: string; width: number; height: number }> = [];
   for (const photo of candidates) {
     if (photos.length >= body.count) break;
-    // Misma foto, mismo sitio: no se repite. Se compara por `source_url` (la
-    // ficha de Pexels), por `credit_text` (autor + licencia + enlace) y por el
-    // id de Pexels al final de cualquiera de los dos, que sobrevive a un enlace
-    // reescrito.
+
+    // Dedupe por sitio.
+    // Para Pexels: compara source_url, credit_text y el sufijo "-<id>/" que
+    //   sobrevive a un enlace reescrito.
+    // Para banco: compara source_url exacta ("https://picsum.photos/id/<id>").
+    //   El sufijo "-<id>/" de Pexels no encaja con la URL del banco (que termina
+    //   en "/<id>", no en "-<id>/"), así que se añade comprobación de sufijo
+    //   "/<photo.id}" solo para candidatos del banco, sin tocar la de Pexels.
     if (photo.url !== "" && used.has(photo.url)) continue;
-    const idMark = `-${photo.id}/`;
+
     let yaEnSitio = false;
-    for (const value of used) {
-      if (value === photo.url || value.endsWith(idMark) || value.includes(`${idMark} `)) {
-        yaEnSitio = true;
-        break;
+    if (usePexels) {
+      // Comprobación original de Pexels: sufijo "-<id>/" en source_url o credit_text.
+      const idMark = `-${photo.id}/`;
+      for (const value of used) {
+        if (value === photo.url || value.endsWith(idMark) || value.includes(`${idMark} `)) {
+          yaEnSitio = true;
+          break;
+        }
       }
+    } else {
+      // Para el banco la URL canónica es exacta; ya la comprobamos arriba con
+      // used.has(photo.url). Nada más que hacer aquí.
     }
     if (yaEnSitio) continue;
 
-    // BIBLIOTECA ANTES QUE RED: si la foto ya se bajo para cualquier sitio, no
-    // se vuelve a pedir a Pexels. Solo se registra el id: nunca la clave ni URLs.
-    const cached = await readFromLibrary(photo.id);
     let content: Buffer;
     let metaFile: { author: string; sourceUrl: string; license: string; mime: string };
-    if (cached) {
-      console.info("pexels_library_hit", { id: photo.id });
-      content = cached.content;
+
+    if (photo._bankPhoto) {
+      // ---- BANCO LOCAL ----------------------------------------------------
+      const file = await readBankPhoto(photo._bankPhoto);
+      if (!file) {
+        console.warn("bank_read_failed", { id: photo.id, file: photo._bankPhoto.file });
+        continue;
+      }
+      content = file.content;
       metaFile = {
-        author: cached.meta.photographer,
-        sourceUrl: cached.meta.sourceUrl,
-        license: cached.meta.license,
-        mime: cached.meta.mime,
+        author: photo._bankPhoto.author,
+        sourceUrl: `https://picsum.photos/id/${photo.id}`,
+        license: "Unsplash License",
+        mime: file.mime,
       };
     } else {
-      console.info("pexels_library_miss", { id: photo.id });
-      const file = await downloadPhoto(photo);
-      if (!file) continue;
-      // Se guarda una vez y se usa ese mismo contenido; la copia del sitio va
-      // aparte, asi que borrar la biblioteca no rompe sitios publicados.
-      const saved = await saveToLibrary({
-        photo,
-        content: file.content,
-        mime: file.mime,
-        query: body.query,
-        siteId,
-      });
-      content = file.content;
-      metaFile = { author: saved.photographer, sourceUrl: saved.sourceUrl, license: saved.license, mime: saved.mime };
+      // ---- PEXELS ----------------------------------------------------------
+      // BIBLIOTECA ANTES QUE RED: si la foto ya se bajo para cualquier sitio,
+      // no se vuelve a pedir a Pexels.
+      const cached = await readFromLibrary(photo.id);
+      if (cached) {
+        console.info("pexels_library_hit", { id: photo.id });
+        content = cached.content;
+        metaFile = {
+          author: cached.meta.photographer,
+          sourceUrl: cached.meta.sourceUrl,
+          license: cached.meta.license,
+          mime: cached.meta.mime,
+        };
+      } else {
+        console.info("pexels_library_miss", { id: photo.id });
+        // photo.src está completo porque viene de searchPhotos (Pexels).
+        const pexelsPhoto = {
+          id: photo.id,
+          width: photo.width,
+          height: photo.height,
+          url: photo.url,
+          photographer: photo.photographer,
+          alt: photo.alt,
+          src: photo.src,
+        };
+        const downloaded = await downloadPhoto(pexelsPhoto);
+        if (!downloaded) continue;
+        const saved = await saveToLibrary({
+          photo: pexelsPhoto,
+          content: downloaded.content,
+          mime: downloaded.mime,
+          query: body.query,
+          siteId,
+        });
+        content = downloaded.content;
+        metaFile = { author: saved.photographer, sourceUrl: saved.sourceUrl, license: saved.license, mime: saved.mime };
+      }
     }
 
     const registered = await registerAsset(pool, {
@@ -243,17 +330,13 @@ export async function handleInternalPhotos(
       sitesRoot,
     });
     if (!registered.ok) {
-      // Cuota, cuenta o tipo: la foto se descarta y se prueba la siguiente. El
-      // motivo no se devuelve al agente, que no puede hacer nada distinto con el.
-      console.warn("pexels_register_failed", { siteId, reason: registered.reason });
+      console.warn("photo_register_failed", { siteId, reason: registered.reason });
       continue;
     }
     used.add(photo.url);
 
-    // Trazabilidad fuera de la pagina, con los datos del META de la biblioteca y
-    // no con la respuesta de red: una foto cacheada tambien deja su fuente. Si
-    // falla, la foto ya esta registrada y la ruta no se cae: `appendFuente` no
-    // lanza.
+    // Trazabilidad fuera de la página. Si falla, la foto ya está registrada y
+    // la ruta no se cae: `appendFuente` no lanza.
     await appendFuente(sitesRoot, siteId, {
       assetId: registered.id,
       author: metaFile.author,
