@@ -299,6 +299,116 @@ function Inbox({ siteId, onClose }: { siteId: string; onClose: () => void }) {
   </div>;
 }
 
+// T-015: overlay de entrega — muestra la web a pantalla completa tras diseñar.
+// Reutiliza el iframe de /api/sites/:id/preview y el publish() del panel.
+interface DeliveryOverlayProps {
+  siteId: string;
+  PAGE: string;
+  publishedUrl: string | null;
+  onPublish: (confirmVisual?: boolean) => Promise<void>;
+  onClose: () => void;
+  visualNotice: string[];
+  blockers: string[];
+  activeElsewhere: { id: string; name: string } | null;
+  onUnpublishAndRetry: (id: string) => Promise<void>;
+}
+function DeliveryOverlay({ siteId, PAGE, publishedUrl, onPublish, onClose, visualNotice, blockers, activeElsewhere, onUnpublishAndRetry }: DeliveryOverlayProps) {
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState(false);
+  const overlayRef = useRef<HTMLDivElement>(null);
+
+  // Foco al abrir para que Escape funcione y el lector de pantalla anuncie el diálogo.
+  useEffect(() => { overlayRef.current?.focus(); }, []);
+
+  // Escape cierra.
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) { if (e.key === "Escape") onClose(); }
+    document.addEventListener("keydown", onKey);
+    // El fondo no debe hacer scroll mientras el overlay está abierto.
+    document.body.style.overflow = "hidden";
+    return () => { document.removeEventListener("keydown", onKey); document.body.style.overflow = ""; };
+  }, [onClose]);
+
+  async function handlePublish() {
+    setBusy(true);
+    await onPublish();
+    setBusy(false);
+    // Si ya hay URL publicada (publish() la dejó en el estado del padre) cerramos
+    // el overlay y marcamos como hecho para mostrar el enlace.
+    setDone(true);
+  }
+
+  return (
+    <div
+      ref={overlayRef}
+      role="dialog"
+      aria-modal="true"
+      aria-label="Así queda tu web"
+      className="delivery-overlay"
+      tabIndex={-1}
+    >
+      <header className="delivery-header">
+        <div className="delivery-title">
+          <span className="delivery-heading">Así queda tu web</span>
+          <span className="delivery-sub">Revísala antes de publicar</span>
+        </div>
+        <button className="delivery-close ghost" onClick={onClose} aria-label="Cerrar vista previa">✕</button>
+      </header>
+
+      <div className="delivery-frame">
+        <iframe
+          title="Vista previa de entrega"
+          sandbox="allow-scripts"
+          src={`/api/sites/${siteId}/preview?page=${PAGE}`}
+          className="delivery-iframe"
+        />
+      </div>
+
+      <footer className="delivery-footer">
+        {/* Avisos de bloqueo o conflicto, compactos */}
+        {blockers.length > 0 && (
+          <div className="delivery-alert" role="alert">
+            <strong>Para publicar falta:</strong> {blockers[0]}{blockers.length > 1 ? ` (+${blockers.length - 1} más)` : ""}
+          </div>
+        )}
+        {activeElsewhere && (
+          <div className="delivery-alert" role="status">
+            <strong>«{activeElsewhere.name}»</strong> ya está publicado.{" "}
+            {activeElsewhere.id && (
+              <button className="delivery-inline-action" onClick={() => { setBusy(true); void onUnpublishAndRetry(activeElsewhere.id).finally(() => setBusy(false)); }}>
+                Despublicar ese y publicar este
+              </button>
+            )}
+          </div>
+        )}
+        {visualNotice.length > 0 && !done && (
+          <div className="delivery-alert delivery-alert--warn" role="status">
+            <strong>Aviso de estilo</strong> (no impide publicar): {visualNotice[0]}
+          </div>
+        )}
+        {done && publishedUrl && (
+          <div className="delivery-published" role="status">
+            <span>✓ Publicado en <strong>{publishedUrl.replace("https://", "")}</strong></span>
+            <a className="delivery-open-link" href={publishedUrl} target="_blank" rel="noreferrer">Abrir sitio →</a>
+          </div>
+        )}
+        <div className="delivery-actions">
+          {!done && (
+            <button
+              className="primary delivery-btn-publish"
+              disabled={busy || blockers.length > 0}
+              onClick={() => void handlePublish()}
+            >{busy ? "Publicando…" : visualNotice.length > 0 ? "Publicar igual" : "Publicar"}</button>
+          )}
+          <button className="ghost delivery-btn-change" onClick={onClose}>
+            {done ? "Cerrar" : "Cambiar algo"}
+          </button>
+        </div>
+      </footer>
+    </div>
+  );
+}
+
 function Editor({ siteId }: { siteId: string }) {
   const PAGE = new URLSearchParams(location.search).get("page") ?? "p_home"; const [doc, setDoc] = useState<any>(null); const [rev, setRev] = useState(0); const [status, setStatus] = useState("Cargando tu editor…"); const [assets, setAssets] = useState<EditorAsset[]>([]); const [uploading, setUploading] = useState(false); const lastData = useRef<any>(null); const [blockers, setBlockers] = useState<string[]>([]);
   // Avisos de estilo (6.5): informan, no bloquean. El dueno decide publicar.
@@ -347,6 +457,23 @@ function Editor({ siteId }: { siteId: string }) {
   } }
   useEffect(() => { void refreshAssets(); }, [siteId]);
   const saving = useRef(false); const pending = useRef<any>(null); const docRef = useRef<any>(null); const revRef = useRef(0); const [showPreview, setShowPreview] = useState(false); const [showAssets, setShowAssets] = useState(true); const [showStyles, setShowStyles] = useState(false); const [showInbox, setShowInbox] = useState(false); const [newLeads, setNewLeads] = useState(0);
+  // T-015: overlay de entrega — se abre tras un run de diseño exitoso, una vez
+  // por sesión. `deliveryDismissed` recuerda si el dueño ya lo cerró para no
+  // volver a abrirlo. `showDelivery` controla si está visible ahora mismo.
+  const [showDelivery, setShowDelivery] = useState(false);
+  const deliveryDismissed = useRef(false);
+  // Ref al botón que abrió el overlay: se devuelve el foco al cerrar.
+  const deliveryTriggerRef = useRef<HTMLElement | null>(null);
+  function openDelivery() {
+    if (deliveryDismissed.current) return;
+    deliveryTriggerRef.current = document.activeElement as HTMLElement | null;
+    setShowDelivery(true);
+  }
+  function closeDelivery() {
+    deliveryDismissed.current = true;
+    setShowDelivery(false);
+    deliveryTriggerRef.current?.focus();
+  }
   // Contador de mensajes sin leer: se refresca al entrar y al volver de la bandeja.
   // Va despues de las declaraciones: el array de dependencias se evalua al
   // renderizar, asi que leerlo antes de existir deja el editor en blanco.
@@ -387,6 +514,9 @@ function Editor({ siteId }: { siteId: string }) {
     }
     setPendingDoc(false);
     setDesignPending(pendingFromDoc(docRef.current));
+    // T-015: solo tras un run que acaba de terminar (justFinished) se abre el
+    // overlay de entrega. Al reabrir un sitio ya diseñado no se abre nunca.
+    if (justFinished) openDelivery();
   } const save = async (data: any) => { lastData.current = data; pending.current = data; if (saving.current) return; saving.current = true; while (pending.current) { const current = pending.current; pending.current = null; const next = mergeEditedPage(docRef.current ?? doc, puckToDocument({ content: current.content, root: current.root }, PAGE)); setStatus("Guardando…"); const r = await api(`/api/sites/${siteId}/draft`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ doc: next, expectedRev: revRef.current }) }); if (r.status === 409) { setStatus("Otro cambio fue guardado. Recargando…"); const d = await (await api(`/api/sites/${siteId}/draft`)).json() as Draft; docRef.current = d.doc; revRef.current = d.rev; setDoc(d.doc); setRev(d.rev); continue; } if (!r.ok) { setStatus("No se pudo guardar"); continue; } const d = await r.json() as { rev: number }; docRef.current = next; revRef.current = d.rev; setDoc(next); setRev(d.rev); setStatus("Guardado"); } saving.current = false; };
   // Publicar devuelve el hostname asignado. Sin el, el dueno no sabe donde
   // esta su sitio: se le muestra en un aviso y queda en el estado.
@@ -569,6 +699,7 @@ function Editor({ siteId }: { siteId: string }) {
           if (running) runWasActive.current = true;
           setDesigning(running);
         }}
+        onShowResult={openDelivery}
         pending={designPending}
         onAskLogo={() => setShowAssets(true)}
       />
@@ -609,6 +740,18 @@ function Editor({ siteId }: { siteId: string }) {
         </div>
       </section>
     </div>
+
+    {showDelivery && <DeliveryOverlay
+      siteId={siteId}
+      PAGE={PAGE}
+      publishedUrl={publishedUrl}
+      onPublish={async (confirmVisual) => { await publish(confirmVisual); }}
+      onClose={closeDelivery}
+      visualNotice={visualNotice}
+      blockers={blockers}
+      activeElsewhere={activeElsewhere}
+      onUnpublishAndRetry={unpublishAndRetry}
+    />}
 
     {showPreview && <div role="dialog" aria-modal="true" aria-label="Vista previa del sitio" className="preview-overlay" style={{ position: "fixed", inset: 0, zIndex: 1000, background: "#0b1020", display: "flex", flexDirection: "column" }}>
       <header style={{ flex: "none", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16, padding: "12px 20px", background: "#0b1020", borderBottom: "1px solid #1d2740" }}>

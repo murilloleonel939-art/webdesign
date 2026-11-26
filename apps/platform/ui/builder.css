@@ -375,3 +375,74 @@
    Solo dentro de `.builder-done`, donde de verdad es el primer boton; en los
    avisos de deshacer el primero es otro y no debe pintarse como principal. */
 .builder-done .builder-run-actions button:first-child{background:var(--ink);color:#fff;border-color:var(--ink)}
+
+/* --- T-015: overlay de entrega ------------------------------------------- */
+
+/* Ocupa toda la pantalla: el fondo no debe quedar visible ni hacer scroll. */
+.delivery-overlay{
+  position:fixed;inset:0;z-index:1100;
+  display:flex;flex-direction:column;
+  background:#0b1020;
+  /* El foco inicial llega aquí; outline no visible (gestionado por el navegador). */
+  outline:none;
+}
+
+.delivery-header{
+  flex:none;display:flex;align-items:center;justify-content:space-between;gap:16px;
+  padding:12px clamp(14px,2.4vw,24px);
+  background:color-mix(in srgb,#0b1020 90%,transparent);
+  border-bottom:1px solid #1d2740;
+}
+.delivery-title{display:flex;flex-direction:column;gap:2px}
+.delivery-heading{font-size:15px;font-weight:700;color:#fff}
+.delivery-sub{font-size:12px;color:#8b97b3}
+.delivery-close{
+  display:inline-flex;align-items:center;gap:7px;
+  padding:8px 15px;border-radius:10px;
+  border:1px solid #2b3757;background:#131c33;
+  color:#fff;font-weight:650;font-size:13px;
+  transition:background .16s var(--ease);
+}
+.delivery-close:hover{background:#1d2b4a}
+
+/* iframe ocupa todo el espacio libre */
+.delivery-frame{flex:1;min-height:0;overflow:hidden}
+.delivery-iframe{width:100%;height:100%;border:0;background:#fff;display:block}
+
+/* Barra inferior con acciones */
+.delivery-footer{
+  flex:none;
+  display:flex;flex-direction:column;gap:8px;
+  padding:12px clamp(14px,2.4vw,24px);
+  background:color-mix(in srgb,#0b1020 90%,transparent);
+  border-top:1px solid #1d2740;
+}
+.delivery-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.delivery-btn-publish{min-width:120px}
+.delivery-btn-change{color:#8b97b3;border-color:#2b3757}
+
+/* Avisos compactos dentro del footer */
+.delivery-alert{
+  font-size:13px;color:#e2b96a;
+  padding:7px 12px;border-radius:8px;
+  background:rgba(226,185,106,.08);border:1px solid rgba(226,185,106,.2);
+}
+.delivery-alert--warn{color:#8bb5e2;background:rgba(139,181,226,.08);border-color:rgba(139,181,226,.2)}
+.delivery-inline-action{
+  background:none;border:none;color:#8bb5e2;font-weight:700;
+  cursor:pointer;text-decoration:underline;padding:0;font-size:inherit;
+}
+.delivery-published{
+  display:flex;align-items:center;gap:12px;flex-wrap:wrap;
+  font-size:13px;color:#5ecfa8;
+}
+.delivery-open-link{
+  color:#5ecfa8;font-weight:700;text-decoration:underline;
+}
+
+/* Móvil: footer en columna, botones a ancho completo */
+@media (max-width:720px){
+  .delivery-footer{padding:10px 14px}
+  .delivery-actions{flex-direction:column;align-items:stretch}
+  .delivery-btn-publish,.delivery-btn-change{width:100%;justify-content:center}
+}
