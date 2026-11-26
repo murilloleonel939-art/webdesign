@@ -7,7 +7,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json && node build-ui.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node --test test/preview-isolation.test.mjs test/cycle.test.mjs test/load.test.mjs test/another-active.test.mjs test/finding-label.test.mjs test/design-runs.test.mjs test/design-chat-flow.test.mjs test/site-init.test.mjs test/library.test.mjs test/pexels.test.mjs test/licensed-assets.test.mjs test/photo-bank.test.mjs test/delivery-overlay.test.mjs"
+    "test": "node --test test/preview-isolation.test.mjs test/cycle.test.mjs test/load.test.mjs test/another-active.test.mjs test/finding-label.test.mjs test/design-runs.test.mjs test/design-chat-flow.test.mjs test/site-init.test.mjs test/library.test.mjs test/pexels.test.mjs test/licensed-assets.test.mjs test/photo-bank.test.mjs test/delivery-overlay.test.mjs test/internal-photos.test.mjs"
   },
   "dependencies": {
     "@measured/puck": "0.20.2",

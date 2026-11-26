@@ -298,16 +298,25 @@ function makeFetchPhotos(
   // El sector viaja en la petición que arma `loadPhotos`; el que se calculó del
   // brief queda como respaldo para un agente que todavía no lo mande.
   return async ({ query, orientation, count, sector: fromRequest }) => {
+    // La URL no lleva el token (va en la cabecera): se puede registrar tal cual.
+    const url = `${apiBaseUrl}/api/internal/sites/${siteId}/photos`;
+    const ctx = { siteId, url, orientation, count };
     try {
-      const res = await fetchImpl(`${apiBaseUrl}/api/internal/sites/${siteId}/photos`, {
+      const res = await fetchImpl(url, {
         method: "POST",
         headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
         body: JSON.stringify({ query, orientation, count, sector: fromRequest ?? sector }),
         signal: AbortSignal.timeout(20_000),
       });
-      if (!res.ok) return [];
+      if (!res.ok) {
+        console.warn("design_photos_http_error", { ...ctx, status: res.status, body: await bodySnippet(res) });
+        return [];
+      }
       const raw = (await res.json()) as { photos?: unknown };
-      if (!Array.isArray(raw.photos)) return [];
+      if (!Array.isArray(raw.photos)) {
+        console.warn("design_photos_bad_payload", { ...ctx, status: res.status });
+        return [];
+      }
       const photos: DesignPhoto[] = [];
       for (const item of raw.photos) {
         const p = item as { assetId?: unknown; alt?: unknown };
@@ -317,11 +326,29 @@ function makeFetchPhotos(
       if (orientation === "landscape") tally.hero = photos.length > 0;
       else tally.gallery += photos.length;
       return photos;
-    } catch {
-      // Corte de 20 s, DNS o JSON roto: el diseno sigue sin fotos.
+    } catch (e) {
+      // Corte de 20 s, DNS o JSON roto: el diseno sigue sin fotos, pero queda dicho.
+      const err = e instanceof Error ? e : new Error(String(e));
+      const cause = (err as { cause?: { code?: unknown; message?: unknown } }).cause;
+      console.warn("design_photos_request_failed", {
+        ...ctx,
+        name: err.name,
+        message: message(err),
+        ...(cause && typeof cause === "object" ? { cause: String(cause.code ?? cause.message ?? "") } : {}),
+      });
       return [];
     }
   };
+}
+
+/** Primeros 300 caracteres del cuerpo de un no-2xx. Nunca lanza. */
+async function bodySnippet(res: Response): Promise<string> {
+  try {
+    const text = typeof res.text === "function" ? await res.text() : JSON.stringify(await res.json());
+    return text.length > 300 ? `${text.slice(0, 300)}...` : text;
+  } catch {
+    return "<sin cuerpo>";
+  }
 }
 
 function message(e: unknown): string {

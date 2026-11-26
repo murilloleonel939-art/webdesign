@@ -331,3 +331,54 @@ test("fetchPhotos pide la ruta interna con Bearer y un 503 no rompe el diseno", 
     assert.equal(c.authorization, "Bearer jti");
   }
 });
+
+// T-020-bug: un fallo de la ruta interna de fotos SE REGISTRA. Antes `!res.ok`
+// y el `catch` devolvian [] en silencio y `design_photos` no distinguia causas.
+const COPY_CON_FOTOS = JSON.stringify({
+  businessType: "cafetería", heroHeadline: "Café Aurora en Valencia",
+  heroSubline: "Tueste propio.", heroCta: "Escríbenos", servicesHeading: "Qué hacemos",
+  services: [
+    { title: "Tueste propio", body: "Tostamos el grano en casa." },
+    { title: "Desayunos", body: "Servimos desayunos hasta mediodía." },
+    { title: "Para llevar", body: "También para llevar." },
+  ],
+  processHeading: "Cómo trabajamos", process: [{ title: "Nos escribes", body: "Cuéntanos." }],
+  aboutHeading: "Quiénes somos", aboutBody: "Cafetería en Valencia.", faq: [],
+  closingHeadline: "Hablemos", closingCta: "Escribir",
+  seoDescription: "Cafetería de especialidad en Valencia con tueste propio.",
+  photoQueries: { hero: "coffee shop interior", gallery: "coffee shop details" },
+});
+
+async function capturarWarn(fn) {
+  const original = console.warn;
+  const logs = [];
+  console.warn = (...args) => logs.push(args);
+  try { await fn(); } finally { console.warn = original; }
+  return logs;
+}
+
+test("un no-2xx de la ruta de fotos se registra con estado, cuerpo y URL, sin token", async () => {
+  const fetchFalso = async () => new Response(JSON.stringify({ error: "not_found" }), { status: 404 });
+  const { deps } = fakeDeps({ transport: fakeTransport({ text: COPY_CON_FOTOS }) });
+  const logs = await capturarWarn(() => processDesignJob({ ...deps, fetch: fetchFalso }, JOB));
+  const fallos = logs.filter(([tag]) => tag === "design_photos_http_error");
+  assert.equal(fallos.length, 2, "un log por peticion (hero + galeria), no por foto");
+  for (const [, data] of fallos) {
+    assert.equal(data.status, 404);
+    assert.match(data.body, /not_found/);
+    assert.equal(data.url, `http://x/api/internal/sites/${SITE}/photos`);
+  }
+  assert.doesNotMatch(JSON.stringify(logs), /jti|Bearer|authorization/i, "nunca el token ni la cabecera");
+});
+
+test("una excepcion de red en fotos se registra con name y message", async () => {
+  const fetchFalso = async () => { throw new TypeError("fetch failed", { cause: { code: "ENOTFOUND" } }); };
+  const { deps } = fakeDeps({ transport: fakeTransport({ text: COPY_CON_FOTOS }) });
+  const logs = await capturarWarn(() => processDesignJob({ ...deps, fetch: fetchFalso }, JOB));
+  const fallos = logs.filter(([tag]) => tag === "design_photos_request_failed");
+  assert.equal(fallos.length, 2);
+  assert.equal(fallos[0][1].name, "TypeError");
+  assert.equal(fallos[0][1].message, "fetch failed");
+  assert.equal(fallos[0][1].cause, "ENOTFOUND");
+  assert.doesNotMatch(JSON.stringify(logs), /jti|Bearer/i);
+});

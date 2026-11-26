@@ -73,7 +73,10 @@ export async function authorizeAgent(pool: Pool, req: IncomingMessage, siteId: s
     return { ok: false, code: 401, error: "invalid_token" };
   }
   const rows = await pool.query<AgentAuth>(
-    "SELECT run_id, user_id, site_id FROM app_agent_token_check($1::uuid, $2)",
+    // `pg` devuelve los nombres de columna tal cual: sin alias, la fila trae
+    // `site_id` y `row.siteId` es `undefined`, asi que TODA peticion caia en 404.
+    `SELECT run_id AS "runId", user_id AS "userId", site_id AS "siteId"
+       FROM app_agent_token_check($1::uuid, $2)`,
     [token, REQUIRED_SCOPE],
   );
   const row = rows.rows[0];
@@ -144,6 +147,7 @@ export async function handleInternalPhotos(
 
   const authz = await authorizeAgent(pool, req, siteId);
   if (!authz.ok) {
+    console.warn("internal_photos_denied", { siteId, status: authz.code, error: authz.error });
     json(res, authz.code, { error: authz.error });
     return true;
   }
