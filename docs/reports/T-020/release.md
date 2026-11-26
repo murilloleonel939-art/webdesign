@@ -24,7 +24,7 @@
 
 ```
 git branch --show-current  →  main
-clave 5Xyx7juGKl0VHn5spVoPswzXq3XFLf6qx9XyHH  →  0 coincidencias (repo e índice)
+clave de Unsplash (la cadena del enunciado)  →  0 coincidencias (repo e índice)
 agents/design   →  tests 184 · pass 184 · fail 0
 apps/workers    →  tests  34 · pass  34 · fail 0
 apps/platform   →  tests  86 · pass  84 · fail 0 · skipped 2
