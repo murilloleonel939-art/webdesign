@@ -10,14 +10,29 @@ export type SectionType = (typeof SECTION_TYPES)[number];
 const ALLOWED_SCHEMES = ["https:", "http:", "mailto:", "tel:"];
 
 /**
- * Segmento válido de ruta interna (T-003.2).
+ * Pieza válida de un segmento de ruta interna (T-003.4).
  *
- * Solo letras minúsculas, dígitos y guiones entre ellos. Los segmentos vacíos
- * que produce la barra final también son válidos.
- * Esto descarta de una vez: `..`, `%2e`, espacios, comillas, backticks,
- * backslashes, comillas y cualquier otro carácter fuera del conjunto.
+ * Un segmento se parte por guiones y cada pieza debe ser solo minúsculas y
+ * dígitos. Un único cuantificador, sin grupos anidados: el coste es lineal y no
+ * hay retroceso. El regex anterior (`([a-z0-9]+(-[a-z0-9]+)*)?`) anidaba dos
+ * cuantificadores, que es la forma que permite retroceso superlineal; este no
+ * puede, sea cual sea la entrada.
+ *
+ * Que ninguna pieza quede vacía descarta guion inicial, guion final y guiones
+ * dobles, igual que antes.
  */
-const SAFE_SEGMENT = /^([a-z0-9]+(-[a-z0-9]+)*)?$/;
+const SAFE_PART = /^[a-z0-9]+$/;
+
+/**
+ * ¿Es válido este segmento completo (sin contar el vacío de la barra final)?
+ *
+ * El segmento vacío NO se decide aquí: lo trata `isSafeUrl`, que solo admite uno
+ * y solo al final (T-003.4, Fix 2).
+ */
+function isSafeSegment(seg: string): boolean {
+  if (seg === "") return false;
+  return seg.split("-").every((part) => SAFE_PART.test(part));
+}
 
 /**
  * ¿El valor es una URL que se puede poner en un `href`?
@@ -26,10 +41,10 @@ const SAFE_SEGMENT = /^([a-z0-9]+(-[a-z0-9]+)*)?$/;
  *  - Anclas: `#texto`
  *  - Esquemas seguros: `https:`, `http:`, `mailto:`, `tel:`
  *  - Rutas internas absolutas que empiecen por `/`, con segmentos
- *    validados uno a uno con SAFE_SEGMENT (máx. 200 caracteres).
+ *    validados uno a uno (menos de 200 caracteres).
  *
  * Rechaza todo lo demás, incluidas rutas relativas al protocolo (`//host`),
- * travesías (`..`, `%2e%2e`), espacios, caracteres peligrosos y más de 200 chars.
+ * travesías (`..`, `%2e%2e`), espacios, caracteres peligrosos y 200 o más chars.
  */
 export function isSafeUrl(value: string): boolean {
   if (value.startsWith("#")) return true; // ancla interna
@@ -37,10 +52,16 @@ export function isSafeUrl(value: string): boolean {
   if (value.startsWith("/")) {
     // Descarta rutas relativas al protocolo (//host) y travesías de barra-barra.
     if (value.startsWith("//") || value.startsWith("/\\")) return false;
-    if (value.length > 200) return false;
+    // Frontera del límite (T-003.4, Fix 3): 199 es el máximo real, 200 se
+    // rechaza, que es lo que promete el contrato ("200 o más").
+    if (value.length >= 200) return false;
     // Valida segmento a segmento: elimina la barra inicial y divide.
     const segments = value.slice(1).split("/");
-    return segments.every((seg) => SAFE_SEGMENT.test(seg));
+    // Un único segmento vacío al final es la barra final de `/servicios/`; se
+    // descarta antes de validar (T-003.4, Fix 2). Cualquier otro vacío —en medio
+    // o repetido— deja un `""` que `isSafeSegment` rechaza.
+    if (segments[segments.length - 1] === "") segments.pop();
+    return segments.every(isSafeSegment);
   }
   try {
     return ALLOWED_SCHEMES.includes(new URL(value).protocol);

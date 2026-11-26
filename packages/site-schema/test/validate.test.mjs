@@ -83,6 +83,62 @@ test("isSafeUrl: rutas internas peligrosas se rechazan", () => {
   assert.equal(isSafeUrl("/" + "a".repeat(201)), false, "más de 200 chars");
 });
 
+// T-003.4 (Fix 2): solo se admite UN segmento vacío y solo al final.
+test("isSafeUrl: un vacío en medio de la ruta se rechaza", () => {
+  assert.equal(isSafeUrl("/a//b"), false, "vacío en medio");
+});
+
+test("isSafeUrl: varios vacíos en medio se rechazan", () => {
+  assert.equal(isSafeUrl("/a///b"), false, "dos vacíos en medio");
+});
+
+test("isSafeUrl: dos vacíos al final se rechazan", () => {
+  assert.equal(isSafeUrl("/a//"), false, "dos barras finales");
+});
+
+test("isSafeUrl: un vacío al final sigue valiendo", () => {
+  assert.equal(isSafeUrl("/servicios/"), true, "una barra final");
+});
+
+test("isSafeUrl: '//' se rechaza por la guarda de ruta relativa al protocolo", () => {
+  assert.equal(isSafeUrl("//"), false, "//");
+});
+
+// T-003.4 (Fix 3): la frontera es 199, no 200.
+test("isSafeUrl: 199 caracteres se aceptan y 200 se rechazan", () => {
+  assert.equal(isSafeUrl("/" + "a".repeat(198)), true, "199 chars");
+  assert.equal(isSafeUrl("/" + "a".repeat(199)), false, "200 chars");
+});
+
+// T-003.4 (Fix 1): la validación es lineal, sin retroceso cuadrático.
+test("isSafeUrl: 1000 rutas de 199 caracteres se validan en menos de 100 ms", () => {
+  const value = "/" + "a-".repeat(99);
+  assert.equal(value.length, 199);
+  const start = performance.now();
+  for (let i = 0; i < 1000; i++) isSafeUrl(value);
+  const elapsed = performance.now() - start;
+  assert.ok(elapsed < 100, `1000 llamadas tardaron ${elapsed.toFixed(1)} ms`);
+});
+
+// T-003.4 (Fix 1): el recorte no relajó nada de lo que ya se rechazaba.
+test("isSafeUrl: sigue rechazando mayúsculas, '_', '.', 'ñ' y demás", () => {
+  assert.equal(isSafeUrl("/Mayusculas"), false, "mayúsculas");
+  assert.equal(isSafeUrl("/a_b"), false, "guion bajo");
+  assert.equal(isSafeUrl("/a.b"), false, "punto");
+  assert.equal(isSafeUrl("/año"), false, "eñe");
+  assert.equal(isSafeUrl("/a b"), false, "espacio");
+  assert.equal(isSafeUrl("/a<b"), false, "menor que");
+  assert.equal(isSafeUrl("/a>b"), false, "mayor que");
+  assert.equal(isSafeUrl("/a`b"), false, "backtick");
+  assert.equal(isSafeUrl('/a"b'), false, "comilla");
+  assert.equal(isSafeUrl("javascript:alert(1)"), false, "javascript:");
+  assert.equal(isSafeUrl("data:text/html,x"), false, "data:");
+  assert.equal(isSafeUrl("//evil.com"), false, "//evil.com");
+  assert.equal(isSafeUrl("/\\evil.com"), false, "/\\evil.com");
+  assert.equal(isSafeUrl("/../x"), false, "/../x");
+  assert.equal(isSafeUrl("/%2e%2e/x"), false, "/%2e%2e/x");
+});
+
 test("isSafeUrl: javascript y data siguen rechazándose", () => {
   assert.equal(isSafeUrl("javascript:alert(1)"), false);
   assert.equal(isSafeUrl("data:text/html,x"), false);
