@@ -102,5 +102,5 @@ cambiando la prueba a la vez es justo lo que un release no debe hacer.
 
 ## Grafo
 
-3573 nodos tras la reconstrucción automática posterior al commit («grafo» = nodos de
+3581 nodos tras la reconstrucción automática posterior al commit («grafo» = nodos de
 `graphify-out/graph.json`, que no se versiona).
