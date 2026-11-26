@@ -238,7 +238,8 @@ export function planSections(brief: QuickBrief, preset: Preset, copy?: SiteCopy,
     const result: PlannedSection[] = [];
     for (const t of types) {
       const supports = sectionSupported(t, text, galleryPhotos);
-      if (supports) result.push(write(t, t, "preset"));
+      // La galería sale de la búsqueda de fotos, no del preset (mismo motivo que en landing).
+      if (supports) result.push(write(t, t, t === "gallery" ? "fotos_de_la_busqueda" : "preset"));
       // No se añade omit: en el plan de sitio las páginas ya están definidas,
       // no hay que justificar cada hueco al panel.
     }
@@ -250,7 +251,7 @@ export function planSections(brief: QuickBrief, preset: Preset, copy?: SiteCopy,
     shape,
     pages: [
       { slug: "/",              title: preset.id, sections: makeSections("hero", "features", "faq", "cta") },
-      { slug: "/servicios",     title: "Servicios",       sections: makeSections("hero", "features", "process", "cta") },
+      { slug: "/servicios",     title: "Servicios",       sections: makeSections("hero", "features", "process", "gallery", "cta") },
       { slug: "/sobre-nosotros",title: "Sobre nosotros",  sections: makeSections("hero", "text", "faq") },
       { slug: "/contacto",      title: "Contacto",        sections: makeSections("hero", "contact") },
     ],

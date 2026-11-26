@@ -251,6 +251,10 @@ export function draftSite(brief: QuickBrief, preset: Preset, copy?: SiteCopy, ph
 
   const usedPhotos: PhotoRef[] = [];
 
+  // Páginas interiores: hero sin foto (portada gráfica). La foto principal va
+  // solo en la portada y la galería en /servicios: ninguna foto se repite.
+  const innerPhotos: SitePhotos = { gallery: photos?.gallery ?? [] };
+
   function buildPage(id: string, slug: string, seoTitle: string, seoDesc: string, types: string[]): { id: string; slug: string; seo: { title: string; description: string; noindex: boolean }; sections: Section[] } {
     const sections: Section[] = [];
     const used = new Set<string>();
@@ -258,7 +262,7 @@ export function draftSite(brief: QuickBrief, preset: Preset, copy?: SiteCopy, ph
       let sid = `s_${type}`;
       let n = 2;
       while (used.has(sid)) sid = `s_${type}_${n++}`;
-      const section = copySection(type, sid, brief, text, photos ?? noPhotos);
+      const section = copySection(type, sid, brief, text, innerPhotos);
       if (!section) return;
       used.add(sid);
       sections.push(section);
@@ -339,10 +343,13 @@ export function draftSite(brief: QuickBrief, preset: Preset, copy?: SiteCopy, ph
         seo: { title: cut(name, 70), description: cut(safeText(text.seoDescription, genericCopy(brief).seoDescription), 160), noindex: false },
         sections: homeSections,
       },
-      buildPage("p_servicios", "/servicios", `Servicios — ${name}`, safeText(text.servicesHeading, "Servicios"), ["hero", "features", "process", "cta"]),
+      buildPage("p_servicios", "/servicios", `Servicios — ${name}`, safeText(text.servicesHeading, "Servicios"), ["hero", "features", "process", "gallery", "cta"]),
       buildPage("p_sobre", "/sobre-nosotros", `Sobre nosotros — ${name}`, safeText(text.aboutHeading, "Sobre nosotros"), ["hero", "text", "faq"]),
       buildPage("p_contacto", "/contacto", `Contacto — ${name}`, "", ["hero", "contact"]),
     ];
+    if (!homeSections.some((s) => s.type === "gallery") && pages[1]?.sections.some((s) => s.type === "gallery")) {
+      usedPhotos.push(...(photos?.gallery ?? []));
+    }
     // Sobrescribir el heroHeadline de las páginas subinternas: buildPage usa
     // el texto completo; reemplazamos las secciones hero con la etiqueta.
     for (const [pageIdx, label] of [[1, serviciosLabel], [2, sobreLabel], [3, contactoLabel]] as [number, string][]) {
