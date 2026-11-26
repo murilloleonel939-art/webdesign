@@ -1,5 +1,5 @@
 import { budgetSchema, type BudgetTracker, type LlmClient } from "@webdesign/llm";
-import { FAST_BUDGET, runFastDesign, type FastDesignDeps, type FastDesignResult, type Preset } from "@webdesign/agent-design";
+import { FAST_BUDGET, normalizeBrief, runFastDesign, sectorForBrief, type FastDesignDeps, type FastDesignResult, type Preset, type Sector } from "@webdesign/agent-design";
 
 // Job del agente de diseño (spec 9.1, Fase 4; punto C).
 //
@@ -193,6 +193,10 @@ export async function processDesignJob(deps: DesignDeps, job: DesignJob): Promis
     // Recuento de lo que devolvio la ruta de fotos: se registra despues, con el
     // run ya identificado, y nunca con la query ni URLs.
     const photosTally = { hero: false, gallery: 0 };
+    // Sector de la biblioteca de fotos (T-020): se decide aqui, del mismo brief
+    // que recibe el agente y con la misma tabla determinista. La ruta interna lo
+    // usa para elegir carpeta del banco; si no llega o no se reconoce, `neutro`.
+    const sector = sectorForBrief(normalizeBrief(job.brief));
     try {
       result = await runFastDesign({
         brief: job.brief,
@@ -208,7 +212,7 @@ export async function processDesignJob(deps: DesignDeps, job: DesignJob): Promis
           locale: "es",
           apiBaseUrl: made.apiBaseUrl,
         },
-        fetchPhotos: makeFetchPhotos(deps.fetch ?? globalThis.fetch, made.apiBaseUrl, made.token, job.siteId, photosTally),
+        fetchPhotos: makeFetchPhotos(deps.fetch ?? globalThis.fetch, made.apiBaseUrl, made.token, job.siteId, photosTally, sector),
       });
     } catch (e) {
       // Un 6.4 con error, un brief invalido o un fallo del modelo: no se guarda
@@ -289,13 +293,16 @@ function makeFetchPhotos(
   token: string,
   siteId: string,
   tally: { hero: boolean; gallery: number },
+  sector: Sector,
 ): NonNullable<FastDesignDeps["fetchPhotos"]> {
-  return async ({ query, orientation, count }) => {
+  // El sector viaja en la petición que arma `loadPhotos`; el que se calculó del
+  // brief queda como respaldo para un agente que todavía no lo mande.
+  return async ({ query, orientation, count, sector: fromRequest }) => {
     try {
       const res = await fetchImpl(`${apiBaseUrl}/api/internal/sites/${siteId}/photos`, {
         method: "POST",
         headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
-        body: JSON.stringify({ query, orientation, count }),
+        body: JSON.stringify({ query, orientation, count, sector: fromRequest ?? sector }),
         signal: AbortSignal.timeout(20_000),
       });
       if (!res.ok) return [];

@@ -10,6 +10,7 @@ import { copyPrompt, guardCopy, readCopy, retryLine, type SiteCopy } from "./cop
 import { draftSite, type PhotoRef, type Preset, type SitePhotos } from "./draft.js";
 import { genericCopy } from "./generic-copy.js";
 import { inventory, planSections, type Inventory, type Plan } from "./plan.js";
+import { sectorForBrief, type Sector } from "./sector.js";
 import { createStore, saveCheckpoint } from "./store.js";
 import { makeDesignTools } from "./tools.js";
 
@@ -72,7 +73,17 @@ export interface FastDesignDeps {
    * Busqueda de fotos, inyectada por el llamador: este paquete NO hace fetch ni
    * conoce ningun proveedor de imagenes. Sin ella, el sitio sale sin fotos.
    */
-  fetchPhotos?: (req: { query: string; orientation: "landscape" | "square"; count: number }) => Promise<PhotoRef[]>;
+  fetchPhotos?: (req: {
+    query: string;
+    orientation: "landscape" | "square";
+    count: number;
+    /**
+     * Sector del negocio segun `sectorForBrief`, para que el banco local sirva
+     * fotos del sector correcto. Opcional: un llamador que no lo sepa sigue
+     * funcionando y la ruta interna cae en `neutro`.
+     */
+    sector?: Sector;
+  }) => Promise<PhotoRef[]>;
 }
 
 /**
@@ -428,10 +439,13 @@ async function loadPhotos(
   if (fetchPhotos === undefined) return undefined;
   const queries = copy?.photoQueries ?? genericCopy(brief).photoQueries;
   if (queries === undefined) return undefined;
+  // El sector lo decide este paquete, no el llamador: sale del brief con la
+  // misma tabla determinista que usa el banco para elegir carpeta.
+  const sector = sectorForBrief(brief);
   try {
     const [hero, gallery] = await Promise.all([
-      fetchPhotos({ query: queries.hero, orientation: "landscape", count: 1 }),
-      fetchPhotos({ query: queries.gallery, orientation: "square", count: 4 }),
+      fetchPhotos({ query: queries.hero, orientation: "landscape", count: 1, sector }),
+      fetchPhotos({ query: queries.gallery, orientation: "square", count: 4, sector }),
     ]);
     const heroPhoto = hero[0];
     if (heroPhoto === undefined || gallery.length === 0) {

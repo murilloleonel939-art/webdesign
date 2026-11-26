@@ -1,0 +1,601 @@
+{
+  "source": "Unsplash",
+  "license": "Unsplash License",
+  "licenseUrl": "https://unsplash.com/license",
+  "attributionRequired": true,
+  "utmSource": "zottaweb",
+  "photos": [
+    {
+      "id": "v-KZt2CRU6Y",
+      "file": "despacho/hero-01.jpg",
+      "sector": "despacho",
+      "orientation": "landscape",
+      "width": 1600,
+      "height": 900,
+      "alt": "Sala de reuniones con mesa larga de madera y sillas azules",
+      "photographer": {
+        "name": "Deliberately AI",
+        "profileUrl": "https://unsplash.com/@msordille?utm_source=zottaweb&utm_medium=referral"
+      },
+      "unsplashUrl": "https://unsplash.com/?utm_source=zottaweb&utm_medium=referral",
+      "photoPageUrl": "https://unsplash.com/photos/long-wooden-table-with-blue-chairs-in-a-room-v-KZt2CRU6Y?utm_source=zottaweb&utm_medium=referral",
+      "downloadLocation": "https://api.unsplash.com/photos/v-KZt2CRU6Y/download?ixid=M3wxMTQ1ODA1fDB8MXxhbGx8fHx8fHx8fHwxNzk1NzIyNzIwfA"
+    },
+    {
+      "id": "tjd5CfdDPRA",
+      "file": "despacho/hero-02.jpg",
+      "sector": "despacho",
+      "orientation": "landscape",
+      "width": 1600,
+      "height": 900,
+      "alt": "Despacho con mesa de madera y sillas de piel junto a la ventana",
+      "photographer": {
+        "name": "Brusk Dede",
+        "profileUrl": "https://unsplash.com/@bruskrd?utm_source=zottaweb&utm_medium=referral"
+      },
+      "unsplashUrl": "https://unsplash.com/?utm_source=zottaweb&utm_medium=referral",
+      "photoPageUrl": "https://unsplash.com/photos/five-black-rolling-chars-front-of-desk-tjd5CfdDPRA?utm_source=zottaweb&utm_medium=referral",
+      "downloadLocation": "https://api.unsplash.com/photos/tjd5CfdDPRA/download?ixid=M3wxMTQ1ODA1fDB8MXxhbGx8fHx8fHx8fHwxNzk1NzIyNzg0fA"
+    },
+    {
+      "id": "yg7WVUOf4N8",
+      "file": "despacho/gallery-01.jpg",
+      "sector": "despacho",
+      "orientation": "squarish",
+      "width": 1200,
+      "height": 1200,
+      "alt": "Manos usando una tableta y un móvil sobre una mesa blanca",
+      "photographer": {
+        "name": "Hillary Black",
+        "profileUrl": "https://unsplash.com/@internethillary?utm_source=zottaweb&utm_medium=referral"
+      },
+      "unsplashUrl": "https://unsplash.com/?utm_source=zottaweb&utm_medium=referral",
+      "photoPageUrl": "https://unsplash.com/photos/person-using-black-and-silver-laptop-computer-yg7WVUOf4N8?utm_source=zottaweb&utm_medium=referral",
+      "downloadLocation": "https://api.unsplash.com/photos/yg7WVUOf4N8/download?ixid=M3wxMTQ1ODA1fDB8MXxhbGx8fHx8fHx8fHwxNzk1NzIyNzg0fA"
+    },
+    {
+      "id": "nME9TubZtSo",
+      "file": "despacho/gallery-02.jpg",
+      "sector": "despacho",
+      "orientation": "squarish",
+      "width": 1200,
+      "height": 1200,
+      "alt": "Mesa de madera y taburete en una sala vacía con luz natural",
+      "photographer": {
+        "name": "Hannah Busing",
+        "profileUrl": "https://unsplash.com/@hannahbusing?utm_source=zottaweb&utm_medium=referral"
+      },
+      "unsplashUrl": "https://unsplash.com/?utm_source=zottaweb&utm_medium=referral",
+      "photoPageUrl": "https://unsplash.com/photos/wooden-table-and-stool-in-studio-nME9TubZtSo?utm_source=zottaweb&utm_medium=referral",
+      "downloadLocation": "https://api.unsplash.com/photos/nME9TubZtSo/download?ixid=M3wxMTQ1ODA1fDB8MXxhbGx8fHx8fHx8fHwxNzk1NzIyNzg1fA"
+    },
+    {
+      "id": "8bkeX6yijQs",
+      "file": "despacho/gallery-03.jpg",
+      "sector": "despacho",
+      "orientation": "squarish",
+      "width": 1200,
+      "height": 1200,
+      "alt": "Ordenador de sobremesa sobre un escritorio blanco",
+      "photographer": {
+        "name": "Hillary Black",
+        "profileUrl": "https://unsplash.com/@internethillary?utm_source=zottaweb&utm_medium=referral"
+      },
+      "unsplashUrl": "https://unsplash.com/?utm_source=zottaweb&utm_medium=referral",
+      "photoPageUrl": "https://unsplash.com/photos/a-desktop-computer-sitting-on-top-of-a-white-desk-8bkeX6yijQs?utm_source=zottaweb&utm_medium=referral",
+      "downloadLocation": "https://api.unsplash.com/photos/8bkeX6yijQs/download?ixid=M3wxMTQ1ODA1fDB8MXxhbGx8fHx8fHx8fHwxNzk1NzIyNzg1fA"
+    },
+    {
+      "id": "PK1pzUGQSjc",
+      "file": "hosteleria/hero-01.jpg",
+      "sector": "hosteleria",
+      "orientation": "landscape",
+      "width": 1600,
+      "height": 900,
+      "alt": "Interior de un café con suelo ajedrezado, barra y taburetes",
+      "photographer": {
+        "name": "Alexander Faé",
+        "profileUrl": "https://unsplash.com/@alexfae?utm_source=zottaweb&utm_medium=referral"
+      },
+      "unsplashUrl": "https://unsplash.com/?utm_source=zottaweb&utm_medium=referral",
+      "photoPageUrl": "https://unsplash.com/photos/empty-chairs-and-tables-inside-room-with-lights-turned-on-PK1pzUGQSjc?utm_source=zottaweb&utm_medium=referral",
+      "downloadLocation": "https://api.unsplash.com/photos/PK1pzUGQSjc/download?ixid=M3wxMTQ1ODA1fDB8MXxhbGx8fHx8fHx8fHwxNzk1NzIyNzg2fA"
+    },
+    {
+      "id": "e4B5AvA7Jqo",
+      "file": "hosteleria/hero-02.jpg",
+      "sector": "hosteleria",
+      "orientation": "landscape",
+      "width": 1600,
+      "height": 900,
+      "alt": "Comedor de restaurante con mesas de madera y lámparas colgantes",
+      "photographer": {
+        "name": "Glenov Brankovic",
+        "profileUrl": "https://unsplash.com/@glenovbrankovic?utm_source=zottaweb&utm_medium=referral"
+      },
+      "unsplashUrl": "https://unsplash.com/?utm_source=zottaweb&utm_medium=referral",
+      "photoPageUrl": "https://unsplash.com/photos/a-room-with-tables-and-chairs-e4B5AvA7Jqo?utm_source=zottaweb&utm_medium=referral",
+      "downloadLocation": "https://api.unsplash.com/photos/e4B5AvA7Jqo/download?ixid=M3wxMTQ1ODA1fDB8MXxhbGx8fHx8fHx8fHwxNzk1NzIyNzg2fA"
+    },
+    {
+      "id": "nulJA9vxJII",
+      "file": "hosteleria/hero-03.jpg",
+      "sector": "hosteleria",
+      "orientation": "landscape",
+      "width": 1600,
+      "height": 900,
+      "alt": "Sala de restaurante con techo de paneles y mesas de madera",
+      "photographer": {
+        "name": "Glenov Brankovic",
+        "profileUrl": "https://unsplash.com/@glenovbrankovic?utm_source=zottaweb&utm_medium=referral"
+      },
+      "unsplashUrl": "https://unsplash.com/?utm_source=zottaweb&utm_medium=referral",
+      "photoPageUrl": "https://unsplash.com/photos/a-large-room-with-tables-and-chairs-nulJA9vxJII?utm_source=zottaweb&utm_medium=referral",
+      "downloadLocation": "https://api.unsplash.com/photos/nulJA9vxJII/download?ixid=M3wxMTQ1ODA1fDB8MXxhbGx8fHx8fHx8fHwxNzk1NzIyNzg3fA"
+    },
+    {
+      "id": "4lZyKFyzmWw",
+      "file": "hosteleria/gallery-01.jpg",
+      "sector": "hosteleria",
+      "orientation": "squarish",
+      "width": 1200,
+      "height": 1200,
+      "alt": "Rincón de café con plantas y muebles de madera",
+      "photographer": {
+        "name": "Volodymyr Dobrovolskyy",
+        "profileUrl": "https://unsplash.com/@vladimir_d?utm_source=zottaweb&utm_medium=referral"
+      },
+      "unsplashUrl": "https://unsplash.com/?utm_source=zottaweb&utm_medium=referral",
+      "photoPageUrl": "https://unsplash.com/photos/a-room-with-a-bunch-of-chairs-and-tables-4lZyKFyzmWw?utm_source=zottaweb&utm_medium=referral",
+      "downloadLocation": "https://api.unsplash.com/photos/4lZyKFyzmWw/download?ixid=M3wxMTQ1ODA1fDB8MXxhbGx8fHx8fHx8fHwxNzk1NzIyNzg3fA"
+    },
+    {
+      "id": "nhWgZNV85LQ",
+      "file": "hosteleria/gallery-02.jpg",
+      "sector": "hosteleria",
+      "orientation": "squarish",
+      "width": 1200,
+      "height": 1200,
+      "alt": "Café luminoso con mesas, sillas y cuadros en la pared",
+      "photographer": {
+        "name": "Behzad Ghaffarian",
+        "profileUrl": "https://unsplash.com/@behz?utm_source=zottaweb&utm_medium=referral"
+      },
+      "unsplashUrl": "https://unsplash.com/?utm_source=zottaweb&utm_medium=referral",
+      "photoPageUrl": "https://unsplash.com/photos/brown-and-grey-dining-set-inside-the-room-nhWgZNV85LQ?utm_source=zottaweb&utm_medium=referral",
+      "downloadLocation": "https://api.unsplash.com/photos/nhWgZNV85LQ/download?ixid=M3wxMTQ1ODA1fDB8MXxhbGx8fHx8fHx8fHwxNzk1NzIyNzg4fA"
+    },
+    {
+      "id": "k5lS1S84Xv0",
+      "file": "hosteleria/gallery-03.jpg",
+      "sector": "hosteleria",
+      "orientation": "squarish",
+      "width": 1200,
+      "height": 1200,
+      "alt": "Rincón de cafetería con planta y mesa alta junto a la pared",
+      "photographer": {
+        "name": "Zoshua Colah",
+        "profileUrl": "https://unsplash.com/@zoshuacolah?utm_source=zottaweb&utm_medium=referral"
+      },
+      "unsplashUrl": "https://unsplash.com/?utm_source=zottaweb&utm_medium=referral",
+      "photoPageUrl": "https://unsplash.com/photos/a-modern-cafe-interior-with-tables-and-chairs-k5lS1S84Xv0?utm_source=zottaweb&utm_medium=referral",
+      "downloadLocation": "https://api.unsplash.com/photos/k5lS1S84Xv0/download?ixid=M3wxMTQ1ODA1fDB8MXxhbGx8fHx8fHx8fHwxNzk1NzIyNzg4fA"
+    },
+    {
+      "id": "WWST6E8LxeE",
+      "file": "hosteleria/gallery-04.jpg",
+      "sector": "hosteleria",
+      "orientation": "squarish",
+      "width": 1200,
+      "height": 1200,
+      "alt": "Comedor de restaurante en penumbra con lámparas esféricas",
+      "photographer": {
+        "name": "Paul Griffin",
+        "profileUrl": "https://unsplash.com/@paulgriffin?utm_source=zottaweb&utm_medium=referral"
+      },
+      "unsplashUrl": "https://unsplash.com/?utm_source=zottaweb&utm_medium=referral",
+      "photoPageUrl": "https://unsplash.com/photos/people-inside-eatery-WWST6E8LxeE?utm_source=zottaweb&utm_medium=referral",
+      "downloadLocation": "https://api.unsplash.com/photos/WWST6E8LxeE/download?ixid=M3wxMTQ1ODA1fDB8MXxhbGx8fHx8fHx8fHwxNzk1NzIyNzg5fA"
+    },
+    {
+      "id": "KfqgYzoH3Vk",
+      "file": "comercio/hero-01.jpg",
+      "sector": "comercio",
+      "orientation": "landscape",
+      "width": 1600,
+      "height": 900,
+      "alt": "Interior de tienda de ropa con percheros y un maniquí",
+      "photographer": {
+        "name": "Qin Fan",
+        "profileUrl": "https://unsplash.com/@fanfan80532?utm_source=zottaweb&utm_medium=referral"
+      },
+      "unsplashUrl": "https://unsplash.com/?utm_source=zottaweb&utm_medium=referral",
+      "photoPageUrl": "https://unsplash.com/photos/assorted-color-hanged-clothes-during-daytime-KfqgYzoH3Vk?utm_source=zottaweb&utm_medium=referral",
+      "downloadLocation": "https://api.unsplash.com/photos/KfqgYzoH3Vk/download?ixid=M3wxMTQ1ODA1fDB8MXxhbGx8fHx8fHx8fHwxNzk1NzIyNzg5fA"
+    },
+    {
+      "id": "GMGdhtYeROY",
+      "file": "comercio/hero-02.jpg",
+      "sector": "comercio",
+      "orientation": "landscape",
+      "width": 1600,
+      "height": 900,
+      "alt": "Interior de tienda de moda con expositores y cajas apiladas",
+      "photographer": {
+        "name": "Alexander Faé",
+        "profileUrl": "https://unsplash.com/@alexfae?utm_source=zottaweb&utm_medium=referral"
+      },
+      "unsplashUrl": "https://unsplash.com/?utm_source=zottaweb&utm_medium=referral",
+      "photoPageUrl": "https://unsplash.com/photos/photo-of-store-GMGdhtYeROY?utm_source=zottaweb&utm_medium=referral",
+      "downloadLocation": "https://api.unsplash.com/photos/GMGdhtYeROY/download?ixid=M3wxMTQ1ODA1fDB8MXxhbGx8fHx8fHx8fHwxNzk1NzIyNzkwfA"
+    },
+    {
+      "id": "7KkDiSs5UdQ",
+      "file": "comercio/gallery-01.jpg",
+      "sector": "comercio",
+      "orientation": "squarish",
+      "width": 1200,
+      "height": 1200,
+      "alt": "Rincón de tienda con ropa colgada, bolsos y complementos",
+      "photographer": {
+        "name": "S O C I A L . C U T",
+        "profileUrl": "https://unsplash.com/@socialcut?utm_source=zottaweb&utm_medium=referral"
+      },
+      "unsplashUrl": "https://unsplash.com/?utm_source=zottaweb&utm_medium=referral",
+      "photoPageUrl": "https://unsplash.com/photos/assorted-colored-clothes-on-rack-near-brown-wooden-table-7KkDiSs5UdQ?utm_source=zottaweb&utm_medium=referral",
+      "downloadLocation": "https://api.unsplash.com/photos/7KkDiSs5UdQ/download?ixid=M3wxMTQ1ODA1fDB8MXxhbGx8fHx8fHx8fHwxNzk1NzIyNzkwfA"
+    },
+    {
+      "id": "2zMHUEXhQOc",
+      "file": "comercio/gallery-02.jpg",
+      "sector": "comercio",
+      "orientation": "squarish",
+      "width": 1200,
+      "height": 1200,
+      "alt": "Estanterías y expositores en el interior de una tienda",
+      "photographer": {
+        "name": "Denis Zelenykh",
+        "profileUrl": "https://unsplash.com/@zelenykh?utm_source=zottaweb&utm_medium=referral"
+      },
+      "unsplashUrl": "https://unsplash.com/?utm_source=zottaweb&utm_medium=referral",
+      "photoPageUrl": "https://unsplash.com/photos/a-room-filled-with-lots-of-shelves-filled-with-books-2zMHUEXhQOc?utm_source=zottaweb&utm_medium=referral",
+      "downloadLocation": "https://api.unsplash.com/photos/2zMHUEXhQOc/download?ixid=M3wxMTQ1ODA1fDB8MXxhbGx8fHx8fHx8fHwxNzk1NzIyNzkxfA"
+    },
+    {
+      "id": "fMIAGd34X9s",
+      "file": "comercio/gallery-03.jpg",
+      "sector": "comercio",
+      "orientation": "squarish",
+      "width": 1200,
+      "height": 1200,
+      "alt": "Hogaza de pan recién hecha sobre una rejilla",
+      "photographer": {
+        "name": "David Todd McCarty",
+        "profileUrl": "https://unsplash.com/@davidtoddmccarty?utm_source=zottaweb&utm_medium=referral"
+      },
+      "unsplashUrl": "https://unsplash.com/?utm_source=zottaweb&utm_medium=referral",
+      "photoPageUrl": "https://unsplash.com/photos/freshly-baked-artisan-bread-cooling-on-a-rack-fMIAGd34X9s?utm_source=zottaweb&utm_medium=referral",
+      "downloadLocation": "https://api.unsplash.com/photos/fMIAGd34X9s/download?ixid=M3wxMTQ1ODA1fDB8MXxhbGx8fHx8fHx8fHwxNzk1NzIyNzkxfA"
+    },
+    {
+      "id": "e7MJLM5VGjY",
+      "file": "salud/hero-01.jpg",
+      "sector": "salud",
+      "orientation": "landscape",
+      "width": 1600,
+      "height": 900,
+      "alt": "Gabinete dental con sillón y muebles blancos junto a la ventana",
+      "photographer": {
+        "name": "Benyamin Bohlouli",
+        "profileUrl": "https://unsplash.com/@benyamin_bohlouli?utm_source=zottaweb&utm_medium=referral"
+      },
+      "unsplashUrl": "https://unsplash.com/?utm_source=zottaweb&utm_medium=referral",
+      "photoPageUrl": "https://unsplash.com/photos/modern-dental-office-with-chair-and-equipment-e7MJLM5VGjY?utm_source=zottaweb&utm_medium=referral",
+      "downloadLocation": "https://api.unsplash.com/photos/e7MJLM5VGjY/download?ixid=M3wxMTQ1ODA1fDB8MXxhbGx8fHx8fHx8fHwxNzk1NzIyNzkyfA"
+    },
+    {
+      "id": "XJptUS8nbhs",
+      "file": "salud/hero-02.jpg",
+      "sector": "salud",
+      "orientation": "landscape",
+      "width": 1600,
+      "height": 900,
+      "alt": "Sala de dentista con sillón naranja y armarios de pared",
+      "photographer": {
+        "name": "Atikah Akhtar",
+        "profileUrl": "https://unsplash.com/@atikahakhtar?utm_source=zottaweb&utm_medium=referral"
+      },
+      "unsplashUrl": "https://unsplash.com/?utm_source=zottaweb&utm_medium=referral",
+      "photoPageUrl": "https://unsplash.com/photos/dental-chair-in-clinical-office-XJptUS8nbhs?utm_source=zottaweb&utm_medium=referral",
+      "downloadLocation": "https://api.unsplash.com/photos/XJptUS8nbhs/download?ixid=M3wxMTQ1ODA1fDB8MXxhbGx8fHx8fHx8fHwxNzk1NzIyNzkyfA"
+    },
+    {
+      "id": "VckdJzo7ig0",
+      "file": "salud/gallery-01.jpg",
+      "sector": "salud",
+      "orientation": "squarish",
+      "width": 1200,
+      "height": 1200,
+      "alt": "Manos con guantes señalando una radiografía dental en una pantalla",
+      "photographer": {
+        "name": "Quang Tri NGUYEN",
+        "profileUrl": "https://unsplash.com/@quangtri?utm_source=zottaweb&utm_medium=referral"
+      },
+      "unsplashUrl": "https://unsplash.com/?utm_source=zottaweb&utm_medium=referral",
+      "photoPageUrl": "https://unsplash.com/photos/dentist-pointing-at-dental-scan-VckdJzo7ig0?utm_source=zottaweb&utm_medium=referral",
+      "downloadLocation": "https://api.unsplash.com/photos/VckdJzo7ig0/download?ixid=M3wxMTQ1ODA1fDB8MXxhbGx8fHx8fHx8fHwxNzk1NzIyNzkzfA"
+    },
+    {
+      "id": "W9YEY6G8LVM",
+      "file": "salud/gallery-02.jpg",
+      "sector": "salud",
+      "orientation": "squarish",
+      "width": 1200,
+      "height": 1200,
+      "alt": "Maqueta de una pieza dental con implante sobre fondo oscuro",
+      "photographer": {
+        "name": "Jonathan Borba",
+        "profileUrl": "https://unsplash.com/@jonathanborba?utm_source=zottaweb&utm_medium=referral"
+      },
+      "unsplashUrl": "https://unsplash.com/?utm_source=zottaweb&utm_medium=referral",
+      "photoPageUrl": "https://unsplash.com/photos/dental-implant-model-with-teeth-W9YEY6G8LVM?utm_source=zottaweb&utm_medium=referral",
+      "downloadLocation": "https://api.unsplash.com/photos/W9YEY6G8LVM/download?ixid=M3wxMTQ1ODA1fDB8MXxhbGx8fHx8fHx8fHwxNzk1NzIyNzkzfA"
+    },
+    {
+      "id": "GEzNsJarkGU",
+      "file": "salud/gallery-03.jpg",
+      "sector": "salud",
+      "orientation": "squarish",
+      "width": 1200,
+      "height": 1200,
+      "alt": "Fonendoscopio rosa sobre una persiana veneciana",
+      "photographer": {
+        "name": "Christopher Boswell",
+        "profileUrl": "https://unsplash.com/@christopherboswell?utm_source=zottaweb&utm_medium=referral"
+      },
+      "unsplashUrl": "https://unsplash.com/?utm_source=zottaweb&utm_medium=referral",
+      "photoPageUrl": "https://unsplash.com/photos/pink-stethoscope-GEzNsJarkGU?utm_source=zottaweb&utm_medium=referral",
+      "downloadLocation": "https://api.unsplash.com/photos/GEzNsJarkGU/download?ixid=M3wxMTQ1ODA1fDB8MXxhbGx8fHx8fHx8fHwxNzk1NzIyNzk0fA"
+    },
+    {
+      "id": "v13x0qU4afA",
+      "file": "taller/hero-01.jpg",
+      "sector": "taller",
+      "orientation": "landscape",
+      "width": 1600,
+      "height": 900,
+      "alt": "Taller de carpintería con bancos de trabajo y herramientas",
+      "photographer": {
+        "name": "Adam Patterson",
+        "profileUrl": "https://unsplash.com/@adampatterson?utm_source=zottaweb&utm_medium=referral"
+      },
+      "unsplashUrl": "https://unsplash.com/?utm_source=zottaweb&utm_medium=referral",
+      "photoPageUrl": "https://unsplash.com/photos/brown-wooden-table-with-white-printer-papers-v13x0qU4afA?utm_source=zottaweb&utm_medium=referral",
+      "downloadLocation": "https://api.unsplash.com/photos/v13x0qU4afA/download?ixid=M3wxMTQ1ODA1fDB8MXxhbGx8fHx8fHx8fHwxNzk1NzIyNzk0fA"
+    },
+    {
+      "id": "2Qlj2Gaft7w",
+      "file": "taller/hero-02.jpg",
+      "sector": "taller",
+      "orientation": "landscape",
+      "width": 1600,
+      "height": 900,
+      "alt": "Panel perforado con herramientas colgadas y ordenadas",
+      "photographer": {
+        "name": "Anton Savinov",
+        "profileUrl": "https://unsplash.com/@tonchik?utm_source=zottaweb&utm_medium=referral"
+      },
+      "unsplashUrl": "https://unsplash.com/?utm_source=zottaweb&utm_medium=referral",
+      "photoPageUrl": "https://unsplash.com/photos/a-bunch-of-tools-hanging-up-on-a-wall-2Qlj2Gaft7w?utm_source=zottaweb&utm_medium=referral",
+      "downloadLocation": "https://api.unsplash.com/photos/2Qlj2Gaft7w/download?ixid=M3wxMTQ1ODA1fDB8MXxhbGx8fHx8fHx8fHwxNzk1NzIyNzk1fA"
+    },
+    {
+      "id": "t5YUoHW6zRo",
+      "file": "taller/gallery-01.jpg",
+      "sector": "taller",
+      "orientation": "squarish",
+      "width": 1200,
+      "height": 1200,
+      "alt": "Herramientas de mano colgadas en un panel de madera",
+      "photographer": {
+        "name": "Barn Images",
+        "profileUrl": "https://unsplash.com/@barnimages?utm_source=zottaweb&utm_medium=referral"
+      },
+      "unsplashUrl": "https://unsplash.com/?utm_source=zottaweb&utm_medium=referral",
+      "photoPageUrl": "https://unsplash.com/photos/assorted-handheld-tools-in-tool-rack-t5YUoHW6zRo?utm_source=zottaweb&utm_medium=referral",
+      "downloadLocation": "https://api.unsplash.com/photos/t5YUoHW6zRo/download?ixid=M3wxMTQ1ODA1fDB8MXxhbGx8fHx8fHx8fHwxNzk1NzIyNzk1fA"
+    },
+    {
+      "id": "0CCVIuAjORE",
+      "file": "taller/gallery-02.jpg",
+      "sector": "taller",
+      "orientation": "squarish",
+      "width": 1200,
+      "height": 1200,
+      "alt": "Pared de taller con herramientas y niveles colgados",
+      "photographer": {
+        "name": "Jeff Caron-Robert",
+        "profileUrl": "https://unsplash.com/@jeffcaron?utm_source=zottaweb&utm_medium=referral"
+      },
+      "unsplashUrl": "https://unsplash.com/?utm_source=zottaweb&utm_medium=referral",
+      "photoPageUrl": "https://unsplash.com/photos/a-wall-full-of-knives-0CCVIuAjORE?utm_source=zottaweb&utm_medium=referral",
+      "downloadLocation": "https://api.unsplash.com/photos/0CCVIuAjORE/download?ixid=M3wxMTQ1ODA1fDB8MXxhbGx8fHx8fHx8fHwxNzk1NzIyNzk2fA"
+    },
+    {
+      "id": "60krlMMeWxU",
+      "file": "taller/gallery-03.jpg",
+      "sector": "taller",
+      "orientation": "squarish",
+      "width": 1200,
+      "height": 1200,
+      "alt": "Alicates y llaves apilados en el interior de un taller",
+      "photographer": {
+        "name": "Quilia",
+        "profileUrl": "https://unsplash.com/@heyquilia?utm_source=zottaweb&utm_medium=referral"
+      },
+      "unsplashUrl": "https://unsplash.com/?utm_source=zottaweb&utm_medium=referral",
+      "photoPageUrl": "https://unsplash.com/photos/selective-focus-photography-of-mechanics-tool-lot-60krlMMeWxU?utm_source=zottaweb&utm_medium=referral",
+      "downloadLocation": "https://api.unsplash.com/photos/60krlMMeWxU/download?ixid=M3wxMTQ1ODA1fDB8MXxhbGx8fHx8fHx8fHwxNzk1NzIyNzk2fA"
+    },
+    {
+      "id": "qIRQSs-ziyc",
+      "file": "belleza/hero-01.jpg",
+      "sector": "belleza",
+      "orientation": "landscape",
+      "width": 1600,
+      "height": 900,
+      "alt": "Interior de una peluquería con sillones alineados y mostrador",
+      "photographer": {
+        "name": "Waves Barbershop",
+        "profileUrl": "https://unsplash.com/@wavesbarbershop?utm_source=zottaweb&utm_medium=referral"
+      },
+      "unsplashUrl": "https://unsplash.com/?utm_source=zottaweb&utm_medium=referral",
+      "photoPageUrl": "https://unsplash.com/photos/hair-salon-interior-with-barber-chairs-qIRQSs-ziyc?utm_source=zottaweb&utm_medium=referral",
+      "downloadLocation": "https://api.unsplash.com/photos/qIRQSs-ziyc/download?ixid=M3wxMTQ1ODA1fDB8MXxhbGx8fHx8fHx8fHwxNzk1NzIyNzk3fA"
+    },
+    {
+      "id": "gI9rvJK61L8",
+      "file": "belleza/hero-02.jpg",
+      "sector": "belleza",
+      "orientation": "landscape",
+      "width": 1600,
+      "height": 900,
+      "alt": "Espejo redondo con sillón de peluquería y botes de producto",
+      "photographer": {
+        "name": "Giorgio Trovato",
+        "profileUrl": "https://unsplash.com/@giorgiotrovato?utm_source=zottaweb&utm_medium=referral"
+      },
+      "unsplashUrl": "https://unsplash.com/?utm_source=zottaweb&utm_medium=referral",
+      "photoPageUrl": "https://unsplash.com/photos/black-and-silver-office-rolling-chair-beside-mirror-gI9rvJK61L8?utm_source=zottaweb&utm_medium=referral",
+      "downloadLocation": "https://api.unsplash.com/photos/gI9rvJK61L8/download?ixid=M3wxMTQ1ODA1fDB8MXxhbGx8fHx8fHx8fHwxNzk1NzIyNzk3fA"
+    },
+    {
+      "id": "T9u-Xr30FY8",
+      "file": "belleza/gallery-01.jpg",
+      "sector": "belleza",
+      "orientation": "squarish",
+      "width": 1200,
+      "height": 1200,
+      "alt": "Rincón de un salón con sillón, mesa auxiliar y un cuadro",
+      "photographer": {
+        "name": "Giorgio Trovato",
+        "profileUrl": "https://unsplash.com/@giorgiotrovato?utm_source=zottaweb&utm_medium=referral"
+      },
+      "unsplashUrl": "https://unsplash.com/?utm_source=zottaweb&utm_medium=referral",
+      "photoPageUrl": "https://unsplash.com/photos/black-and-gray-chair-beside-white-wall-T9u-Xr30FY8?utm_source=zottaweb&utm_medium=referral",
+      "downloadLocation": "https://api.unsplash.com/photos/T9u-Xr30FY8/download?ixid=M3wxMTQ1ODA1fDB8MXxhbGx8fHx8fHx8fHwxNzk1NzIyNzk4fA"
+    },
+    {
+      "id": "k7AvgINPgdg",
+      "file": "belleza/gallery-02.jpg",
+      "sector": "belleza",
+      "orientation": "squarish",
+      "width": 1200,
+      "height": 1200,
+      "alt": "Pared verde con espejo redondo y plantas en maceta",
+      "photographer": {
+        "name": "Greg Trowman",
+        "profileUrl": "https://unsplash.com/@gregtrow?utm_source=zottaweb&utm_medium=referral"
+      },
+      "unsplashUrl": "https://unsplash.com/?utm_source=zottaweb&utm_medium=referral",
+      "photoPageUrl": "https://unsplash.com/photos/green-plant-on-white-ceramic-pot-k7AvgINPgdg?utm_source=zottaweb&utm_medium=referral",
+      "downloadLocation": "https://api.unsplash.com/photos/k7AvgINPgdg/download?ixid=M3wxMTQ1ODA1fDB8MXxhbGx8fHx8fHx8fHwxNzk1NzIyNzk4fA"
+    },
+    {
+      "id": "OKXwmdbdXkk",
+      "file": "belleza/gallery-03.jpg",
+      "sector": "belleza",
+      "orientation": "squarish",
+      "width": 1200,
+      "height": 1200,
+      "alt": "Interior de un salón con sillones y ventanales a la calle",
+      "photographer": {
+        "name": "Giorgio Trovato",
+        "profileUrl": "https://unsplash.com/@giorgiotrovato?utm_source=zottaweb&utm_medium=referral"
+      },
+      "unsplashUrl": "https://unsplash.com/?utm_source=zottaweb&utm_medium=referral",
+      "photoPageUrl": "https://unsplash.com/photos/woman-in-white-shirt-standing-near-black-leather-chairs-OKXwmdbdXkk?utm_source=zottaweb&utm_medium=referral",
+      "downloadLocation": "https://api.unsplash.com/photos/OKXwmdbdXkk/download?ixid=M3wxMTQ1ODA1fDB8MXxhbGx8fHx8fHx8fHwxNzk1NzIzMjIwfA"
+    },
+    {
+      "id": "fj31I5HoOIQ",
+      "file": "neutro/hero-01.jpg",
+      "sector": "neutro",
+      "orientation": "landscape",
+      "width": 1600,
+      "height": 900,
+      "alt": "Escritorio minimalista con pantalla, planta y tres cuadros",
+      "photographer": {
+        "name": "Zarak Khan",
+        "profileUrl": "https://unsplash.com/@zarakvg?utm_source=zottaweb&utm_medium=referral"
+      },
+      "unsplashUrl": "https://unsplash.com/?utm_source=zottaweb&utm_medium=referral",
+      "photoPageUrl": "https://unsplash.com/photos/monitor-keyboard-and-mouse-on-table-fj31I5HoOIQ?utm_source=zottaweb&utm_medium=referral",
+      "downloadLocation": "https://api.unsplash.com/photos/fj31I5HoOIQ/download?ixid=M3wxMTQ1ODA1fDB8MXxhbGx8fHx8fHx8fHwxNzk1NzIzMjIwfA"
+    },
+    {
+      "id": "RcdV8rnXSeE",
+      "file": "neutro/hero-02.jpg",
+      "sector": "neutro",
+      "orientation": "landscape",
+      "width": 1600,
+      "height": 900,
+      "alt": "Despacho doméstico con estantería, dos pantallas y mesa de madera",
+      "photographer": {
+        "name": "Vadim Sherbakov",
+        "profileUrl": "https://unsplash.com/@madebyvadim?utm_source=zottaweb&utm_medium=referral"
+      },
+      "unsplashUrl": "https://unsplash.com/?utm_source=zottaweb&utm_medium=referral",
+      "photoPageUrl": "https://unsplash.com/photos/two-flat-screen-monitor-turned-on-near-organizer-rack-inside-the-room-RcdV8rnXSeE?utm_source=zottaweb&utm_medium=referral",
+      "downloadLocation": "https://api.unsplash.com/photos/RcdV8rnXSeE/download?ixid=M3wxMTQ1ODA1fDB8MXxhbGx8fHx8fHx8fHwxNzk1NzIzMjIxfA"
+    },
+    {
+      "id": "cckf4TsHAuw",
+      "file": "neutro/gallery-01.jpg",
+      "sector": "neutro",
+      "orientation": "squarish",
+      "width": 1200,
+      "height": 1200,
+      "alt": "Mesa de madera con portátil, taza y libreta",
+      "photographer": {
+        "name": "Andrew Neel",
+        "profileUrl": "https://unsplash.com/@andrewtneel?utm_source=zottaweb&utm_medium=referral"
+      },
+      "unsplashUrl": "https://unsplash.com/?utm_source=zottaweb&utm_medium=referral",
+      "photoPageUrl": "https://unsplash.com/photos/macbook-pro-white-ceramic-mugand-black-smartphone-on-table-cckf4TsHAuw?utm_source=zottaweb&utm_medium=referral",
+      "downloadLocation": "https://api.unsplash.com/photos/cckf4TsHAuw/download?ixid=M3wxMTQ1ODA1fDB8MXxhbGx8fHx8fHx8fHwxNzk1NzIzMjIyfA"
+    },
+    {
+      "id": "RaYjMmmaSCA",
+      "file": "neutro/gallery-02.jpg",
+      "sector": "neutro",
+      "orientation": "squarish",
+      "width": 1200,
+      "height": 1200,
+      "alt": "Escritorio blanco visto desde arriba con portátil y cuaderno",
+      "photographer": {
+        "name": "Alexa Williams",
+        "profileUrl": "https://unsplash.com/@glamorousplanning?utm_source=zottaweb&utm_medium=referral"
+      },
+      "unsplashUrl": "https://unsplash.com/?utm_source=zottaweb&utm_medium=referral",
+      "photoPageUrl": "https://unsplash.com/photos/gray-and-black-laptop-computer-on-white-table-RaYjMmmaSCA?utm_source=zottaweb&utm_medium=referral",
+      "downloadLocation": "https://api.unsplash.com/photos/RaYjMmmaSCA/download?ixid=M3wxMTQ1ODA1fDB8MXxhbGx8fHx8fHx8fHwxNzk1NzIzMjIyfA"
+    },
+    {
+      "id": "Wz8QREeoxTg",
+      "file": "neutro/gallery-03.jpg",
+      "sector": "neutro",
+      "orientation": "squarish",
+      "width": 1200,
+      "height": 1200,
+      "alt": "Manos escribiendo en una libreta junto a un termo",
+      "photographer": {
+        "name": "quokkabottles",
+        "profileUrl": "https://unsplash.com/@quokkabottle?utm_source=zottaweb&utm_medium=referral"
+      },
+      "unsplashUrl": "https://unsplash.com/?utm_source=zottaweb&utm_medium=referral",
+      "photoPageUrl": "https://unsplash.com/photos/person-in-blue-and-white-long-sleeve-shirt-using-macbook-pro-Wz8QREeoxTg?utm_source=zottaweb&utm_medium=referral",
+      "downloadLocation": "https://api.unsplash.com/photos/Wz8QREeoxTg/download?ixid=M3wxMTQ1ODA1fDB8MXxhbGx8fHx8fHx8fHwxNzk1NzIzMjIzfA"
+    }
+  ]
+}

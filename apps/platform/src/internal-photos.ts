@@ -23,7 +23,7 @@ import { registerAsset } from "@webdesign/assets";
 import { downloadPhoto, isPexelsConfigured, searchPhotos, type PexelsOrientation } from "./pexels.js";
 import { appendFuente } from "./fuentes.js";
 import { readFromLibrary, saveToLibrary } from "./library.js";
-import { bankRoot, listBankPhotos, readBankPhoto, type BankPhoto } from "./photo-bank.js";
+import { isSector, listBankPhotos, readBankPhoto, type BankPhoto, type Sector } from "./photo-bank.js";
 
 // El agente de diseno escribe en el sitio, y esta ruta escribe en el sitio: el
 // scope tiene que ser el mismo que usan sus herramientas (`site:write`).
@@ -87,6 +87,14 @@ interface PhotoRequest {
   query: string;
   orientation?: PexelsOrientation | undefined;
   count: number;
+  /**
+   * Sector del negocio, tal como lo calcula `sectorForBrief` en el agente.
+   *
+   * NO se valida aquí contra la lista cerrada: un sector desconocido no es un
+   * cuerpo inválido, es un banco que caerá en `neutro`. La lista vive en
+   * photo-bank.ts, que es quien conoce las carpetas.
+   */
+  sector?: string | undefined;
 }
 
 function parseBody(raw: unknown): PhotoRequest | undefined {
@@ -103,7 +111,9 @@ function parseBody(raw: unknown): PhotoRequest | undefined {
     ? rawOrientation
     : undefined;
   if (rawOrientation !== undefined && orientation === undefined) return undefined;
-  return { query: q, orientation, count };
+  const rawSector = b["sector"];
+  const sector = typeof rawSector === "string" ? rawSector.trim() : undefined;
+  return { query: q, orientation, count, sector };
 }
 
 /** Fechas en ISO corto: el archivo de fuentes lo lee una persona, no un parser. */
@@ -168,8 +178,10 @@ export async function handleInternalPhotos(
   });
 
   // ---- FUENTE DE CANDIDATOS -----------------------------------------------
-  // 1. Pexels, solo si está configurado.
-  // 2. Banco local si Pexels no está o devuelve cero candidatos.
+  // El orden importa y es el que fija T-020:
+  // 1. Banco local, con el sector del brief: fotos ya verificadas del sector.
+  // 2. Pexels, solo si está configurado y el banco no llegó a `count`.
+  // 3. Unsplash, si algún día hay clave (hoy no hay cliente: no se llama).
   // -------------------------------------------------------------------------
 
   // Orientación del banco: landscape para "landscape", square para "square",
@@ -177,9 +189,12 @@ export async function handleInternalPhotos(
   const bankOrientation: "landscape" | "square" =
     body.orientation === "square" ? "square" : "landscape";
 
+  // Sector cerrado: lo que no esté en la lista vale `neutro`, nunca un 400.
+  const sector: Sector = isSector(body.sector) ? body.sector : "neutro";
+
   type Candidate = {
-    id: number;
-    url: string;           // source_url para Pexels; "https://picsum.photos/id/<id>" para banco
+    id: string | number;
+    url: string;           // source_url del activo: página de la foto o de Pexels
     photographer: string;
     alt: string;
     width: number;
@@ -188,43 +203,42 @@ export async function handleInternalPhotos(
     _bankPhoto?: BankPhoto; // presente solo para candidatos del banco
   };
 
-  let candidates: Candidate[] = [];
-  let usePexels = false;
+  // 1. Banco local. Construimos candidatos en el mismo formato que Pexels para
+  // que el bucle de abajo sea idéntico para ambas fuentes.
+  const bankPhotos = await listBankPhotos(bankOrientation, sector);
+  let candidates: Candidate[] = bankPhotos.map((bp) => ({
+    id: bp.id,
+    url: bp.sourceUrl,
+    photographer: bp.author,
+    alt: bp.alt,
+    width: bp.width,
+    height: bp.height,
+    src: { original: "", large2x: "", large: "", medium: "", tiny: "" },
+    _bankPhoto: bp,
+  }));
 
-  if (isPexelsConfigured()) {
+  // 2. Pexels, solo si el banco no llegó a lo pedido. Un banco completo NO paga
+  // una llamada externa; uno incompleto (p. ej. `despacho` tiene 2 landscape) sí
+  // puede rellenarse, y el bucle de abajo los mezcla sin problema porque el
+  // dedupe y la descarga se deciden por candidato, no por fuente.
+  if (candidates.length < body.count && isPexelsConfigured()) {
     const pexelsCandidates = await searchPhotos(body.query, {
       orientation: body.orientation,
       perPage: Math.min(24, body.count * 4),
     });
-    if (pexelsCandidates.length > 0) {
-      usePexels = true;
-      candidates = pexelsCandidates.map((p) => ({
-        id: p.id,
-        url: p.url,
-        photographer: p.photographer,
-        alt: p.alt,
-        width: p.width,
-        height: p.height,
-        src: p.src,
-      }));
-    }
+    candidates = candidates.concat(pexelsCandidates.map((p) => ({
+      id: p.id,
+      url: p.url,
+      photographer: p.photographer,
+      alt: p.alt,
+      width: p.width,
+      height: p.height,
+      src: p.src,
+    })));
   }
 
-  if (!usePexels) {
-    // Banco local: construimos candidatos en el mismo formato que Pexels para
-    // que el bucle de abajo sea idéntico para ambas fuentes.
-    const bankPhotos = await listBankPhotos(bankOrientation);
-    candidates = bankPhotos.map((bp) => ({
-      id: bp.id,
-      url: `https://picsum.photos/id/${bp.id}`,
-      photographer: bp.author,
-      alt: bp.alt,
-      width: bp.width,
-      height: bp.height,
-      src: { original: "", large2x: "", large: "", medium: "", tiny: "" },
-      _bankPhoto: bp,
-    }));
-  }
+  // 3. Unsplash: previsto, pero hoy no hay cliente ni clave, así que no hay
+  // rama que ejecutar. Cuando exista, va aquí, después del banco.
 
   if (candidates.length === 0) {
     json(res, 200, { photos: [] });
@@ -237,17 +251,15 @@ export async function handleInternalPhotos(
   for (const photo of candidates) {
     if (photos.length >= body.count) break;
 
-    // Dedupe por sitio.
-    // Para Pexels: compara source_url, credit_text y el sufijo "-<id>/" que
-    //   sobrevive a un enlace reescrito.
-    // Para banco: compara source_url exacta ("https://picsum.photos/id/<id>").
-    //   El sufijo "-<id>/" de Pexels no encaja con la URL del banco (que termina
-    //   en "/<id>", no en "-<id>/"), así que se añade comprobación de sufijo
-    //   "/<photo.id}" solo para candidatos del banco, sin tocar la de Pexels.
+    // Dedupe por sitio, decidido POR CANDIDATO (el banco y Pexels pueden
+    // convivir en la misma lista).
+    // Para banco: la URL canónica es la página de la foto, exacta.
+    // Para Pexels: además del source_url, el sufijo "-<id>/" que sobrevive a un
+    //   enlace reescrito.
     if (photo.url !== "" && used.has(photo.url)) continue;
 
     let yaEnSitio = false;
-    if (usePexels) {
+    if (photo._bankPhoto === undefined) {
       // Comprobación original de Pexels: sufijo "-<id>/" en source_url o credit_text.
       const idMark = `-${photo.id}/`;
       for (const value of used) {
@@ -275,15 +287,18 @@ export async function handleInternalPhotos(
       content = file.content;
       metaFile = {
         author: photo._bankPhoto.author,
-        sourceUrl: `https://picsum.photos/id/${photo.id}`,
-        license: "Unsplash License",
+        sourceUrl: photo._bankPhoto.sourceUrl,
+        license: photo._bankPhoto.license,
         mime: file.mime,
       };
     } else {
       // ---- PEXELS ----------------------------------------------------------
       // BIBLIOTECA ANTES QUE RED: si la foto ya se bajo para cualquier sitio,
       // no se vuelve a pedir a Pexels.
-      const cached = await readFromLibrary(photo.id);
+      // Solo los candidatos de Pexels llegan aquí, y su id es numérico.
+      const pexelsId = typeof photo.id === "number" ? photo.id : undefined;
+      if (pexelsId === undefined) continue;
+      const cached = await readFromLibrary(pexelsId);
       if (cached) {
         console.info("pexels_library_hit", { id: photo.id });
         content = cached.content;
@@ -297,7 +312,7 @@ export async function handleInternalPhotos(
         console.info("pexels_library_miss", { id: photo.id });
         // photo.src está completo porque viene de searchPhotos (Pexels).
         const pexelsPhoto = {
-          id: photo.id,
+          id: pexelsId,
           width: photo.width,
           height: photo.height,
           url: photo.url,

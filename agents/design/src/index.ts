@@ -40,6 +40,8 @@ export {
 
 export { classifyShape, type SiteShape } from "./classify.js";
 
+export { SECTORS, sectorForBrief, type Sector } from "./sector.js";
+
 export {
   createStore,
   saveCheckpoint,

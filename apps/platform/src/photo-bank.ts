@@ -1,45 +1,104 @@
-// Banco local de fotos libres (Lorem Picsum / Unsplash License).
+// Banco local de fotos libres (Unsplash License).
 //
 // Sustituye a Pexels cuando la clave no está configurada o cuando la búsqueda
 // devuelve cero candidatos. El resto del flujo (registerAsset, appendFuente,
 // dedupe por sitio) no cambia: este módulo solo provee candidatos y contenido.
 //
 // POR QUÉ EXISTE: Pexels suspendió la clave (401). Las fotos viven en
-// deploy/photo-bank/ y llegan a /app/deploy/photo-bank en la imagen Docker.
-// En desarrollo se resuelve desde cwd(); en producción desde /app.
+// deploy/photo-bank/unsplash/ y llegan a /app/deploy/photo-bank en la imagen
+// Docker.
+//
+// T-020: el banco está organizado por SECTOR (`unsplash/<sector>/hero-01.jpg`), y
+// una foto es de un sector por construcción. `listBankPhotos` recibe el sector y
+// devuelve las de ESE sector; si ese sector no tiene ninguna de la orientación
+// pedida, devuelve las de `neutro`, que es el único que no promete nada sobre el
+// negocio. El manifiesto de la raíz (`deploy/photo-bank/manifest.json`) ya no se
+// lee: está vacío a propósito y se queda donde está.
 //
 // NO SE LLAMA NUNCA DIRECTAMENTE DESDE SERVER.TS. Solo internal-photos.ts lo usa.
 
 import { readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { join, sep } from "node:path";
+import { libraryRoot } from "./library.js";
+
+/** Sectores del banco: son los directorios de `deploy/photo-bank/unsplash/`. */
+export type Sector = "despacho" | "hosteleria" | "comercio" | "salud" | "taller" | "belleza" | "neutro";
+
+/** Lista cerrada de sectores, para validar lo que llega por la API interna. */
+export const SECTORS: readonly Sector[] = [
+  "despacho",
+  "hosteleria",
+  "comercio",
+  "salud",
+  "taller",
+  "belleza",
+  "neutro",
+];
+
+/** Sector al que caen los sectores sin fotos de la orientación pedida. */
+const FALLBACK_SECTOR: Sector = "neutro";
+
+/** Orientación tal como la pide el resto del sistema (Pexels usa `square`). */
+export type BankOrientation = "landscape" | "square";
 
 export interface BankPhoto {
-  id: number;
+  /** Id de Unsplash: cadena, no número (el de Pexels sí es número). */
+  id: string;
+  /** Ruta relativa al banco, con sector: "salud/hero-01.jpg". */
   file: string;
-  orientation: "landscape" | "square";
+  sector: Sector;
+  orientation: BankOrientation;
   width: number;
   height: number;
   alt: string;
+  /** Nombre del fotógrafo: en el manifiesto es `photographer.name`. */
   author: string;
+  /** Licencia de la foto, tal como consta en el manifiesto. */
+  license: string;
+  /** Página de la foto: es el `source_url` del activo registrado. */
+  sourceUrl: string;
+}
+
+/** ¿Es un sector de la lista cerrada? Lo que no lo sea vale `neutro`. */
+export function isSector(value: unknown): value is Sector {
+  return typeof value === "string" && (SECTORS as readonly string[]).includes(value);
+}
+
+interface ManifestPhoto {
+  id?: unknown;
+  file?: unknown;
+  sector?: unknown;
+  orientation?: unknown;
+  width?: unknown;
+  height?: unknown;
+  alt?: unknown;
+  photographer?: { name?: unknown };
+  photoPageUrl?: unknown;
 }
 
 interface Manifest {
-  license: string;
-  source: string;
-  photos: BankPhoto[];
+  license?: unknown;
+  photos?: unknown;
 }
 
 /**
- * Raíz del banco de fotos. Sigue el mismo patrón que `libraryRoot()` en
- * library.ts: variable de entorno primero; si no, ruta relativa a cwd() cuando
- * no es producción, y /app/deploy/photo-bank en producción.
+ * Raíz del banco de fotos.
+ *
+ * `PHOTO_BANK_ROOT` manda si está. Si no, en produccion el banco vive junto a la
+ * cache de medios (`libraryRoot()`), en `<raiz>/unsplash`, para poder actualizar
+ * las fotos descomprimiendo un zip sin reconstruir la imagen. En desarrollo se
+ * lee del repo.
  */
 export function bankRoot(): string {
   const fromEnv = process.env["PHOTO_BANK_ROOT"];
   if (typeof fromEnv === "string" && fromEnv.trim() !== "") return fromEnv.trim();
-  return process.env["NODE_ENV"] === "production"
-    ? "/app/deploy/photo-bank"
-    : join(process.cwd(), "deploy", "photo-bank");
+  if (process.env["NODE_ENV"] === "production") return libraryRoot();
+  return join(process.cwd(), "deploy", "photo-bank");
+}
+
+/** Carpeta del banco de Unsplash, que es donde vive el manifiesto que se lee. */
+function unsplashRoot(): string {
+  return join(bankRoot(), "unsplash");
 }
 
 // Caché en memoria: se lee el manifiesto una sola vez. `null` significa que ya
@@ -47,7 +106,7 @@ export function bankRoot(): string {
 let _cache: BankPhoto[] | null | undefined = undefined;
 
 function manifestPath(): string {
-  return join(bankRoot(), "manifest.json");
+  return join(unsplashRoot(), "manifest.json");
 }
 
 async function loadManifest(): Promise<BankPhoto[]> {
@@ -59,7 +118,10 @@ async function loadManifest(): Promise<BankPhoto[]> {
       _cache = null;
       return [];
     }
-    _cache = data.photos.filter(isValidBankPhoto);
+    const license = typeof data.license === "string" ? data.license : "Unsplash License";
+    _cache = data.photos
+      .map((p) => toBankPhoto(p, license))
+      .filter((p): p is BankPhoto => p !== undefined);
     return _cache;
   } catch {
     // Manifiesto ausente o roto: devuelve vacío y no lanza.
@@ -68,27 +130,63 @@ async function loadManifest(): Promise<BankPhoto[]> {
   }
 }
 
-function isValidBankPhoto(p: unknown): p is BankPhoto {
-  if (!p || typeof p !== "object") return false;
-  const b = p as Record<string, unknown>;
-  return (
-    typeof b["id"] === "number" &&
-    typeof b["file"] === "string" &&
-    (b["orientation"] === "landscape" || b["orientation"] === "square") &&
-    typeof b["width"] === "number" &&
-    typeof b["height"] === "number" &&
-    typeof b["alt"] === "string" &&
-    typeof b["author"] === "string"
-  );
+/**
+ * Convierte una entrada del manifiesto al tipo del módulo. Devuelve `undefined`
+ * si le falta algo imprescindible: una entrada rota se salta, no rompe el resto.
+ *
+ * `orientation` en el manifiesto es `landscape` o `squarish` (así llama Unsplash
+ * a lo que aquí es `square`); el resto del sistema solo conoce `square`.
+ */
+function toBankPhoto(entry: unknown, license: string): BankPhoto | undefined {
+  if (!entry || typeof entry !== "object") return undefined;
+  const p = entry as ManifestPhoto;
+  if (typeof p.id !== "string" || typeof p.file !== "string") return undefined;
+  if (typeof p.width !== "number" || typeof p.height !== "number") return undefined;
+  if (typeof p.alt !== "string") return undefined;
+  if (!isSector(p.sector)) return undefined;
+
+  const orientation = p.orientation === "landscape" ? "landscape" : p.orientation === "squarish" || p.orientation === "square" ? "square" : undefined;
+  if (orientation === undefined) return undefined;
+
+  const name = p.photographer && typeof p.photographer.name === "string" ? p.photographer.name : undefined;
+  if (name === undefined) return undefined;
+
+  // La página de la foto es obligatoria: sin ella no hay atribución verificable.
+  if (typeof p.photoPageUrl !== "string" || p.photoPageUrl === "") return undefined;
+
+  return {
+    id: p.id,
+    file: p.file,
+    sector: p.sector,
+    orientation,
+    width: p.width,
+    height: p.height,
+    alt: p.alt,
+    author: name,
+    license,
+    sourceUrl: p.photoPageUrl,
+  };
 }
 
 /**
- * Fotos del banco filtradas por orientación. Si el manifiesto falta o está roto
- * devuelve [] y no lanza.
+ * Fotos del banco.
+ *
+ * - Con `sector`: las de ese sector en esa orientación.
+ * - Si ese sector no tiene NINGUNA de esa orientación: las de `neutro`.
+ * - Sin `sector`: todas las de esa orientación, de todos los sectores.
+ *
+ * Si el manifiesto falta o está roto devuelve [] y no lanza.
  */
-export async function listBankPhotos(orientation: "landscape" | "square"): Promise<BankPhoto[]> {
+export async function listBankPhotos(orientation: BankOrientation, sector?: Sector): Promise<BankPhoto[]> {
   const all = await loadManifest();
-  return all.filter((p) => p.orientation === orientation);
+  const ofOrientation = all.filter((p) => p.orientation === orientation);
+  if (sector === undefined) return ofOrientation;
+  // Un sector que no está en la lista cerrada se trata como `neutro`: la ruta
+  // interna ya lo valida, esto es la segunda barrera.
+  const wanted = isSector(sector) ? sector : FALLBACK_SECTOR;
+  const own = ofOrientation.filter((p) => p.sector === wanted);
+  if (own.length > 0) return own;
+  return ofOrientation.filter((p) => p.sector === FALLBACK_SECTOR);
 }
 
 /**
@@ -99,9 +197,15 @@ export async function listBankPhotos(orientation: "landscape" | "square"): Promi
 export async function readBankPhoto(
   photo: BankPhoto,
 ): Promise<{ content: Buffer; mime: string } | undefined> {
-  // Nombre de archivo sin slashes: protección básica de path traversal.
-  if (!photo.file || photo.file.includes("/") || photo.file.includes("..")) return undefined;
-  const path = join(bankRoot(), photo.file);
+  // La ruta del manifiesto lleva el sector ("salud/hero-01.jpg"), así que ahora
+  // hay un solo separador permitido. Se rechaza lo que intente salir de la
+  // carpeta del banco: "..", rutas absolutas y cualquier resolución que acabe
+  // fuera de `unsplash/`.
+  if (typeof photo.file !== "string" || photo.file === "") return undefined;
+  if (photo.file.includes("..") || photo.file.startsWith("/") || photo.file.includes("\\")) return undefined;
+  const root = unsplashRoot();
+  const path = join(root, photo.file);
+  if (!path.startsWith(root + sep)) return undefined;
   let content: Buffer;
   try {
     content = await readFile(path);
