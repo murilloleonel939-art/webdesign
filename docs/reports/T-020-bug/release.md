@@ -86,10 +86,12 @@ Local y remoto coinciden.
 
 ## Grafo
 
-- `graphify-out/graph.json`: **3544 nodos**, 5791 aristas, 235 comunidades, construido desde
-  `40d963e378cf60839ba830af3287e92fd5144f61`, es decir, ya con el arreglo dentro.
+- `graphify-out/graph.json`, construido desde `40d963e378cf60839ba830af3287e92fd5144f61`
+  (el commit del arreglo): **3544 nodos**, 5791 aristas, 235 comunidades.
+- Con este reporte encima, el grafo queda en **3554 nodos**, 5802 aristas y 242 comunidades,
+  construido desde `774b555`; los 10 nodos de más son el propio reporte.
 - Antes de esta release el grafo estaba en **3522 nodos / 5773 aristas** (cierre de T-020):
-  **+22 nodos y +18 aristas** por el arreglo, sus pruebas y su instrumentación.
+  **+32 nodos y +29 aristas** hasta el estado publicado ahora.
 
 ## Pendientes y riesgos (tomados del encargo; no re-verificados en esta ejecución)
 
