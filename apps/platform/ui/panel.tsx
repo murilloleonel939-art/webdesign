@@ -234,8 +234,104 @@ function Operator({ onClose }: { onClose: () => void }) {
       {sites && sites.length > 0 && <div className="op-scroll"><table className="op-table"><thead><tr><th>Sitio</th><th>Cliente</th><th>Estado</th><th>Dominio</th></tr></thead><tbody>
         {sites.map(s => <tr key={s.id}><td>{s.name}</td><td className="muted small">{s.ownerEmail}</td><td><span className={`badge ${s.status}`}>{estado(s.status)}</span></td><td className="muted small">{s.hostname ?? "—"}</td></tr>)}
       </tbody></table></div>}
+      <BankSection/>
     </div>
   </div>;
+}
+
+// Biblioteca de fotos (T-034). El trabajo lo hace el servidor: el panel solo
+// lanza la construcción y lee el progreso. Sin barra de porcentaje inventada:
+// lo que se enseña es lo que el servidor ha contado de verdad (añadidas,
+// faltantes y peticiones gastadas).
+interface BankRunSector { sector: string; planned: { hero: number; gallery: number }; added: { hero: number; gallery: number }; skipped: Record<string, number>; missing: { hero: number; gallery: number }; error?: string }
+interface BankRun { id: string; startedAt: string; finishedAt: string|null; status: string; reason: string|null; requestsUsed: number; budget: number; sectors: BankRunSector[] }
+interface BankInventory { total: number; sectors: Array<{ sector: string; hero: number; gallery: number }> }
+
+const BANK_SECTOR_NAMES: Record<string, string> = { despacho: "Despacho", hosteleria: "Hostelería", comercio: "Comercio", salud: "Salud", taller: "Taller", belleza: "Belleza", neutro: "Neutro" };
+
+// Los motivos de descarte, en palabras que se entiendan sin saber cómo funciona
+// el filtro por dentro.
+const BANK_SKIP_LABELS: Record<string, string> = { duplicate: "fotos repetidas", too_small: "fotos demasiado pequeñas", no_description: "fotos sin descripción", portrait_or_people: "fotos con personas", brand: "fotos con marcas", aspect_mismatch: "fotos con proporción no válida", off_topic: "fotos de otro tema", download_failed: "fotos que no se pudieron descargar", write_failed: "fotos que no se pudieron guardar" };
+
+function bankTopSkip(run: BankRun): string {
+  const totals = new Map<string, number>();
+  for (const sector of run.sectors) for (const [reason, count] of Object.entries(sector.skipped)) if (count > 0) totals.set(reason, (totals.get(reason) ?? 0) + count);
+  let best = ""; let max = 0;
+  for (const [reason, count] of totals) if (count > max) { max = count; best = reason; }
+  return best === "" ? "" : `${BANK_SKIP_LABELS[best] ?? best} (${max})`;
+}
+
+function BankSection() {
+  const [inventory, setInventory] = useState<BankInventory|null>(null);
+  const [run, setRun] = useState<BankRun|null>(null);
+  const [last, setLast] = useState<BankRun|null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  async function load() {
+    try {
+      const [ri, rb] = await Promise.all([api("/api/operator/bank"), api("/api/operator/bank/build")]);
+      if (ri.ok) setInventory((await ri.json() as { inventory: BankInventory }).inventory);
+      if (rb.ok) { const d = await rb.json() as { run: BankRun|null; last: BankRun|null }; setRun(d.run); setLast(d.last); }
+    } catch { /* Esta sección no puede tumbar el panel: si falla, se queda sin datos. */ }
+  }
+  useEffect(() => { void load(); }, []);
+
+  // Mientras la construcción corre se pregunta al servidor cada dos segundos: el
+  // progreso lo lleva él, así que el panel no puede avanzarlo por su cuenta.
+  const running = run?.status === "running";
+  useEffect(() => {
+    if (!running) return;
+    const timer = setInterval(() => { void load(); }, 2000);
+    return () => clearInterval(timer);
+  }, [running]);
+
+  async function build() {
+    setBusy(true); setError("");
+    try {
+      const r = await api("/api/operator/bank/build", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+      const data = await r.json().catch(() => ({})) as { run?: BankRun; error?: string };
+      if (r.status === 202 && data.run) setRun(data.run);
+      else if (r.status === 409) setError("Ya hay una construcción en marcha. Cuando termine, vuelve a intentarlo.");
+      else if (data.error === "unsplash_not_configured") setError("Este servidor no tiene configurada la clave de Unsplash.");
+      else if (r.status === 401 || r.status === 403) setError("Tu cuenta no puede construir el banco de fotos.");
+      else setError("No se pudo empezar. Inténtalo de nuevo en un minuto.");
+    } catch { setError("No se pudo empezar. Inténtalo de nuevo en un minuto."); }
+    finally { setBusy(false); void load(); }
+  }
+
+  const shown = run ?? last;
+  const failed = shown?.status === "failed";
+  const top = shown ? bankTopSkip(shown) : "";
+  return <section className="bank" aria-labelledby="bank-title">
+    <div className="bank-head">
+      <h3 id="bank-title">Biblioteca de fotos</h3>
+      <p className="content-hint">Rellena las fotos que faltan en cada sector. Las que ya están no se tocan ni se borran.</p>
+    </div>
+    {inventory && <ul className="bank-list">
+      {inventory.sectors.map(s => <li key={s.sector}><span>{BANK_SECTOR_NAMES[s.sector] ?? s.sector}</span><span className="muted">{s.hero} de portada · {s.gallery} de galería</span></li>)}
+    </ul>}
+    <div className="bank-actions">
+      <button className="primary" onClick={build} disabled={running || busy}>{running ? "Construyendo…" : "Construir banco de fotos"}</button>
+      {inventory && <span className="muted small">{inventory.total} fotos en el banco</span>}
+    </div>
+    {error && <div className="alert">{error}</div>}
+    <div className="bank-status" aria-live="polite">
+      {shown === null && <p className="muted">Todavía no se ha construido nada en esta sesión.</p>}
+      {shown !== null && <>
+        <p><strong>{running ? "En curso" : failed ? "No se pudo terminar" : "Terminado"}</strong>{shown.status !== "running" && ` · ${shown.requestsUsed} de ${shown.budget} peticiones usadas`}</p>
+        {shown.reason === "budget_exhausted" && <p className="muted small">Se agotaron las peticiones de esta pasada. Lo que falte se puede añadir en otra.</p>}
+        {shown.reason === "timeout" && <p className="muted small">Se paró por tiempo. Lo que falte se puede añadir en otra pasada.</p>}
+        <ul>
+          {shown.sectors.map(s => <li key={s.sector}>
+            <span>{BANK_SECTOR_NAMES[s.sector] ?? s.sector}</span>
+            <span className="muted small">{s.added.hero} de portada · {s.added.gallery} de galería añadidas · faltan {s.missing.hero + s.missing.gallery}</span>
+          </li>)}
+        </ul>
+        {top !== "" && <p className="muted small">Lo que más se descartó: {top}.</p>}
+      </>}
+    </div>
+  </section>;
 }
 
 // Bandeja de mensajes (Fase 2). El formulario del sitio guardaba los mensajes

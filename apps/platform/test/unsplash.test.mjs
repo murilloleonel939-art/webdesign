@@ -300,3 +300,34 @@ test("extra: downloadUnsplash no baja de hosts ajenos ni por http", async () => 
   const noOk = await downloadUnsplash(foto(), async () => new Response("nope", { status: 404 }));
   assert.equal(noOk, undefined);
 });
+
+test("extra: downloadUnsplash respeta el recorte de galeria y rechaza recortes inventados", async () => {
+  // La URL de `urls.regular` ya viene con el recorte de portada. Al pedir la
+  // cuadrada no pueden quedar los dos juegos de parametros: Unsplash aplicaria el
+  // que quisiera y la galeria no seria cuadrada.
+  let pedida = "";
+  const fetchFalso = async (url) => {
+    pedida = String(url);
+    return new Response(JPEG, { status: 200 });
+  };
+
+  const hero = await downloadUnsplash(foto(), fetchFalso);
+  assert.equal(hero.mime, "image/jpeg");
+  assert.match(pedida, /[?&]w=1600&h=900&fit=crop&q=80&fm=jpg$/);
+  assert.equal((pedida.match(/[?&]w=/g) ?? []).length, 1);
+
+  const gallery = await downloadUnsplash(foto(), fetchFalso, "gallery");
+  assert.equal(gallery.mime, "image/jpeg");
+  assert.match(pedida, /[?&]w=1200&h=1200&fit=crop&q=80&fm=jpg$/);
+  assert.equal((pedida.match(/[?&]w=/g) ?? []).length, 1, "un solo recorte en la URL");
+  assert.match(pedida, /ixid=abc/, "la firma de la peticion se conserva");
+
+  // Un recorte que no esta en la lista no se pide a nadie.
+  let llamado = false;
+  const espia = async () => {
+    llamado = true;
+    return new Response(JPEG, { status: 200 });
+  };
+  assert.equal(await downloadUnsplash(foto(), espia, "w=8000&h=8000"), undefined);
+  assert.equal(llamado, false);
+});

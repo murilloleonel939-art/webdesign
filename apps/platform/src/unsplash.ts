@@ -62,8 +62,39 @@ export interface UnsplashSearchOptions {
   perPage: number;
 }
 
-/** Parametros del binario: 16:9 a 1600x900, JPEG de calidad 80. */
-const DOWNLOAD_QUERY = "w=1600&h=900&fit=crop&q=80&fm=jpg";
+/**
+ * Los DOS recortes que este modulo acepta. No son parametros libres a proposito:
+ * el recorte lo decide el codigo (el constructor del banco elige `hero` o
+ * `gallery`), nunca quien llama por HTTP. Si la query llegara desde un body,
+ * cualquiera podria pedirle a Unsplash una imagen sin recorte o de 8000 px y
+ * llenar la memoria del proceso y la cuota de la cuenta.
+ *
+ * `hero` es el 16:9 de portada; `gallery` el cuadrado de la galeria.
+ */
+const CROP_QUERIES = {
+  hero: "w=1600&h=900&fit=crop&q=80&fm=jpg",
+  gallery: "w=1200&h=1200&fit=crop&q=80&fm=jpg",
+} as const;
+
+/** Recorte pedido a Unsplash: portada o galeria. */
+export type UnsplashCrop = keyof typeof CROP_QUERIES;
+
+const DEFAULT_CROP: UnsplashCrop = "hero";
+
+/** Parametros del binario por defecto: 16:9 a 1600x900, JPEG de calidad 80. */
+const DOWNLOAD_QUERY = CROP_QUERIES[DEFAULT_CROP];
+
+/**
+ * La query del recorte, o `undefined` si el valor no es uno de los dos.
+ *
+ * Se valida con `unknown` aunque el tipo ya limite los valores: este modulo lo
+ * puede llamar JavaScript compilado sin tipos, y un recorte inventado no debe
+ * llegar nunca a la URL.
+ */
+function cropQuery(value: unknown): string | undefined {
+  if (value === "hero" || value === "gallery") return CROP_QUERIES[value];
+  return undefined;
+}
 
 /** La clave configurada, sin recortar el secreto a nadie mas. */
 function apiKey(): string | undefined {
@@ -101,6 +132,29 @@ function obj(v: unknown): Record<string, unknown> {
 function withDownloadQuery(raw: string): string {
   if (raw === "") return "";
   return raw.includes("?") ? `${raw}&${DOWNLOAD_QUERY}` : `${raw}?${DOWNLOAD_QUERY}`;
+}
+
+// Los parametros que describen el recorte. Se quitan antes de poner los nuevos.
+const CROP_PARAMS = ["w", "h", "fit", "q", "fm"] as const;
+
+/**
+ * La URL del binario con el recorte pedido, y SOLO con ese recorte.
+ *
+ * `urls.regular` ya viaja con el recorte de portada (lo pone `toPhoto`), asi que
+ * anadirle los de galeria dejaria dos juegos de `w`/`h` en la misma URL y
+ * Unsplash aplicaria el que le parezca: la foto cuadrada podria llegar 16:9.
+ * Se descartan los del recorte anterior y se respeta `ixid`, que es la firma de
+ * la peticion, no un parametro de tamano.
+ */
+function withCrop(raw: string, crop: string): string {
+  if (raw === "") return "";
+  const mark = raw.indexOf("?");
+  if (mark < 0) return `${raw}?${crop}`;
+  const params = new URLSearchParams(raw.slice(mark + 1));
+  for (const key of CROP_PARAMS) params.delete(key);
+  const rest = params.toString();
+  const base = rest === "" ? raw.slice(0, mark) : `${raw.slice(0, mark)}?${rest}`;
+  return `${base}&${crop}`;
 }
 
 function toPhoto(raw: unknown): UnsplashPhoto | undefined {
@@ -207,12 +261,25 @@ function safeUrl(raw: string, hosts: Set<string>): URL | undefined {
  *
  * El tipo se decide por los primeros bytes, no por `content-type`: la cabecera
  * de un tercero se falsifica.
+ *
+ * `crop` decide el recorte del fichero: `hero` (1600x900) o `gallery`
+ * (1200x1200). Por defecto portada, que es lo que pedia el codigo antes de que
+ * el banco necesitara cuadradas; las llamadas existentes no cambian.
  */
 export async function downloadUnsplash(
   photo: UnsplashPhoto,
   fetchImpl: typeof fetch = fetch,
+  crop: UnsplashCrop = DEFAULT_CROP,
 ): Promise<{ content: Buffer; mime: string } | undefined> {
-  const target = safeUrl(photo && typeof photo.regularUrl === "string" ? photo.regularUrl : "", ALLOWED_FILE_HOSTS);
+  const query = cropQuery(crop);
+  if (query === undefined) {
+    // Recorte que no esta en la lista: no se pide nada. Es un fallo de codigo,
+    // no de Unsplash, pero se trata igual que un fallo de descarga.
+    console.warn("unsplash_download_failed", { error: "invalid_crop" });
+    return undefined;
+  }
+  const raw = photo && typeof photo.regularUrl === "string" ? photo.regularUrl : "";
+  const target = safeUrl(withCrop(raw, query), ALLOWED_FILE_HOSTS);
   if (!target) return undefined;
 
   let res: Response;

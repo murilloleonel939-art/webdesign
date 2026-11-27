@@ -21,6 +21,18 @@ import {
 import { listStyles, getStyle, applyStyleToDocument, isStyleApplyMode } from "./catalog.js";
 import { listLeads, countNewLeads, setLeadStatus, isLeadStatus } from "./inbox.js";
 import { isOperator, listAllSites, summary } from "./operator.js";
+import {
+  BankBuildBusyError,
+  BankBuildInputError,
+  bankInventory,
+  getBankBuildState,
+  type BankInventory,
+  type BankBuildRun,
+  parseBankBuildOptions,
+  startBankBuild,
+  type BankBuildOptions,
+} from "./bank-builder.js";
+import { isUnsplashConfigured } from "./unsplash.js";
 import { handleLead, clientIp, parseLeadForm } from "./lead.js";
 import { ensureHostname, linkHost, unlinkHost } from "./hosting.js";
 import { parseCookies, resolveSession, login, createUser, createSite, deleteSite, listSites, saveDraft, loadDraft, publish, rollbackTo, unpublish, isAnotherSiteActive, activeAssets, SESSION_COOKIE, SiteInputError, initialDoc } from "./api.js";
@@ -530,6 +542,110 @@ async function handleApi(pool: import("pg").Pool, sitesRoot: string, req: Incomi
       summary(pool, session.userId),
     ]);
     json(res, 200, { sites, summary: totals });
+    return true;
+  }
+
+  // Inventario del banco de fotos: lo que hay ahora mismo, por sector. Es lo que
+  // el panel enseña antes de construir nada; se lee del manifiesto, sin red.
+  if (url.pathname === "/api/operator/bank" && req.method === "GET") {
+    if (!session) {
+      json(res, 401, { error: "unauthorized" });
+      return true;
+    }
+    if (!pool) {
+      json(res, 503, { error: "database_not_configured" });
+      return true;
+    }
+    if (!(await isOperator(pool, session.userId))) {
+      json(res, 403, { error: "forbidden" });
+      return true;
+    }
+    // `bankInventory` LANZA si el manifiesto existe pero no se puede leer (JSON
+    // roto, permisos). Esa estrictez se queda en el módulo: un banco ilegible es
+    // un fallo que hay que ver, y devolver un inventario a cero lo escondería
+    // detrás de un "no hay fotos" que además invitaría a reconstruir encima de
+    // un manifiesto roto. Lo que NO puede pasar es que la excepción escape: el
+    // handler de `createServer` no tiene try/catch, así que una promesa rechazada
+    // aquí tumba el proceso entero. Se traduce a un 500 controlado y el detalle
+    // se queda en el registro del servidor, nunca en la respuesta.
+    let inventory: BankInventory;
+    try {
+      inventory = await bankInventory();
+    } catch (error) {
+      console.warn("bank_inventory_failed", { error: String((error as Error).message || error).slice(0, 120) });
+      json(res, 500, { error: "inventory_unreadable" });
+      return true;
+    }
+    json(res, 200, { inventory });
+    return true;
+  }
+
+  // Constructor de la biblioteca de fotos (T-034). Corre en ESTE proceso y no en
+  // el worker: el banco vive en el volumen escribible de la plataforma y la
+  // clave de Unsplash solo existe aquí. Va con el resto del panel, DESPUÉS de
+  // resolver la sesión: sin cookie de operador no hay nada que construir.
+  if (url.pathname === "/api/operator/bank/build" && (req.method === "GET" || req.method === "POST")) {
+    if (!session) {
+      json(res, 401, { error: "unauthorized" });
+      return true;
+    }
+    if (!pool) {
+      json(res, 503, { error: "database_not_configured" });
+      return true;
+    }
+    if (!(await isOperator(pool, session.userId))) {
+      json(res, 403, { error: "forbidden" });
+      return true;
+    }
+    // `getBankBuildState` es síncrona y solo copia el estado en memoria: no lee
+    // disco ni red, así que no puede lanzar ni rechazar nada.
+    if (req.method === "GET") {
+      json(res, 200, getBankBuildState());
+      return true;
+    }
+
+    // El cuerpo se valida ANTES de mirar la clave: un cuerpo que no vale es
+    // culpa de la petición (400) y no del servidor (503). El recorte de cada
+    // foto NO se acepta por body: lo decide el constructor según hero o gallery.
+    let options: BankBuildOptions;
+    try {
+      options = parseBankBuildOptions(await readJson(req));
+    } catch (error) {
+      if (!(error instanceof BankBuildInputError)) {
+        // JSON roto o cuerpo demasiado grande: mismo veredicto para quien llama.
+        console.warn("bank_build_bad_body", { error: String((error as Error).message || error).slice(0, 80) });
+      }
+      json(res, 400, { error: "invalid_body" });
+      return true;
+    }
+    if (!isUnsplashConfigured()) {
+      json(res, 503, { error: "unsplash_not_configured" });
+      return true;
+    }
+    // `startBankBuild` vuelve en cuanto arranca el trabajo: lo que corre en
+    // segundo plano ya no puede rechazar esta respuesta. Lo que sí puede fallar
+    // es el arranque en sí, y cada fallo tiene su código.
+    let run: BankBuildRun;
+    try {
+      run = startBankBuild(options);
+    } catch (error) {
+      // 409 y no 202: el operador tiene que saber que su petición no ha arrancado
+      // nada y que la que está en curso sigue siendo la de antes.
+      if (error instanceof BankBuildBusyError) {
+        json(res, 409, { error: "already_running" });
+        return true;
+      }
+      if (error instanceof BankBuildInputError) {
+        json(res, 400, { error: "invalid_body" });
+        return true;
+      }
+      // Inesperado (por ejemplo, sin sitio para el identificador de la
+      // ejecución): 500 controlado, no una promesa rechazada sin manejar.
+      console.warn("bank_build_start_failed", { error: String((error as Error).message || error).slice(0, 120) });
+      json(res, 500, { error: "build_start_failed" });
+      return true;
+    }
+    json(res, 202, { run });
     return true;
   }
 
