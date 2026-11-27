@@ -127,6 +127,23 @@ function logModelConfig(): void {
 // que no lo conozca devolveria un 400 que se leeria como fallo del sistema. La
 // traduccion vive aqui y no en `LlmClient` porque es dialecto del proveedor: el
 // cliente sigue razonando en alias, que es lo que tiene coste en la tabla.
+/**
+ * ¿El id real es de la familia Claude?
+ *
+ * POR QUÉ IMPORTA: el proveedor sirve cada familia por su propio protocolo. Los
+ * Claude NO se atienden en `/chat/completions` (devuelve 400
+ * `protocol_mismatch`): se atienden en `/messages`, con cabeceras y cuerpo
+ * propios. El resto del catálogo sigue por el camino compatible OpenAI. Quien
+ * manda es el proveedor, no nuestro cliente: por eso la decisión vive aquí y el
+ * resto del sistema sigue hablando alias y `CompleteRequest`.
+ */
+export function isAnthropicModel(id: string): boolean {
+  return /claude/i.test(id);
+}
+
+/** Versión del protocolo de Anthropic. Sin ella, `/messages` responde 400. */
+const ANTHROPIC_VERSION = "2023-06-01";
+
 export class HttpTransport implements Transport {
   readonly provider = "pateway";
 
@@ -141,31 +158,58 @@ export class HttpTransport implements Transport {
 
     // El id real puede venir de `LLM_DESIGN_MODEL`; lo decide `providerModelId`.
     const { id: modelId } = providerModelId(req.model, process.env);
+    const anthropic = isAnthropicModel(modelId);
 
-    const body = {
-      model: modelId,
-      messages: req.messages.map(toProviderMessage),
-      max_tokens: req.maxOutputTokens,
-      ...(req.temperature !== undefined ? { temperature: req.temperature } : {}),
-      ...(req.tools?.length ? { tools: req.tools.map((t) => ({ type: "function", function: t })) } : {}),
-    };
+    // Ruta y cabeceras segun la familia. En `/messages` la clave va en
+    // `x-api-key` y NO como `Authorization: Bearer`: mandar las dos cosas a la
+    // vez es como se acaba con un 401 sin explicacion.
+    const res = anthropic
+      ? await fetch(`${this.baseUrl}/messages`, {
+          method: "POST",
+          headers: {
+            "x-api-key": key,
+            "anthropic-version": ANTHROPIC_VERSION,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify(anthropicBody(modelId, req)),
+          ...(req.signal ? { signal: req.signal } : {}),
+        })
+      : await fetch(`${this.baseUrl}/chat/completions`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
+          body: JSON.stringify({
+            model: modelId,
+            messages: req.messages.map(toProviderMessage),
+            max_tokens: req.maxOutputTokens,
+            ...(req.temperature !== undefined ? { temperature: req.temperature } : {}),
+            ...(req.tools?.length ? { tools: req.tools.map((t) => ({ type: "function", function: t })) } : {}),
+          }),
+          ...(req.signal ? { signal: req.signal } : {}),
+        });
 
-    const res = await fetch(`${this.baseUrl}/chat/completions`, {
-      method: "POST",
-      headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
-      body: JSON.stringify(body),
-      ...(req.signal ? { signal: req.signal } : {}),
-    });
+    if (!res.ok) throw await providerError(res, key);
 
-    if (res.status === 429) throw new LlmError("rate_limit", "429");
-    if (res.status >= 400 && res.status < 500) throw new LlmError("invalid_request", `${res.status}`);
-    if (!res.ok) throw new LlmError("provider_error", `${res.status}`);
+    const data = (await res.json()) as Record<string, unknown>;
+    if (anthropic) {
+      return {
+        text: anthropicText(data),
+        toolCalls: anthropicToolCalls(data),
+        finishReason: mapAnthropicStop(text(data["stop_reason"])),
+        usage: {
+          tokensIn: number((data["usage"] as Record<string, unknown> | undefined)?.["input_tokens"]),
+          tokensOut: number((data["usage"] as Record<string, unknown> | undefined)?.["output_tokens"]),
+          costUsd: 0,
+        },
+        model: req.model,
+        latencyMs: Date.now() - started,
+      };
+    }
 
-    const data = (await res.json()) as {
+    const openai = data as {
       choices?: { message?: { content?: string; tool_calls?: { id: string; function: { name: string; arguments: string } }[] }; finish_reason?: string }[];
       usage?: { prompt_tokens?: number; completion_tokens?: number };
     };
-    const choice = data.choices?.[0];
+    const choice = openai.choices?.[0];
     const rawCalls = choice?.message?.tool_calls ?? [];
 
     return {
@@ -173,14 +217,172 @@ export class HttpTransport implements Transport {
       toolCalls: rawCalls.map((c) => ({ id: c.id, name: c.function.name, args: safeJson(c.function.arguments) })),
       finishReason: mapFinish(choice?.finish_reason),
       usage: {
-        tokensIn: data.usage?.prompt_tokens ?? 0,
-        tokensOut: data.usage?.completion_tokens ?? 0,
+        tokensIn: openai.usage?.prompt_tokens ?? 0,
+        tokensOut: openai.usage?.completion_tokens ?? 0,
         costUsd: 0,
       },
       model: req.model,
       latencyMs: Date.now() - started,
     };
   }
+}
+
+// --- Protocolo de Anthropic (`/messages`) ------------------------------------
+
+/**
+ * Cuerpo con la forma que pide `/messages`.
+ *
+ * Dos diferencias con el formato OpenAI que nos costaban un 400:
+ *   - el `system` NO es un mensaje: va aparte, en un campo de primer nivel. Si
+ *     viaja como `{role:"system"}` dentro de `messages`, el proveedor lo rechaza;
+ *   - `messages` solo admite `user` y `assistant`. Un `tool` se manda como
+ *     `user`, igual que hace el camino compatible.
+ *
+ * Las herramientas van con `name`, `description` e `input_schema` (JSON Schema),
+ * no con el envoltorio `{type:"function", function}`. Hoy el agente de diseño no
+ * las usa (`LlmClient` no las reenvía y sus llamadas van sin `tools`), así que
+ * este camino se traduce por contrato y se prueba con un `ToolSpec` sintético; si
+ * algún día se usan de verdad, ya está listo.
+ */
+function anthropicBody(modelId: string, req: Parameters<Transport["complete"]>[0]) {
+  const system = req.messages
+    .filter((m) => m.role === "system")
+    .map((m) => m.content)
+    .join("\n\n")
+    .trim();
+  const messages = req.messages
+    .filter((m) => m.role !== "system")
+    .map((m) => ({ role: m.role === "assistant" ? "assistant" : "user", content: m.content }));
+  return {
+    model: modelId,
+    max_tokens: req.maxOutputTokens,
+    ...(system !== "" ? { system } : {}),
+    messages,
+    ...(req.temperature !== undefined ? { temperature: req.temperature } : {}),
+    ...(req.tools?.length
+      ? { tools: req.tools.map((t) => ({ name: t.name, description: t.description, input_schema: t.parameters })) }
+      : {}),
+  };
+}
+
+interface AnthropicBlock {
+  type?: unknown;
+  text?: unknown;
+  id?: unknown;
+  name?: unknown;
+  input?: unknown;
+}
+
+function anthropicBlocks(data: Record<string, unknown>): AnthropicBlock[] {
+  const blocks = data["content"];
+  return Array.isArray(blocks) ? (blocks as AnthropicBlock[]) : [];
+}
+
+/** Texto de la respuesta: se CONCATENAN los bloques `type: "text"`. */
+function anthropicText(data: Record<string, unknown>): string {
+  return anthropicBlocks(data)
+    .filter((b) => b.type === "text" && typeof b.text === "string")
+    .map((b) => b.text as string)
+    .join("");
+}
+
+/** Llamadas a herramienta, desde los bloques `tool_use`. */
+function anthropicToolCalls(data: Record<string, unknown>) {
+  return anthropicBlocks(data)
+    .filter((b) => b.type === "tool_use")
+    .map((b) => ({ id: String(b.id ?? ""), name: String(b.name ?? ""), args: b.input ?? null }));
+}
+
+/**
+ * `stop_reason` del proveedor al vocabulario del sistema.
+ *
+ * `end_turn` → `stop`, `max_tokens` → `length`, `tool_use` → `tool_calls`,
+ * `refusal` → `refused`. Lo desconocido (`stop_sequence`, campos nuevos) es un
+ * final controlado, nunca una excepción.
+ */
+function mapAnthropicStop(r: string): ReturnType<typeof mapFinish> {
+  if (r === "max_tokens") return "length";
+  if (r === "tool_use") return "tool_calls";
+  if (r === "refusal") return "refused";
+  return "stop";
+}
+
+function text(v: unknown): string {
+  return typeof v === "string" ? v : "";
+}
+
+function number(v: unknown): number {
+  return typeof v === "number" && Number.isFinite(v) ? v : 0;
+}
+
+/**
+ * Error del proveedor, con el POR QUÉ dentro.
+ *
+ * ANTES: un 400 del proveedor llegaba como `message=400` y no decía nada; se
+ * perdieron horas buscando qué campo sobraba. Ahora el mensaje lleva el cuerpo
+ * del proveedor, recortado y saneado: sin la clave y sin URLs (una URL puede
+ * llevar credenciales), en una sola línea de 200 caracteres como mucho. El
+ * mismo texto va al registro, junto al estado.
+ */
+async function providerError(res: { status: number; text?: () => Promise<string> }, key: string): Promise<LlmError> {
+  const code = res.status === 429
+    ? "rate_limit"
+    : res.status >= 400 && res.status < 500
+      ? "invalid_request"
+      : "provider_error";
+  const detail = await errorDetail(res, key);
+  if (detail !== "") console.warn("provider_error_body", { status: res.status, detail });
+  return new LlmError(code, detail === "" ? `${res.status}` : `${res.status}: ${detail}`);
+}
+
+/** Cuerpo del error, en una línea y sin secretos. Nunca lanza. */
+async function errorDetail(res: { text?: () => Promise<string> }, key: string): Promise<string> {
+  let raw = "";
+  try {
+    raw = typeof res.text === "function" ? await res.text() : "";
+  } catch {
+    // Un cuerpo que no se puede leer deja el estado como único dato.
+    return "";
+  }
+  // El orden importa: se COLAPSA primero y se redacta después. Al revés, una
+  // clave partida por un salto de línea («sk-ant-\nabc») no coincide con la
+  // cadena entera y acaba en el log troceada. Además de la forma tal cual se
+  // cubre la URL-encoded y la partida: una clave puede llegar de cualquiera de
+  // las tres maneras, y el log es el último sitio donde puede aparecer.
+  const colapsado = raw.replace(/\s+/g, " ").trim();
+  const limpio = redactKey(colapsado, key);
+  const sinUrls = limpio.replace(/https?:\/\/\S+/g, "[url]");
+  return sinUrls.replace(/\s+/g, " ").trim().slice(0, 200);
+}
+
+/** Carácter literal para una expresión regular. */
+function escapeRegex(ch: string): string {
+  return ch.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Sustituye la clave por `[clave]` en todas sus formas.
+ *
+ * POR QUÉ NO BASTA CON `split(key)`: el texto ya viene colapsado, así que una
+ * clave partida por un salto de línea queda con un espacio en medio
+ * (`sk-ant- abc`) y la cadena entera no aparece. Se busca carácter a carácter
+ * permitiendo espacios entre ellos, y se hace también con la forma
+ * URL-encoded, que es la otra manera de que el proveedor la repita.
+ */
+function redactKey(text: string, key: string): string {
+  if (key === "") return text;
+  let out = text;
+  // La clave también se normaliza: la del contenedor puede traer el salto de
+  // línea o el espacio de haberla pegado, y `Headers` los recorta al enviar, así
+  // que el eco del proveedor viene SIN ellos y el patrón con ellos no casaría.
+  const formas = [key, encodeURIComponent(key)]
+    .map((f) => f.replace(/\s+/g, " ").trim())
+    .filter((f) => f !== "");
+  for (const forma of new Set(formas)) {
+    const pattern = forma.split("").map(escapeRegex).join("\\s*");
+    out = out.replace(new RegExp(pattern, "g"), "[clave]");
+  }
+  return out;
 }
 
 // El proveedor habla su dialecto; el resto del sistema no debe saber cual es.

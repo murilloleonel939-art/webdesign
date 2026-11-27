@@ -16,6 +16,11 @@ const { LlmError } = await import("@webdesign/llm");
 
 const REQ = { model: "design", messages: [{ role: "user", content: "hola" }], maxOutputTokens: 64 };
 
+// El camino compatible OpenAI se prueba con un modelo que NO es de la familia
+// Claude: `design` (claude-sonnet-5) va por `/messages`, y su contrato vive en
+// `anthropic.test.mjs`. Los dos caminos conviven y ninguno puede pisar al otro.
+const REQ_OPENAI = { ...REQ, model: "fast-large" };
+
 /** Doble de `fetch`: guarda la llamada y contesta lo mínimo que el transporte lee. */
 function fakeFetch(status = 200, body = {
   choices: [{ message: { content: "hecho" }, finish_reason: "stop" }],
@@ -33,7 +38,7 @@ function fakeFetch(status = 200, body = {
 test("la URL es ${base}/chat/completions, sin barra doble", async () => {
   const f = fakeFetch();
   try {
-    await new HttpTransport().complete(REQ);
+    await new HttpTransport().complete(REQ_OPENAI);
     // La barra final de LLM_PROVIDER_BASE_URL no se duplica.
     assert.equal(f.calls[0].url, "https://proveedor.test/v1/chat/completions");
     assert.equal(f.calls[0].init.method, "POST");
@@ -43,7 +48,7 @@ test("la URL es ${base}/chat/completions, sin barra doble", async () => {
 test("la clave viaja como Authorization: Bearer de LLM_PROVIDER_API_KEY", async () => {
   const f = fakeFetch();
   try {
-    await new HttpTransport("https://otro.test/v1").complete(REQ);
+    await new HttpTransport("https://otro.test/v1").complete(REQ_OPENAI);
     assert.equal(f.calls[0].url, "https://otro.test/v1/chat/completions");
     assert.equal(f.calls[0].init.headers.authorization, "Bearer clave-de-prueba");
     // La clave no se cuela en el cuerpo ni en la URL.
@@ -55,10 +60,10 @@ test("la clave viaja como Authorization: Bearer de LLM_PROVIDER_API_KEY", async 
 test("al proveedor le llega el id real del modelo, no el alias", async () => {
   const f = fakeFetch();
   try {
-    const r = await new HttpTransport().complete(REQ);
+    const r = await new HttpTransport().complete(REQ_OPENAI);
     const sent = JSON.parse(f.calls[0].init.body);
-    assert.equal(sent.model, "claude-sonnet-5");
-    assert.notEqual(sent.model, "design");
+    assert.equal(sent.model, "gpt-4o");
+    assert.notEqual(sent.model, "fast-large");
     assert.equal(sent.max_tokens, 64);
     assert.equal(r.text, "hecho");
     assert.equal(r.usage.tokensIn, 7);
