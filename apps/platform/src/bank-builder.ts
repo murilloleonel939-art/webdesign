@@ -26,8 +26,8 @@
 // de disco antes de pedir nada a la red.
 
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, readdir, rename, unlink, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { lstat, mkdir, open, readFile, readdir, rename, unlink, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { extensionFor, sniffMime, type AssetKind } from "@webdesign/assets";
 import { _resetBankCache, bankRoot, isSector, SECTORS, type Sector } from "./photo-bank.js";
 import { altFor, filterPhoto, REJECT_REASONS } from "./photo-filter.js";
@@ -388,8 +388,8 @@ export function temporaryPathFor(abs: string): string {
 }
 
 /**
- * Escritura atómica de un fichero de texto: temporal propio, `writeFile` y
- * `rename`. Sustituye al `.tmp` de nombre fijo.
+ * Escritura atómica y DURABLE de un fichero de texto: temporal propio, volcado a
+ * disco, `rename` y volcado del directorio. Sustituye al `.tmp` de nombre fijo.
  *
  * POR QUÉ EL SUFIJO ÚNICO: la plataforma puede correr con MÁS DE UNA RÉPLICA
  * sobre el mismo volumen (`/data/biblioteca`). Con el temporal siempre llamado
@@ -415,17 +415,124 @@ export function temporaryPathFor(abs: string): string {
 export async function writeAtomic(abs: string, content: string): Promise<void> {
   const tmp = temporaryPathFor(abs);
   try {
-    await writeFile(tmp, content, "utf8");
+    // `sync()` ANTES del `rename`: el `rename` es atómico pero no durable. Sin
+    // volcar el fichero a disco, un corte de corriente justo después del
+    // `rename` puede dejar el destino publicado y VACÍO —el peor caso: el
+    // manifiesto existe y no se puede leer—. Se escribe en el temporal, se
+    // fuerza el volcado y solo entonces se publica.
+    const handle = await open(tmp, "w");
+    try {
+      await handle.writeFile(content, "utf8");
+      await handle.sync();
+    } finally {
+      // Se cierra también cuando `writeFile` o `sync` fallan: un descriptor
+      // abierto retiene el temporal en algunos sistemas.
+      try {
+        await handle.close();
+      } catch {
+        // Un fallo al cerrar no puede robar el error original: el que importa
+        // es el de la escritura o el volcado, que sale de aquí abajo.
+      }
+    }
     await rename(tmp, abs);
   } catch (error) {
     try {
       await unlink(tmp);
     } catch {
-      // El temporal puede no existir (si falló el `writeFile`): aquí no hay nada
-      // que hacer, y este error no puede tapar el de verdad.
+      // El temporal puede no existir (si falló el `open`): aquí no hay nada que
+      // hacer, y este error no puede tapar el de verdad.
     }
     throw error;
   }
+  // El `rename` ya está hecho: si esto falla, el fichero es correcto igual y el
+  // fallo solo significa que el nombre podría perderse ante un corte. No es un
+  // error de la escritura, así que no se propaga.
+  await syncDirectory(dirname(abs));
+}
+
+/**
+ * `fsync` del directorio, best-effort.
+ *
+ * Después de un `rename` hace falta volcar TAMBIÉN el directorio para que el
+ * cambio de nombre sobreviva a un corte. No todos los sistemas lo permiten
+ * (ni todos los sistemas de ficheros lo necesitan), así que fallar aquí se
+ * anota y se sigue: el contenido ya está en su sitio.
+ */
+async function syncDirectory(dir: string): Promise<void> {
+  let handle;
+  try {
+    handle = await open(dir, "r");
+    await handle.sync();
+  } catch (error) {
+    console.warn("bank_dir_sync_failed", { error: String((error as Error).message || error).slice(0, 80) });
+  } finally {
+    try {
+      await handle?.close();
+    } catch {
+      // Cerrar un descriptor de directorio no puede aportar nada nuevo: el
+      // resultado de la escritura ya está decidido.
+    }
+  }
+}
+
+/**
+ * Antigüedad mínima para considerar huérfano un temporal: una hora.
+ *
+ * POR QUÉ UNA HORA Y NO CERO: el temporal de otra réplica que está escribiendo
+ * ahora mismo tiene el mismo nombre y no se puede distinguir del de un proceso
+ * que murió. Con una hora de margen, ningún temporal en vuelo entra en el
+ * barrido; lo que se borra lleva una hora muerto y no le sirve a nadie.
+ */
+const ORPHAN_TEMP_AGE_MS = 60 * 60 * 1000;
+
+/**
+ * Los DOS nombres de temporal que este módulo crea, y ninguno más: si mañana se
+ * escribe otro fichero con `writeAtomic`, su patrón se añade aquí de forma
+ * explícita. Un patrón laxo (`*.tmp`) borraría ficheros de otros.
+ */
+const ORPHAN_TEMP = /^(?:manifest\.json|CREDITS\.md)\.[0-9a-fA-F-]{36}\.tmp$/;
+
+/**
+ * Borra los temporales que dejó una ejecución muerta entre escribir y renombrar.
+ *
+ * POR QUÉ HACE FALTA: el `rename` es el último paso, así que un proceso que
+ * muere antes deja el `.tmp` para siempre. Con un `.tmp` por foto y por pasada,
+ * el volumen se llena de basura invisible que nadie más vuelve a mirar.
+ *
+ * NO LANZA NUNCA y devuelve cuántos borró: es una limpieza, no un paso del que
+ * dependa construir. Si un fichero no se puede mirar o borrar, se anota y se
+ * sigue con los demás.
+ *
+ * `now` se inyecta para poder probarlo sin esperar una hora de verdad.
+ */
+export async function sweepOrphanTemps(dir: string, now: number = Date.now()): Promise<number> {
+  let names: string[];
+  try {
+    names = await readdir(dir);
+  } catch {
+    // Carpeta que aún no existe (un despliegue nuevo): no hay nada que barrer.
+    return 0;
+  }
+  let removed = 0;
+  for (const name of names) {
+    if (!ORPHAN_TEMP.test(name)) continue;
+    const abs = join(dir, name);
+    try {
+      // `lstat` y no `stat`: así se mira el ENLACE y no su destino. Un symlink
+      // que se llame como un temporal no lo creó este módulo, no se toca y no
+      // cuenta; el barrido solo limpia ficheros regulares propios.
+      const info = await lstat(abs);
+      if (!info.isFile()) continue;
+      // `>` y no `>=`: justo una hora todavía puede ser el temporal de otra
+      // réplica que empezó hace un rato.
+      if (now - info.mtimeMs <= ORPHAN_TEMP_AGE_MS) continue;
+      await unlink(abs);
+      removed += 1;
+    } catch (error) {
+      console.warn("bank_temp_sweep_failed", { file: name, error: String((error as Error).message || error).slice(0, 80) });
+    }
+  }
+  return removed;
 }
 
 /**
@@ -922,6 +1029,11 @@ export function startBankBuild(input: unknown, deps: BankBuildDeps = {}): BankBu
 
 async function runBuild(run: BankBuildRun, opts: BankBuildOptions, deps: ResolvedDeps): Promise<void> {
   try {
+    // ANTES de tocar el manifiesto: los temporales de una ejecución muerta no
+    // valen para nada y este es el único momento en que se sabe que nadie los
+    // está escribiendo (el barrido solo toca los de más de una hora).
+    const barridos = await sweepOrphanTemps(unsplashDir(deps.root));
+    if (barridos > 0) console.info("bank_temp_swept", { removed: barridos });
     const doc = await loadManifestDoc(deps.root);
     const ctx: Ctx = {
       run,

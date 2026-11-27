@@ -13,10 +13,11 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, readFile, readdir } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, symlink, utimes, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
+import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
-import { temporaryPathFor, writeAtomic } from "../dist/bank-builder.js";
+import { getBankBuildState, startBankBuild, sweepOrphanTemps, temporaryPathFor, writeAtomic } from "../dist/bank-builder.js";
 
 async function tempDir() {
   return mkdtemp(join(tmpdir(), "atomic-write-"));
@@ -252,4 +253,221 @@ test("9. nombre de destino muy largo: el sufijo del temporal no cabe y falla lim
     () => false,
   );
   assert.equal(creado, false, "el destino no se creó");
+});
+
+// ---------------------------------------------------------------------------
+// 10-12. Barrido de temporales huérfanos
+// ---------------------------------------------------------------------------
+
+const HORA = 60 * 60 * 1000;
+
+test("10. sweepOrphanTemps borra los temporales viejos y no toca nada más", async () => {
+  const dir = await tempDir();
+  const ahora = Date.now();
+  const hace2h = new Date(ahora - 2 * HORA);
+
+  // Lo que el barrido SÍ debe borrar: temporales de los dos ficheros del banco,
+  // con su UUID y más de una hora de antigüedad.
+  const viejoManifiesto = `manifest.json.${randomUUID()}.tmp`;
+  const viejoCreditos = `CREDITS.md.${randomUUID()}.tmp`;
+  // Lo que NO debe tocar: un temporal recién creado (puede ser el de otra
+  // réplica escribiendo ahora), los ficheros buenos, un .tmp ajeno y el nombre
+  // fijo de antes (que ya no genera este módulo).
+  const nuevoManifiesto = `manifest.json.${randomUUID()}.tmp`;
+
+  await writeFile(join(dir, viejoManifiesto), "a medias");
+  await writeFile(join(dir, viejoCreditos), "a medias");
+  await writeFile(join(dir, nuevoManifiesto), "en vuelo");
+  await writeFile(join(dir, "manifest.json"), '{"photos":[]}');
+  await writeFile(join(dir, "CREDITS.md"), "# Créditos\n");
+  await writeFile(join(dir, "otra-cosa.tmp"), "de otro");
+  await writeFile(join(dir, "manifest.json.tmp"), "nombre fijo antiguo");
+
+  // La antigüedad se falsea con `utimes`: nada de esperas reales.
+  for (const nombre of [viejoManifiesto, viejoCreditos, "manifest.json", "CREDITS.md", "otra-cosa.tmp", "manifest.json.tmp"]) {
+    await utimes(join(dir, nombre), hace2h, hace2h);
+  }
+
+  const borrados = await sweepOrphanTemps(dir, ahora);
+  assert.equal(borrados, 2, "solo los dos temporales viejos");
+
+  const quedan = (await readdir(dir)).sort();
+  assert.deepEqual(quedan, ["CREDITS.md", "manifest.json", "manifest.json.tmp", "otra-cosa.tmp", nuevoManifiesto].sort());
+  assert.equal(await readFile(join(dir, "manifest.json"), "utf8"), '{"photos":[]}');
+  assert.equal(await readFile(join(dir, "CREDITS.md"), "utf8"), "# Créditos\n");
+  assert.equal(await readFile(join(dir, "otra-cosa.tmp"), "utf8"), "de otro");
+
+  // Justo en el borde (una hora exacta) tampoco se borra: puede estar en vuelo.
+  const justo = `CREDITS.md.${randomUUID()}.tmp`;
+  await writeFile(join(dir, justo), "justo una hora");
+  assert.equal(await sweepOrphanTemps(dir, ahora), 0);
+  assert.ok((await readdir(dir)).includes(justo));
+});
+
+test("11. sweepOrphanTemps sobre una carpeta que no existe no lanza y devuelve 0", async () => {
+  const dir = await tempDir();
+  assert.equal(await sweepOrphanTemps(join(dir, "no-existe")), 0);
+});
+
+test("12. startBankBuild barre el temporal viejo antes de tocar el manifiesto", async () => {
+  const root = await tempDir();
+  await mkdir(join(root, "unsplash"), { recursive: true });
+  const viejo = join(root, "unsplash", `manifest.json.${randomUUID()}.tmp`);
+  await writeFile(viejo, "{a medias");
+  const hace2h = new Date(Date.now() - 2 * HORA);
+  await utimes(viejo, hace2h, hace2h);
+
+  const fetchVacio = async () => new Response(JSON.stringify({ results: [] }), { status: 200 });
+  startBankBuild(
+    { sectors: ["despacho"], hero: 0, gallery: 0 },
+    { bankRoot: root, fetch: fetchVacio, readCache: async () => undefined, saveCache: async () => ({}) },
+  );
+  const limite = Date.now() + 5000;
+  while (getBankBuildState().run !== null && Date.now() < limite) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.equal(getBankBuildState().run, null, "la ejecución terminó");
+
+  const nombres = await readdir(join(root, "unsplash"));
+  assert.deepEqual(nombres.filter((n) => n.endsWith(".tmp")), [], "el temporal viejo se barrió");
+});
+
+// ---------------------------------------------------------------------------
+// 13-17. Casos límite del barrido, deterministas y sin esperas reales
+// ---------------------------------------------------------------------------
+
+/** Espera (con tope) a que la ejecución en curso termine y devuelve el estado. */
+async function esperarFin() {
+  const limite = Date.now() + 5000;
+  while (getBankBuildState().run !== null && Date.now() < limite) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  return getBankBuildState();
+}
+
+test("13. 59 minutos no es huérfano; una hora y un milisegundo sí", async () => {
+  const dir = await tempDir();
+  const ahora = Date.now();
+  const casiUnaHora = `manifest.json.${randomUUID()}.tmp`;
+  const pasadito = `CREDITS.md.${randomUUID()}.tmp`;
+  await writeFile(join(dir, casiUnaHora), "en vuelo");
+  await writeFile(join(dir, pasadito), "muerto");
+  // La antigüedad se falsea con `utimes`: nada de esperar 59 minutos de verdad.
+  const hace59min = new Date(ahora - 59 * 60 * 1000);
+  const hace1hY1ms = new Date(ahora - HORA - 1);
+  await utimes(join(dir, casiUnaHora), hace59min, hace59min);
+  await utimes(join(dir, pasadito), hace1hY1ms, hace1hY1ms);
+
+  const borrados = await sweepOrphanTemps(dir, ahora);
+  assert.equal(borrados, 1, "solo el que pasa la hora");
+  const quedan = await readdir(dir);
+  assert.ok(quedan.includes(casiUnaHora), "el de 59 minutos no se toca");
+  assert.ok(!quedan.includes(pasadito), "el de una hora y un milisegundo se borra");
+});
+
+test("14. el segmento central no es un UUID de 36: ni se borra ni se cuenta", async () => {
+  const dir = await tempDir();
+  const ahora = Date.now();
+  const hace2h = new Date(ahora - 2 * HORA);
+  // Tres impostores con dos horas de antigüedad: ninguno casa con el patrón.
+  const corta = "manifest.json.corta.tmp"; // 5 caracteres, no 36
+  const noHex = `manifest.json.${"z".repeat(36)}.tmp`; // 36 caracteres, pero `z` no es hexadecimal
+  const casiUuid = `CREDITS.md.123e4567e89b12d3a456426614174000.tmp`; // 35 caracteres: se queda corto
+  for (const nombre of [corta, noHex, casiUuid]) {
+    await writeFile(join(dir, nombre), "impostor");
+    await utimes(join(dir, nombre), hace2h, hace2h);
+  }
+
+  assert.equal(await sweepOrphanTemps(dir, ahora), 0, "nada cuenta como huérfano");
+  const quedan = (await readdir(dir)).sort();
+  assert.deepEqual(quedan, [casiUuid, corta, noHex].sort(), "los tres siguen ahí");
+});
+
+test("15. un .tmp que es un directorio: no lanza, no borra y no cuenta", async () => {
+  const dir = await tempDir();
+  const ahora = Date.now();
+  const comoTemporal = `manifest.json.${randomUUID()}.tmp`;
+  await mkdir(join(dir, comoTemporal)); // un directorio donde se espera un fichero
+  const hace2h = new Date(ahora - 2 * HORA);
+  await utimes(join(dir, comoTemporal), hace2h, hace2h);
+
+  const borrados = await sweepOrphanTemps(dir, ahora);
+  assert.equal(borrados, 0, "un directorio no se borra");
+  assert.ok((await readdir(dir)).includes(comoTemporal), "el directorio sigue en su sitio");
+});
+
+test("16. el reloj manda el `now` inyectado, no el de la máquina", async () => {
+  const dir = await tempDir();
+  const recien = `manifest.json.${randomUUID()}.tmp`;
+  await writeFile(join(dir, recien), "acaba de nacer");
+
+  // Con el reloj de verdad tiene milisegundos; con el inyectado, dos horas.
+  assert.equal(await sweepOrphanTemps(dir), 0, "ahora mismo no es huérfano");
+  assert.equal(await sweepOrphanTemps(dir, Date.now() + 2 * HORA), 1, "dos horas después sí");
+  assert.ok(!(await readdir(dir)).includes(recien), "el fichero se borró con el reloj inyectado");
+});
+
+test("17. una anomalía en el barrido no impide construir", async () => {
+  const fetchVacio = async () => new Response(JSON.stringify({ results: [] }), { status: 200 });
+  const deps = { fetch: fetchVacio, readCache: async () => undefined, saveCache: async () => ({}) };
+
+  // Raíz A: la carpeta unsplash NI existe (el readdir del barrido falla).
+  const raizA = await mkdtemp(join(tmpdir(), "atomic-sweep-a-"));
+  startBankBuild({ sectors: ["despacho"], hero: 0, gallery: 0 }, { bankRoot: raizA, ...deps });
+  const estadoA = await esperarFin();
+  assert.equal(estadoA.run, null, "la ejecución A terminó");
+  assert.equal(estadoA.last.status, "done", "carpeta inexistente: se construye igual");
+
+  // Raíz B: la carpeta unsplash lleva un .tmp que es un DIRECTORIO.
+  const raizB = await mkdtemp(join(tmpdir(), "atomic-sweep-b-"));
+  const dirB = join(raizB, "unsplash");
+  await mkdir(dirB, { recursive: true });
+  const comoTemporal = `manifest.json.${randomUUID()}.tmp`;
+  await mkdir(join(dirB, comoTemporal));
+  const hace2h = new Date(Date.now() - 2 * HORA);
+  await utimes(join(dirB, comoTemporal), hace2h, hace2h);
+  startBankBuild({ sectors: ["despacho"], hero: 0, gallery: 0 }, { bankRoot: raizB, ...deps });
+  const estadoB = await esperarFin();
+  assert.equal(estadoB.run, null, "la ejecución B terminó");
+  assert.equal(estadoB.last.status, "done", "anomalía en el barrido: se construye igual");
+  assert.ok((await readdir(dirB)).includes(comoTemporal), "el directorio raro no se borró");
+});
+
+test("18. el barrido no toca un symlink con nombre de temporal ni lo cuenta", async () => {
+  const dir = await tempDir();
+  const fuera = await tempDir();
+  const ahora = Date.now();
+  const hace2h = new Date(ahora - 2 * HORA);
+
+  // Destino del enlace: un fichero real FUERA de la carpeta del banco. Y VIEJO:
+  // con `stat` el barrido miraría su destino, lo vería con más de una hora y
+  // borraría el enlace. Envejecerlo es lo que hace que la prueba distinga
+  // `lstat` de `stat`; con un objetivo recién creado los dos se comportan igual.
+  const objetivo = join(fuera, "importante.txt");
+  await writeFile(objetivo, "no me borres\n");
+  await utimes(objetivo, hace2h, hace2h);
+
+  // Enlace con el nombre exacto de un temporal. No lo creó este módulo, así que
+  // el barrido ni lo toca ni lo cuenta, y el fichero apuntado sigue intacto.
+  const nombreEnlace = `manifest.json.${randomUUID()}.tmp`;
+  const enlace = join(dir, nombreEnlace);
+  await symlink(objetivo, enlace);
+
+  // Un temporal de verdad, viejo: ese sí cae y suma uno.
+  const nombreReal = `CREDITS.md.${randomUUID()}.tmp`;
+  const deVerdad = join(dir, nombreReal);
+  await writeFile(deVerdad, "a medias");
+  await utimes(deVerdad, hace2h, hace2h);
+
+  const borrados = await sweepOrphanTemps(dir, ahora);
+
+  // Con `stat` (el mutante) el enlace entraría por su destino viejo: se borraría
+  // y aquí llegarían 2. Con `lstat` solo cae el fichero regular.
+  assert.equal(borrados, 1, "solo cuenta el fichero regular que borró");
+  const nombres = await readdir(dir);
+  assert.ok(nombres.includes(nombreEnlace), "el symlink sigue ahí");
+  assert.equal(nombres.includes(nombreReal), false, "el temporal real sí se barrió");
+  const info = await lstat(enlace);
+  assert.ok(info.isSymbolicLink(), "sigue siendo un enlace, no se sustituyó");
+  assert.equal(await readFile(objetivo, "utf8"), "no me borres\n", "el destino del enlace está intacto");
 });

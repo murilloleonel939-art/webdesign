@@ -82,3 +82,19 @@ Nemotron Ultra (openrouter) + revisión manual + fallback (claude-opus-5-5): **s
 - **El `.tmp` de nombre fijo**: si se escala `platform` a >1 réplica sobre el mismo volumen `/data/biblioteca`, dos ejecuciones simultáneas podrían pisarse el `manifest.json.tmp`. Arreglo barato antes de desplegar en multi-réplica: `${abs}.${run.id}.tmp` (una línea en `writeManifestDoc` y otra en `writeCredits`).
 - Los commits están firmados por `root` (identidad local de git, no configurada en este repositorio).
 - El gateway sigue en 502 (pendiente de `LLM_PROVIDER_API_KEY`, ver T-033).
+
+## Añadido posterior (commit 5c542eb)
+
+Cierra los dos avisos bajos de la auditoría sobre el `.tmp` de nombre fijo y añade durabilidad, sin tocar rutas, panel ni `unsplash.ts`.
+
+- **Temporal con UUID y `writeAtomic`**: el temporal pasa a ser `${destino}.${uuid}.tmp` (`temporaryPathFor`, exportada) y la escritura se centraliza en una sola función exportada `writeAtomic`, que usan el manifiesto y `CREDITS.md`. Con un `.tmp` de nombre fijo, dos réplicas sobre el mismo volumen compartían fichero y el `rename` podía publicar una mezcla de los dos documentos.
+- **`fsync` antes del `rename`**: se abre el temporal, se escribe, se hace `sync()` del descriptor, se cierra y solo entonces se renombra; después se intenta `fsync` del directorio de forma best-effort (`bank_dir_sync_failed` si no se puede). El `rename` era atómico pero no durable: un corte justo después podía publicar el manifiesto vacío.
+- **Barrido de temporales huérfanos**: `sweepOrphanTemps(dir, now?)` borra `manifest.json.*.tmp` y `CREDITS.md.*.tmp` con más de una hora de antigüedad al empezar cada ejecución. No toca nada más, no borra nada reciente (puede ser el temporal en vuelo de otra réplica) y no lanza: un fallo del barrido no impide construir.
+- **Pruebas que importan la función real**: `test/atomic-write-verify.test.mjs` dejó de llevar una copia de `writeAtomic` dentro (probaba su copia, no el módulo) y ahora importa `writeAtomic`, `temporaryPathFor` y `sweepOrphanTemps` de `dist/`. Todas deterministas: sin `fs.watch`, sin esperas reales y sin permisos, con `utimes` para falsear la antigüedad de un temporal.
+
+Números verificados tras este añadido:
+
+- `pnpm --filter @webdesign/platform typecheck`: `tsc --noEmit`, exit 0.
+- `pnpm --filter @webdesign/platform build`: `tsc` + `build-ui.mjs` → "css sin terceros / panel construido".
+- `pnpm --filter @webdesign/platform test`: **225 tests, 221 pass, 0 fail, 4 skipped**.
+- Los 4 saltos: **3** son previos y dependen de una base de datos de pruebas que no hay en este entorno (`cycle`, `another-active`, `preview-assets`); **1** es el caso de `EACCES` con directorio de solo lectura, que se salta al correr como `root` porque root escribe en un directorio 0500 y el permiso nunca falla.
