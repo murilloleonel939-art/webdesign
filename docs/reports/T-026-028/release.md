@@ -5,7 +5,7 @@
 - **Commit de código:** `376525d1a33ce156841c7e262e45450354c52754` (`376525d`), autor `root`. Sin firma GPG (`%G?` = N).
 - **Remoto:** `git ls-remote origin refs/heads/main` devuelve `376525d1a33ce156841c7e262e45450354c52754`, idéntico al local (comprobado tras el push).
 - **Grafo:** 3758 nodos y 6159 aristas en el commit de código (`built_at_commit` = `376525d`); tras reconstruirse sobre este reporte, 3767 nodos y 6170 aristas (257 comunidades). El conteo sube con cada documento nuevo, así que conviene leerlo junto a su `built_at_commit`.
-- **Commit del reporte:** `1242661` — el SHA final publicado en `main`.
+- **Commits de esta release:** `376525d` (código) y los de documentación que le siguen en `main` (`1242661` y posteriores). El SHA final se confirma con `git ls-remote origin refs/heads/main`, no con esta línea: cualquier commit posterior la dejaría desfasada.
 
 ## Contenido publicado
 
