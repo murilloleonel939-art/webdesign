@@ -66,6 +66,10 @@ Si un agente falla, se para y **se avisa al usuario**. **El relevo lo decide el 
 no hay tabla de relevos por defecto y nadie elige el modelo sustituto por su cuenta. Si el relevo
 que indica también falla, el caso vuelve al usuario, que decide si se replantea o se pide ayuda.
 
+Un agente que "se cae" puede ser solo falta de créditos: el usuario los repone y el agente puede
+seguir. Por eso, ante un fallo, **se avisa y se espera su confirmación**. No se sustituye al agente
+caído, no se hace su trabajo uno mismo y no se relanza nada hasta que el usuario lo diga.
+
 Formato del aviso:
 
 ```
