@@ -265,6 +265,11 @@ function themeLayoutCss(theme: Theme): string {
    caracteres rompia en cinco lineas de dos palabras. La foto baja de 448 a
    ~300 px y el titular baja a tres lineas. */
 .hero--image{display:grid;grid-template-columns:1.4fr .6fr;align-items:center;gap:calc(var(--gap) * .5)}
+/* Portada a ancho completo y proporción fija (pedido del dueño: "solo fotos
+   pequeñas" venía de una imagen de hero que no ocupaba su columna ni tenía un
+   tamaño mínimo garantizado). 16:9, cubriendo el hueco entero: nunca una
+   miniatura suelta dentro de la columna. */
+.hero--image img{width:100%;aspect-ratio:16/9;object-fit:cover;min-height:320px}
 /* El radio del preset es para botones y tarjetas, no para la fotografia: con
    \`pill\` el hero medía border-radius:1009px y la foto salia como un huevo. */
 .hero img{width:100%;height:auto;border-radius:min(12px,var(--radius));box-shadow:0 30px 60px -30px color-mix(in srgb,var(--ink) 45%,transparent);object-fit:cover}
@@ -363,8 +368,13 @@ function themeLayoutCss(theme: Theme): string {
 /* Galeria: rejilla uniforme, sin huecos ni saltos de alto. El radio de la
    foto no es el del boton: con \`pill\` cada imagen de 333x250 salia como una
    elipse y perdia las esquinas de un original cuadrado. */
-.gallery{display:grid;gap:calc(var(--gap) * .22);grid-template-columns:repeat(auto-fit,minmax(220px,1fr))}
-.gallery img{width:100%;height:100%;object-fit:cover;border-radius:min(12px,var(--radius));display:block;aspect-ratio:4/3}
+/* Rejilla con fotos CUADRADAS de al menos 200px (pedido del dueño): antes la
+   galería usaba una proporción 4:3 y el suelo de 220px no impedía que en
+   pantallas anchas las fotos se repartieran en más columnas de las pedidas.
+   \`minmax(min(200px,100%),1fr)\` fija el suelo en 200px sin desbordar en un
+   móvil estrecho: en anchos de lectura salen 2-3 columnas. */
+.gallery{display:grid;gap:calc(var(--gap) * .22);grid-auto-rows:1fr;grid-template-columns:repeat(auto-fit,minmax(min(200px,100%),1fr))}
+.gallery img{width:100%;height:100%;object-fit:cover;border-radius:min(12px,var(--radius));display:block;aspect-ratio:1}
 .gallery--masonry img{aspect-ratio:3/4}
 .gallery--wide{grid-template-columns:1fr}
 .gallery--wide img{aspect-ratio:21/9}

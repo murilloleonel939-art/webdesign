@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { renderPage, escapeHtml } from "../dist/index.js";
+import { renderPage, escapeHtml, themeCss } from "../dist/index.js";
 import { validateSiteDocument } from "@webdesign/site-schema";
 
 const doc = () => ({
@@ -274,4 +274,28 @@ test("T-026: metrics (3), testimonials (1) y pricing (1) validan y renderizan ju
   assert.match(html, /Consulta inicial/);
   assert.match(html, /\$299/);
   assert.match(html, /Valoración completa/);
+});
+
+test("el hero con foto va a ancho completo 16:9 con alto mínimo, y la galería en cuadradas de 200px", () => {
+  // Pedido del dueño: «solo coloca fotos pequeñas». La causa estaba en el CSS:
+  // el hero metía la foto en una columna estrecha (1.4fr/.6fr) sin proporción
+  // fija, y la galería usaba 4:3 con un suelo de 220px que no se respetaba al
+  // repartir en más columnas. Estas reglas son el contrato visual: si alguien
+  // las cambia, la página vuelve a verse como una maqueta.
+  const css = themeCss(doc().theme);
+
+  // Hero: la foto ocupa su columna entera, 16:9 y 320px de alto mínimo (móvil).
+  assert.match(css, /\.hero--image img\{[^}]*aspect-ratio:16\/9/);
+  assert.match(css, /\.hero--image img\{[^}]*min-height:320px/);
+  assert.match(css, /\.hero--image img\{[^}]*object-fit:cover/);
+  assert.match(css, /\.hero--image img\{[^}]*width:100%/);
+
+  // Galería: rejilla con suelo de 200px y fotos cuadradas.
+  assert.match(css, /\.gallery\{[^}]*grid-template-columns:repeat\(auto-fit,minmax\(min\(200px,100%\),1fr\)\)/);
+  assert.match(css, /\.gallery img\{[^}]*aspect-ratio:1/);
+  assert.match(css, /\.gallery img\{[^}]*object-fit:cover/);
+
+  // Y el hero sigue manteniendo su variante con imagen (la clase que decide el
+  // componente cuando hay foto resuelta).
+  assert.match(css, /\.hero--image\{display:grid/);
 });
