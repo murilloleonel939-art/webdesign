@@ -5,18 +5,93 @@ Construir la plataforma multi-sitio de agentes IA según `especificacion-constru
 (documento único por versión; `archivo/` es histórico y no se modifica).
 
 ## Forma de trabajo (decidida por el usuario, vale para todo el proyecto)
-- **Construye** `claude-sonnet-5`. **Prueba** `claude-haiku-5-5`. **Revisa** el agente principal
-  al terminar: typecheck, suite completa y lectura del diff antes de dar nada por hecho.
-- Nombres verificados con una llamada real: `claude-sonnet-5-5` y `claude-sonnet-4-5` NO
-  responden en este arnés; `claude-sonnet-5` y `claude-haiku-5-5` sí.
-- Se delega con el tool `workflow` (el unico que acepta `model` por agente).
-- **El agente principal NO corrige codigo.** Diagnostica y da al constructor ordenes explicitas
-  (archivo, causa, cambio esperado, criterio de hecho). Ciclo: construir -> probar -> si hay
-  fallos, el principal analiza y ordena -> el constructor corrige -> el probador reverifica.
-  Objetivo: ahorro de tokens. Usar graphify y claude-mem para dar contexto en vez de releer.
-- **Regla de los 3 intentos:** si el constructor falla 3 veces en lo mismo, se detiene y me pasa
-  el error. Yo analizo la causa raiz y devuelvo una orden nueva y distinta, no un "intentalo
-  otra vez". Al tercer fallo se cambia el enfoque o se para y se reporta: nunca bucle.
+
+Cadena de roles. Cada etapa recibe el trabajo de la anterior y no invade el papel de las demás.
+
+```
+Usuario
+  │
+  ▼
+[1] LECTOR DE DOCUMENTOS (Haiku 5.5) — lee, resume y pasa contexto
+  ▼
+[2] ARQUITECTO (Fable 5.2) — analiza, mejora, decide ruta y delega
+  ▼
+[3] CONSTRUCTOR (Sonnet 5.5) — implementa
+  │            └─ no resuelve un error ─► [4] CONSTRUCTOR SENIOR (Opus 5.5)
+  │                                          verifica y corrige, devuelve al constructor
+  ▼
+[5] TESTING (GPT 6.1 Sol) — pruebas; si falla, vuelve al Constructor con reporte
+  ▼
+[6] SECURITY (GPT 6.2 Sol) — vulnerabilidades, secretos, dependencias; si hay hallazgo, vuelve al Constructor
+  ▼
+[2] ARQUITECTO — revisa y aprueba
+  ▼
+[7] SUBIDA A GITHUB (Haiku 5.5) — commits, ramas, push, PR
+  ▼
+Entrega final
+```
+
+| # | Rol | Modelo | Función |
+| --- | --- | --- | --- |
+| 1 | Lector | Haiku 5.5 | Lee documentos, extrae lo relevante y entrega el contexto al Arquitecto |
+| 2 | Arquitecto | Fable 5.2 | Analiza, mejora el planteamiento, define la ruta y delega |
+| 3 | Constructor | Sonnet 5.5 | Implementa el código o la solución según el plan |
+| 4 | Constructor Senior | Opus 5.5 | Solo si hay un error que el Constructor no pudo resolver |
+| 5 | Testing | GPT 6.1 Sol | Crea y ejecuta pruebas y reporta resultados |
+| 6 | Security | GPT 6.2 Sol | Revisa vulnerabilidades, secretos expuestos y dependencias |
+| 7 | GitHub | Haiku 5.5 | Commits, ramas, push y PR |
+
+**Quién soy en cada sesión:** el agente con el que habla el usuario es el **Arquitecto**. No
+escribe código, no corrige código, no commitea, no hace push. Diagnostica, decide la ruta,
+delega con órdenes explícitas (archivo, causa, cambio esperado, criterio de hecho) y aprueba.
+
+### Reglas clave
+- **El Arquitecto es el único que decide la ruta.** Nadie más cambia el plan.
+- **Opus solo entra por errores no resueltos**, no para tareas normales.
+- **Límite de intentos:** el Constructor tiene 2 o 3 intentos antes de escalar a Opus. Nunca bucle.
+- **Bucle de corrección:** Testing o Security devuelven errores al Constructor, y el ciclo se repite
+  hasta que **ambos** estén en verde.
+- **Nada se sube a GitHub sin la aprobación del Arquitecto**, con Testing y Security en verde.
+  El commit y el push los hace el rol GitHub (Haiku), nunca el Arquitecto ni el Constructor.
+- Toda entrega a GitHub se hace con ficheros explícitos. **Nunca `git add -A` ni `git add .`**:
+  los restos sin trazar (`docs/PLAN-VIABLE.md` y compañía) no entran por descuido.
+- Usar graphify y claude-mem para dar contexto en vez de releer. Objetivo: ahorro de tokens.
+
+### Regla de fallos y relevos
+Si un agente falla, **se avisa al usuario y se pasa el trabajo al siguiente modelo**. El relevo
+lo decide el usuario cuando quiera; por defecto, esta tabla:
+
+| Agente que falla | Continúa con | Motivo |
+| --- | --- | --- |
+| Lector (Haiku) | Sonnet 5.5 | Mayor capacidad de lectura y contexto |
+| Arquitecto (Fable 5.2) | Opus 5.5 | Es el siguiente en razonamiento |
+| Constructor (Sonnet) | Opus 5.5 | Es el rol del senior |
+| Constructor Senior (Opus) | Fable 5.2 | El Arquitecto replantea la ruta |
+| Testing (GPT 6.1) | Sonnet 5.5 | Ejecuta las pruebas como respaldo |
+| Security (GPT 6.2) | Opus 5.5 | Revisión profunda de seguridad |
+| GitHub (Haiku) | Sonnet 5.5 | Completa la subida |
+
+Si el relevo también falla, el caso vuelve al Arquitecto, que decide si replantea o pide ayuda
+humana. No se elige un relevo distinto por cuenta propia.
+
+Formato del aviso:
+
+```
+⚠ FALLO
+Agente: [nombre y modelo]
+Etapa: [qué estaba haciendo]
+Error: [descripción breve]
+Acción: se continúa con → [modelo de relevo]
+```
+
+### Modelos en este arnés
+- Verificados con una llamada real que éstos **sí** responden: `claude-sonnet-5` (constructor)
+  y `claude-haiku-5-5` (lector, GitHub). `claude-sonnet-5-5` y `claude-sonnet-4-5` **no**
+  responden: cuando la tabla dice "Sonnet 5.5", se usa `claude-sonnet-5`.
+- Las pruebas de cada modelo las hace el usuario: él ve el error que emitió el modelo y decide
+  si se cambia o no. Cuando un agente devuelve un fallo sin mensaje, se avisa con el formato de
+  arriba y **se espera su decisión**. No se declara un modelo inservible por cuenta propia ni se
+  elige otro: la etiqueta "falló sin mensaje" la certifica el usuario, no este documento.
 
 ## Fases
 - **Fase 0 — Fundamentos: cerrada.** Monorepo pnpm+turbo, Postgres 18+pgvector en Coolify,
