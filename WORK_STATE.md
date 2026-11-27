@@ -51,6 +51,10 @@ delega con órdenes explícitas (archivo, causa, cambio esperado, criterio de he
 - **Límite de intentos:** el Constructor tiene 2 o 3 intentos antes de escalar a Opus. Nunca bucle.
 - **Bucle de corrección:** Testing o Security devuelven errores al Constructor, y el ciclo se repite
   hasta que **ambos** estén en verde.
+- **El orden es Testing y después Security, nunca a la vez.** Testing valida el árbol primero; si
+  encuentra algo, el Constructor corrige y se vuelve a probar. Security revisa **después**, sobre
+  el árbol que Testing acaba de aprobar. Cualquier cambio de código invalida la auditoría anterior:
+  Security se repite sobre lo corregido, no se aprovecha la de antes.
 - **Nada se sube a GitHub sin la aprobación del Arquitecto**, con Testing y Security en verde.
   El commit y el push los hace el rol GitHub (Haiku), nunca el Arquitecto ni el Constructor.
 - Toda entrega a GitHub se hace con ficheros explícitos. **Nunca `git add -A` ni `git add .`**:
