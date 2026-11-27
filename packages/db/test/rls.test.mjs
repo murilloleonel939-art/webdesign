@@ -100,4 +100,104 @@ if (process.env.DB_TEST_CONFIRM !== "destroy-test-db" || !process.env.DB_TEST_UR
       admin.query(`INSERT INTO sites (id, owner_id, name, status)
       VALUES ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', '${A}', 'segundo', 'active')`));
   });
+
+  // --- La política del gateway (0024) ---------------------------------------
+  //
+  // El gateway suma tokens mientras la fila está en 'running': con el
+  // `WITH CHECK` de 0015 (que solo pensaba en el cierre) ese UPDATE violaba RLS
+  // con 42501 y tumbaba el proceso. Aquí se comprueban las DOS condiciones: que
+  // una ejecución viva se pueda actualizar y que una cerrada NO se pueda ni
+  // reabrir ni volver a contar.
+
+  test("la política del gateway deja contar en vivo y no permite reabrir una cerrada", async () => {
+    const { rows } = await admin.query(
+      "SELECT qual, with_check FROM pg_policies WHERE tablename = 'agent_runs' AND policyname = 'agent_runs_gateway_update'",
+    );
+    assert.equal(rows.length, 1, "la política existe");
+    // `qual` es el USING: solo filas vivas. `with_check`: coherencia de la fila
+    // resultante. `pg_get_expr` depara la expresión, así que se compara sin
+    // depender de los paréntesis.
+    const usando = String(rows[0].qual).replace(/\s+/g, " ");
+    const check = String(rows[0].with_check).replace(/\s+/g, " ");
+    assert.match(usando, /status = 'running'/);
+    assert.doesNotMatch(usando, /^true$/i, "USING (true) permitiría reabrir ejecuciones cerradas");
+
+    // Viva: sin motivo de parada ni fecha de cierre.
+    assert.match(check, /status = 'running'/);
+    assert.match(check, /stop_reason IS NULL/);
+    assert.match(check, /ended_at IS NULL/);
+    // Cerrada: con fecha de cierre.
+    assert.match(check, /status <> 'running'/);
+    assert.match(check, /ended_at IS NOT NULL/);
+    // Y ya no es la lista suelta de estados: eso permitía una fila 'running' con
+    // `ended_at` puesto.
+    assert.doesNotMatch(check, /status = ANY/, "el CHECK no puede ser solo la lista de estados");
+  });
+
+  test("con el rol del gateway: la ejecución viva se actualiza y la cerrada no", async () => {
+    // `app_llm_gateway` lo crea 0015 LOGIN pero sin contraseña, así que no se
+    // puede autenticar tal cual. Se le pone una para esta prueba y se conecta
+    // como él por TCP, igual que `before` hace con `app_platform`: así el SQL
+    // corre con los privilegios y las políticas REALES del servicio.
+    await admin.query("ALTER ROLE app_llm_gateway LOGIN PASSWORD 'test'");
+    const gw = new pg.Pool({ connectionString: DB_URL.replace(/\/\/[^@]*@/, "//app_llm_gateway:test@") });
+    const uid = "66666666-6666-4666-8666-666666666666";
+    const sid = "77777777-7777-4777-8777-777777777777";
+    const run = "88888888-8888-4888-8888-888888888888";
+    try {
+      // Filas de las que depende `agent_runs`: el dueño (`user_id` tiene FK) y
+      // su sitio. `agent_id` y `prompt_tokens_max` son NOT NULL; `status` cae en
+      // su valor por defecto, 'running'.
+      await admin.query("INSERT INTO users (id, email, name) VALUES ($1, 'gateway-test@example.test', 'Gateway Test')", [uid]);
+      await admin.query("INSERT INTO sites (id, owner_id, name) VALUES ($1, $2, 'del gateway')", [sid, uid]);
+      await admin.query(
+        "INSERT INTO agent_runs (id, agent_id, user_id, site_id, prompt_tokens_max) VALUES ($1, 'design', $2, $3, 1000)",
+        [run, uid, sid],
+      );
+
+      // (a) Viva: sumar tokens funciona. Era el caso que rompía la producción.
+      const vivo = await gw.query("UPDATE agent_runs SET tokens_in = tokens_in + 5 WHERE id = $1::uuid", [run]);
+      assert.equal(vivo.rowCount, 1, "una ejecución en marcha se puede contar");
+
+      // Cerrarla también: es el otro camino del gateway.
+      const cierre = await gw.query(
+        "UPDATE agent_runs SET status = 'budget_exhausted', stop_reason = 'tokens', ended_at = now() WHERE id = $1::uuid",
+        [run],
+      );
+      assert.equal(cierre.rowCount, 1, "una ejecución en marcha se puede cerrar");
+
+      // (b) Cerrada: NO se puede reabrir (esto es lo que protege el USING).
+      const reabrir = await gw.query("UPDATE agent_runs SET status = 'running' WHERE id = $1::uuid", [run]);
+      assert.equal(reabrir.rowCount, 0, "una ejecución cerrada no se reabre");
+
+      // (c) Ni volver a contarla.
+      const contar = await gw.query("UPDATE agent_runs SET tokens_in = tokens_in + 9 WHERE id = $1::uuid", [run]);
+      assert.equal(contar.rowCount, 0, "una ejecución cerrada no admite más tokens");
+
+      // Y la fila quedó como estaba: cerrada y con los 5 tokens de antes.
+      const { rows } = await admin.query("SELECT status, tokens_in FROM agent_runs WHERE id = $1::uuid", [run]);
+      assert.equal(rows[0].status, "budget_exhausted");
+      assert.equal(rows[0].tokens_in, 5);
+    } finally {
+      await admin.query("DELETE FROM agent_runs WHERE id = $1::uuid", [run]).catch(() => {});
+      await admin.query("DELETE FROM sites WHERE id = $1::uuid", [sid]).catch(() => {});
+      await admin.query("DELETE FROM users WHERE id = $1::uuid", [uid]).catch(() => {});
+      // Los roles son del CLÚSTER, no de la base: `DB_TEST_CONFIRM` protege la
+      // base de pruebas, no el clúster, así que dejarlo con contraseña la
+      // pondría también en el rol real del gateway. Se devuelve a como lo dejó
+      // 0015 (sin contraseña) ANTES de cerrar el pool: si `gw.end()` fallara, el
+      // `ALTER` tiene que haberse ejecutado igual.
+      try {
+        await admin.query("ALTER ROLE app_llm_gateway PASSWORD NULL");
+      } catch (error) {
+        // Se registra y se sigue: no puede tapar el error original de la prueba,
+        // pero tampoco se oculta que el rol quedó con contraseña puesta.
+        process.stderr.write(`rls.test: no se pudo limpiar la contraseña de app_llm_gateway: ${String(error?.message ?? error)}\n`);
+      }
+      await gw.end();
+    }
+  });
 }
+
+// El resto del archivo solo corre con base de pruebas: sin `DB_TEST_URL` y
+// `DB_TEST_CONFIRM` los tres casos de arriba se saltan (el aviso de arriba).

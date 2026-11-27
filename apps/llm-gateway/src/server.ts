@@ -13,7 +13,10 @@ import { BudgetTracker, LlmClient, LlmError, budgetSchema, costOf, resolveModel,
 // comprometido, escribe consumo y poco mas (ver 0015_llm_gateway_role.sql).
 
 const PORT = Number(process.env["PORT"] ?? 3001);
-const pool = new pg.Pool({ connectionString: process.env["DATABASE_URL"] });
+// Se exporta para que las pruebas puedan sustituir `query` por un doble: sin
+// base de datos no hay forma de reproducir un `42501` de RLS, y ese fallo es el
+// que tumbaba el proceso. En producción nadie más toca este objeto.
+export const pool = new pg.Pool({ connectionString: process.env["DATABASE_URL"] });
 
 /** Base del proveedor compatible OpenAI. Sin barra final: las rutas la anaden. */
 const PROVIDER_BASE_URL = (process.env["LLM_PROVIDER_BASE_URL"] ?? "https://api.pateway.ai/v1").replace(/\/+$/, "");
@@ -466,7 +469,40 @@ function logProviderFailure(reason: string, error: { code: string; message: stri
   process.stderr.write(`llm-gateway: fallo de proveedor reason=${reason} code=${code} message=${message} run=${runId} model=${modelId}\n`);
 }
 
-export const server = createServer(async (req, res) => {
+/**
+ * Código de error de Postgres, si lo hay.
+ *
+ * Se registra el CÓDIGO (`42501`, `23505`...) y nunca el texto de la consulta ni
+ * datos del dueño: el código dice qué pasó y no lleva nada sensible.
+ */
+function pgCode(error: unknown): string {
+  const code = (error as { code?: unknown } | null)?.code;
+  return typeof code === "string" ? code : "unknown";
+}
+
+/**
+ * Red de último recurso.
+ *
+ * POR QUÉ: el contador de tokens se actualizaba dentro del camino de éxito y un
+ * `42501` de RLS (política que no admitía `status = 'running'`) escapaba sin
+ * capturar y TUMBABA el proceso del gateway. El worker veía la conexión cortada
+ * y caía al respaldo. Una respuesta que ya se puede dar no se pierde porque la
+ * contabilidad falle; y lo que falle de verdad se contesta con un 500 y el
+ * proceso sigue atendiendo.
+ */
+export const server = createServer((req, res) => {
+  void handle(req, res).catch((error: unknown) => {
+    process.stderr.write(`llm-gateway: error no capturado code=${pgCode(error)}\n`);
+    if (res.headersSent) {
+      res.end();
+      return;
+    }
+    res.writeHead(500, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: "internal_error" }));
+  });
+});
+
+async function handle(req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse): Promise<void> {
   const send = (code: number, body: unknown) => {
     res.writeHead(code, { "content-type": "application/json" });
     res.end(JSON.stringify(body));
@@ -495,17 +531,37 @@ export const server = createServer(async (req, res) => {
   if (!parsed.success) return send(400, { error: "invalid_request", detail: parsed.error.issues[0]?.message });
   const body = parsed.data;
 
-  const authz = await authorize(body.runId, token, "llm:complete");
+  let authz: Awaited<ReturnType<typeof authorize>>;
+  try {
+    authz = await authorize(body.runId, token, "llm:complete");
+  } catch (error) {
+    // Sin base de datos no se puede autorizar nada: se contesta 503 y el proceso
+    // sigue vivo. Un fallo de Postgres no puede tumbar el gateway.
+    process.stderr.write(`llm-gateway: authorize fallo code=${pgCode(error)} run=${body.runId}\n`);
+    return send(503, { error: "authorization_unavailable" });
+  }
   if (!authz.ok) return send(authz.code, { error: authz.error });
 
-  const run = await loadBudget(body.runId);
+  let run: Awaited<ReturnType<typeof loadBudget>>;
+  try {
+    run = await loadBudget(body.runId);
+  } catch (error) {
+    process.stderr.write(`llm-gateway: loadBudget fallo code=${pgCode(error)} run=${body.runId}\n`);
+    return send(503, { error: "budget_unavailable" });
+  }
   if (!run) return send(404, { error: "unknown_run" });
   // Una ejecucion cerrada no admite mas gasto: reabrirla romperia el presupuesto.
   if (run.status !== "running") return send(409, { error: "run_closed", status: run.status });
 
   const spent = run.tokens_in + run.tokens_out;
   if (spent >= run.prompt_tokens_max) {
-    await pool.query(`UPDATE agent_runs SET status = 'budget_exhausted', stop_reason = 'tokens', ended_at = now() WHERE id = $1::uuid`, [body.runId]);
+    try {
+      await pool.query(`UPDATE agent_runs SET status = 'budget_exhausted', stop_reason = 'tokens', ended_at = now() WHERE id = $1::uuid`, [body.runId]);
+    } catch (error) {
+      // Se cierra la ejecución para que no siga gastando; si el cierre falla, el
+      // saldo sigue agotado y quien llama recibe igual 429. Se anota y se sigue.
+      process.stderr.write(`llm-gateway: cierre por presupuesto fallo code=${pgCode(error)} run=${body.runId}\n`);
+    }
     return send(429, { error: "budget_exhausted" });
   }
 
@@ -541,18 +597,62 @@ export const server = createServer(async (req, res) => {
     // `LlmError` (p.ej. "missing provider key") pero se recorta y se limpia
     // por si algun dia trajera algo inesperado.
     logProviderFailure(reason, out.error, body.runId, modelId);
-    await recordUsage(body.runId, transport.provider, { tokens: 0, costUsd: 0 }, reason, modelId);
+    try {
+      await recordUsage(body.runId, transport.provider, { tokens: 0, costUsd: 0 }, reason, modelId);
+    } catch (error) {
+      process.stderr.write(`llm-gateway: usage_events fallo code=${pgCode(error)} run=${body.runId}\n`);
+    }
     return send(out.stop.kind === "budget" ? 429 : 502, { error: reason, stop: out.stop });
   }
 
-  await pool.query(
-    `UPDATE agent_runs SET tokens_in = tokens_in + $2, tokens_out = tokens_out + $3 WHERE id = $1::uuid`,
-    [body.runId, out.result.usage.tokensIn, out.result.usage.tokensOut],
-  );
+  // CONTABILIDAD APARTE DE LA RESPUESTA, PERO NUNCA UN 200 SIN ELLA.
+  //
+  // La llamada ya se hizo y el texto ya está pagado: un fallo de contabilidad no
+  // puede tumbar el proceso (eso era el bug de RLS). Pero tampoco puede dar un
+  // 200 silencioso: sin persistir `tokens_in`/`tokens_out`, `loadBudget` (más
+  // arriba) sigue leyendo el contador viejo en la siguiente llamada, y la
+  // ejecución gastaría sin tope repitiendo peticiones (solo quedarían los topes
+  // por llamada, no el del presupuesto). REGLA: NINGÚN 200 SIN CONTABILIDAD
+  // PERSISTIDA. Si el UPDATE de tokens falla, se cierra la ejecución en error
+  // (best-effort: si ni eso se puede escribir, se registra y se sigue) y se
+  // responde 503, no 200.
+  try {
+    const contado = await pool.query(
+      `UPDATE agent_runs SET tokens_in = tokens_in + $2, tokens_out = tokens_out + $3 WHERE id = $1::uuid`,
+      [body.runId, out.result.usage.tokensIn, out.result.usage.tokensOut],
+    );
+    // Un UPDATE que no toca la fila TAMBIÉN es contabilidad no persistida: si un
+    // cierre concurrente dejó la ejecución fuera del `USING (status='running')`,
+    // esto afecta 0 filas sin lanzar y el gasto se perdería con un 200. No se
+    // intenta cerrarla (ya lo está o no existe): solo se anota y se responde 503.
+    if (contado.rowCount !== 1) {
+      process.stderr.write(`llm-gateway: tokens no persistidos rows=${contado.rowCount} run=${body.runId}\n`);
+      return send(503, { error: "accounting_unavailable" });
+    }
+  } catch (error) {
+    process.stderr.write(`llm-gateway: tokens no persistidos code=${pgCode(error)} run=${body.runId}\n`);
+    try {
+      await pool.query(
+        `UPDATE agent_runs SET status = 'error', stop_reason = 'accounting_unavailable', ended_at = now() WHERE id = $1::uuid`,
+        [body.runId],
+      );
+    } catch (closeError) {
+      process.stderr.write(`llm-gateway: cierre por fallo de contabilidad fallo code=${pgCode(closeError)} run=${body.runId}\n`);
+    }
+    return send(503, { error: "accounting_unavailable" });
+  }
   // El coste se recalcula aqui con las variables del gateway: este servicio es el
   // unico que escribe el coste persistido, y `LlmClient` no conoce el entorno.
+  //
+  // `recordUsage` NO es puerta del presupuesto (`usage_events` es historial, no
+  // lo que lee `loadBudget`): si falla, basta con registrar y seguir, el texto
+  // ya salió y el gasto real ya quedó contado arriba.
   const costUsd = gatewayCostOf(body.model, out.result.usage.tokensIn, out.result.usage.tokensOut, process.env);
-  await recordUsage(body.runId, transport.provider, { tokens: 0, costUsd }, "ok", modelId);
+  try {
+    await recordUsage(body.runId, transport.provider, { tokens: 0, costUsd }, "ok", modelId);
+  } catch (error) {
+    process.stderr.write(`llm-gateway: usage_events no persistido code=${pgCode(error)} run=${body.runId}\n`);
+  }
 
   return send(200, {
     text: out.result.text,
@@ -561,7 +661,7 @@ export const server = createServer(async (req, res) => {
     usage: { ...out.result.usage, costUsd },
     model: modelId,
   });
-});
+}
 
 async function readBody(req: import("node:http").IncomingMessage): Promise<unknown> {
   const chunks: Buffer[] = [];
