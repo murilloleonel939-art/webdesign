@@ -24,6 +24,31 @@ export function containsMarker(value: string): boolean {
   return value.toLowerCase().includes(PENDING_MARKER.toLowerCase());
 }
 
+/**
+ * Nombres de relleno: lo que pone el panel cuando el dueño no ha escrito nada.
+ *
+ * POR QUÉ ES UN DATO Y NO UN DETALLE: «Mi sitio» es el nombre por defecto que
+ * crea la plataforma, y acababa publicado como titular del hero y como
+ * `seo.title`. No es un nombre: es un hueco. Se compara sin mayúsculas ni
+ * espacios de sobra, porque el dueño puede dejarlo tal cual o reescribirlo.
+ */
+const PLACEHOLDER_NAMES: ReadonlySet<string> = new Set([
+  "mi sitio",
+  "mi web",
+  "mi pagina",
+  "mi página",
+  "sitio web",
+  "sitio",
+  "web",
+  "mi negocio",
+  "nuevo sitio",
+]);
+
+/** ¿Es un nombre de relleno y no un nombre de verdad? */
+export function isPlaceholderName(value: string): boolean {
+  return PLACEHOLDER_NAMES.has(value.trim().toLowerCase().replace(/\s+/g, " "));
+}
+
 const text = (max: number) => z.string().trim().min(1).max(max);
 
 /**
@@ -145,6 +170,10 @@ export function normalizeBrief(input: unknown): QuickBrief {
   for (const field of BRIEF_FIELDS) {
     const value = raw[field]?.trim();
     if (!value || value.toLowerCase() === PENDING_MARKER) continue;
+    // Un nombre de relleno no es un nombre: se trata como hueco y se le pide al
+    // dueño. Si pasara, el titular del hero y el `seo.title` publicarían «Mi
+    // sitio», que es lo que pone la plataforma cuando no hay nombre.
+    if (field === "name" && isPlaceholderName(value)) continue;
     given[field] = value;
   }
   // El texto libre no es un sexto dato: no entra en `pending` ni cambia ningún

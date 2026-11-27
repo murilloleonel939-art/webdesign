@@ -931,10 +931,14 @@ test("Fix D: un tipo de negocio limpio sí se usa", () => {
   // Control: el filtro no puede vaciar datos legítimos.
   const brief = normalizeBrief({ businessType: "taller de bicicletas", city: "Bilbao" });
   const copy = genericCopy(brief);
+  // El dato en sí (businessType) va en minúsculas, tal como lo escribió el dueño;
+  // el encabezado del about, el about y el SEO empiezan en mayúscula porque son
+  // frases publicadas (contrato nuevo). Lo que se comprueba es que el tipo limpio
+  // sigue llegando a los cuatro sitios.
   assert.equal(copy.businessType, "taller de bicicletas");
-  assert.equal(copy.aboutHeading, "taller de bicicletas");
-  assert.match(copy.aboutBody, /taller de bicicletas en Bilbao/);
-  assert.match(copy.seoDescription, /taller de bicicletas en Bilbao/);
+  assert.equal(copy.aboutHeading, "Taller de bicicletas");
+  assert.match(copy.aboutBody, /Taller de bicicletas en Bilbao/);
+  assert.match(copy.seoDescription, /Taller de bicicletas en Bilbao/);
 });
 
 test("Fix D: el nombre del dueño con reclamo no llega a la plantilla del copy ni a las secciones", () => {
@@ -959,8 +963,12 @@ test("Fix D: el respaldo del titular en la guardia no restaura un reclamo del br
   assert.equal(out.dropped.includes("heroHeadline"), true);
   assert.doesNotMatch(out.copy.heroHeadline, /certificad/i);
   // Control: con un tipo limpio el respaldo sigue usando los datos del dueño.
+  // CONTRATO NUEVO (mayúscula inicial): el titular empieza en mayúscula, porque
+  // el mismo texto alimenta `meta.name` y el `seo.title` de la portada y salía en
+  // minúscula («taller de bicicletas en Bilbao»). Solo cambia la primera letra:
+  // el tipo y la ciudad siguen siendo los del dueño, sin inventar nada.
   const limpio = normalizeBrief({ businessType: "taller de bicicletas", city: "Bilbao" });
-  assert.equal(guardCopy(validCopy({ heroHeadline: "Los 25 mejores mecánicos" }), limpio).copy.heroHeadline, "taller de bicicletas en Bilbao");
+  assert.equal(guardCopy(validCopy({ heroHeadline: "Los 25 mejores mecánicos" }), limpio).copy.heroHeadline, "Taller de bicicletas en Bilbao");
 });
 
 // --- T-002.5: liderazgo y el contacto fuera del corpus numérico -------------

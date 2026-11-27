@@ -1,8 +1,8 @@
 import { validateSiteDocument, type Section, type SiteDocument } from "@webdesign/site-schema";
-import { PENDING_MARKER, containsMarker, siteName, type QuickBrief } from "./brief.js";
+import { PENDING_MARKER, containsMarker, isPlaceholderName, siteName, type QuickBrief } from "./brief.js";
 import type { SiteCopy } from "./copy.js";
 import { briefValueOk } from "./copy.js";
-import { genericCopy } from "./generic-copy.js";
+import { genericCopy, sentenceCase } from "./generic-copy.js";
 import { GALLERY_MIN, MIN_METRICS, MIN_PLANS, MIN_TESTIMONIALS, completeCopy, ownerContact, plannedTypes, planSections } from "./plan.js";
 import { classifyShape } from "./classify.js";
 import { productForBrief } from "./product.js";
@@ -76,9 +76,13 @@ export function heroHeadline(brief: QuickBrief): string {
   // esta función es el respaldo del titular en `guardCopy`, y sin el filtro
   // restauraba el reclamo que la guardia acababa de podar ("taller certificado
   // en Bilbao" volvía al hero por esta vía).
-  if (briefValueOk(brief.name, brief)) return cut(brief.name, 120);
+  // Un nombre de relleno no es un nombre: «Mi sitio» es el hueco de la
+  // plataforma y no puede acabar como titular ni como `seo.title`.
+  if (briefValueOk(brief.name, brief) && !isPlaceholderName(brief.name)) return cut(brief.name, 120);
   if (briefValueOk(brief.businessType, brief) && briefValueOk(brief.city, brief)) {
-    return cut(`${brief.businessType} en ${brief.city}`, 120);
+    // Mayúscula inicial: este titular alimenta también `meta.name` y el
+    // `seo.title` de la portada, y salían en minúscula («peluquería en Getafe»).
+    return cut(sentenceCase(`${brief.businessType} en ${brief.city}`), 120);
   }
   return cut(genericCopy(brief).heroHeadline, 120);
 }
@@ -225,13 +229,17 @@ function docName(brief: QuickBrief, copy: SiteCopy): string {
   // El nombre que escribió el dueño se conserva tal cual, aunque lleve un
   // reclamo: es un dato identificativo, no una afirmación nuestra (decisión del
   // lead en T-002.5, documentada en un ADR).
-  if (known(brief.name)) return cut(siteName(brief), 80);
+  // Un nombre de relleno no es un nombre: si el breve llegó sin pasar por
+  // `normalizeBrief` (o con «Mi sitio» escrito a mano), el sitio NO se llama así.
+  if (known(brief.name) && !isPlaceholderName(brief.name)) return cut(siteName(brief), 80);
   // El nombre que dedujo el modelo pasa por la misma guardia (T-002.7, Fix C):
   // si reclama algo ("Café nº1 de Valencia") no se convierte en el nombre
   // público del sitio. Sin este filtro, el dueño sin nombre veía publicado el
   // reclamo que la guardia acababa de podar del copy.
   const deduced = copy.businessName?.trim();
-  if (deduced !== undefined && deduced !== "" && briefValueOk(deduced, brief)) return cut(deduced, 80);
+  if (deduced !== undefined && deduced !== "" && !isPlaceholderName(deduced) && briefValueOk(deduced, brief)) {
+    return cut(deduced, 80);
+  }
   return cut(heroHeadline(brief), 80);
 }
 

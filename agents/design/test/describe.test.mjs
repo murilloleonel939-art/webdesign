@@ -132,13 +132,17 @@ test("genericCopy: el titular nombra el negocio de la frase y ya no dice 'negoci
   });
   const copy = genericCopy(brief);
   assert.equal(copy.businessType, "buffet de abogados");
-  assert.match(copy.heroHeadline, /buffet de abogados/);
+  // El titular empieza en mayúscula (contrato nuevo: es una frase publicada) y la
+  // ciudad se queda tal como la escribió el dueño, sin retocarla. Por eso la
+  // comprobación no distingue mayúsculas.
+  assert.match(copy.heroHeadline, /buffet de abogados/i);
   assert.doesNotMatch(copy.heroHeadline, /negocio local/i);
   // Lo que `genericCopy` compone hoy de verdad: `service` sigue pendiente, así
-  // que la bajada NO nombra el negocio y cae a la frase neutra.
-  assert.match(copy.heroSubline, /Atención cercana/);
+  // que la bajada NO nombra el negocio y cae a la frase de su sector (despacho,
+  // por «abogados»), no a una neutra igual para todos.
+  assert.match(copy.heroSubline, /Te contamos qué opciones hay para tu caso/);
   assert.doesNotMatch(copy.heroSubline, /negocio local/i);
   // El resto del copy de emergencia sí lleva el negocio con su ciudad.
-  assert.match(copy.aboutBody, /buffet de abogados en barranquilla/);
-  assert.match(copy.seoDescription, /buffet de abogados en barranquilla/);
+  assert.match(copy.aboutBody, /buffet de abogados en barranquilla/i);
+  assert.match(copy.seoDescription, /buffet de abogados en barranquilla/i);
 });

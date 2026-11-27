@@ -79,11 +79,17 @@ test("genericCopy: sin ningun dato conocido usa los textos fijos y omite el nomb
   assert.equal(copy.businessType, "negocio local");
   // Sin nombre ni ciudad el titular es el tipo de negocio, que ya cae al fijo
   // "negocio local": la frase final solo entra cuando eso no llega al minimo.
-  assert.equal(copy.heroHeadline, "negocio local");
+  // Contrato nuevo (mayuscula inicial): el titular, el encabezado del about y el
+  // SEO empiezan en mayuscula porque son frases que se publican tal cual; el
+  // `businessType` sigue en minusculas porque es un dato, no una frase.
+  assert.equal(copy.heroHeadline, "Negocio local");
   assert.equal(copy.heroSubline, "Atención cercana y trabajo cuidado, sin complicaciones.");
   assert.equal(copy.aboutHeading, "Quiénes somos");
-  assert.equal(copy.aboutBody, "negocio local. Trabajamos de cerca con quien nos escribe: lo importante es entender bien lo que necesitas antes de empezar. Si quieres saber si podemos ayudarte, escríbenos y te lo contamos.");
-  assert.equal(copy.seoDescription, "negocio local. Escríbenos y te contamos cómo podemos ayudarte.");
+  // El about ya no lleva la frase fija de antes: dice cómo se trabaja en el
+  // sector del brief (aquí, ninguno -> la neutra). Y empieza en mayúscula por
+  // ser la primera frase del párrafo.
+  assert.equal(copy.aboutBody, "Negocio local. Trabajamos de cerca con quien nos escribe: lo importante es entender bien lo que necesitas antes de empezar.");
+  assert.equal(copy.seoDescription, "Negocio local. Escríbenos y te contamos cómo podemos ayudarte.");
 });
 
 test("genericCopy: los datos conocidos entran tal cual y el resto se compone con ellos", () => {
@@ -100,35 +106,45 @@ test("genericCopy: los datos conocidos entran tal cual y el resto se compone con
   // Con nombre, el titular es el nombre; sin ciudad, no se inventa el "en ...".
   assert.equal(copy.heroHeadline, "Café Aurora");
   assert.equal(copy.heroSubline, "tueste propio y desayunos");
-  assert.equal(copy.aboutHeading, "cafetería de especialidad");
-  assert.match(copy.aboutBody, /^cafetería de especialidad en Valencia\. /);
-  assert.equal(copy.seoDescription, "cafetería de especialidad en Valencia. Escríbenos y te contamos cómo podemos ayudarte.");
+  // Encabezado, about y SEO empiezan en mayúscula (contrato nuevo) y el about y
+  // el SEO cierran con la frase DEL SECTOR (hostelería aquí), no con la misma
+  // para todos los negocios. `businessType` sigue siendo el dato en minúsculas.
+  assert.equal(copy.aboutHeading, "Cafetería de especialidad");
+  assert.match(copy.aboutBody, /^Cafetería de especialidad en Valencia\. /);
+  assert.equal(copy.seoDescription, "Cafetería de especialidad en Valencia. Carta, reservas y pedidos, sin complicaciones.");
+  // Los servicios también son del oficio, no las tres ventajas de plantilla.
+  assert.deepEqual(copy.services.map((s) => s.title), ["Carta", "Reservas", "Pedidos"]);
   // Los fijos del arquitecto, literales.
   assert.equal(copy.heroCta, "Contactar");
   assert.equal(copy.servicesHeading, "Qué hacemos");
   assert.equal(copy.processHeading, "Cómo trabajamos");
   assert.equal(copy.closingHeadline, "Hablemos de lo que necesitas");
   assert.equal(copy.closingCta, "Escribir");
-  assert.deepEqual(copy.photoQueries, { hero: "local business storefront", gallery: "small business interior" });
+  // CONTRATO NUEVO: las consultas de fotos son DEL SECTOR (aquí hostelería), no
+  // las fijas de antes. Con las mismas para todos, una cafetería y una
+  // consultoría pedían el mismo tipo de foto y el banco local —que está
+  // organizado por sector— recibía una búsqueda que no le tocaba.
+  assert.deepEqual(copy.photoQueries, { hero: "restaurant interior empty tables", gallery: "cafe interior counter" });
 });
 
 test("genericCopy: sin nombre pero con tipo y ciudad el titular los usa", () => {
   const brief = normalizeBrief({ businessType: "peluquería canina", city: "Alcalá de Henares" });
   const copy = genericCopy(brief);
-  assert.equal(copy.heroHeadline, "peluquería canina en Alcalá de Henares");
+  // Mayúscula inicial en el titular (contrato nuevo): es una frase publicada.
+  assert.equal(copy.heroHeadline, "Peluquería canina en Alcalá de Henares");
   assert.equal("businessName" in copy, false);
   // Los acentos del brief no se normalizan ni se pierden.
   assert.match(copy.aboutBody, /Alcalá de Henares/);
-  assert.match(copy.seoDescription, /peluquería canina en Alcalá de Henares/);
+  assert.match(copy.seoDescription, /Peluquería canina en Alcalá de Henares/);
 });
 
 test("genericCopy: sin nombre ni ciudad cae al tipo de negocio, y sin tipo al fijo 'negocio local'", () => {
   const conTipo = genericCopy(normalizeBrief({ businessType: "panadería artesanal" }));
-  assert.equal(conTipo.heroHeadline, "panadería artesanal");
+  assert.equal(conTipo.heroHeadline, "Panadería artesanal");
   // T-011: la frase de antes ya no cae al fijo porque el extractor saca de ella
   // el tipo de negocio; el caso "sin nada" necesita una frase descartada.
   const sinNada = genericCopy(normalizeBrief({ description: "12345" }));
-  assert.equal(sinNada.heroHeadline, "negocio local");
+  assert.equal(sinNada.heroHeadline, "Negocio local");
 });
 
 test("genericCopy: con un tipo de negocio demasiado corto el titular llega al minimo del esquema", () => {
@@ -146,7 +162,9 @@ test("genericCopy: es determinista, no comparte estructuras y no toca el brief",
   assert.deepEqual(primero, segundo);
   // Mutar una copia no cambia la otra: los servicios no se comparten por referencia.
   primero.services[0].title = "otra cosa";
-  assert.equal(segundo.services[0].title, "Atención directa");
+  // El primer servicio ya no es la ventaja fija: es el del oficio del brief
+  // (cafetería -> hostelería -> «Carta»). Lo que se prueba es la referencia.
+  assert.equal(segundo.services[0].title, "Carta");
   assert.equal(brief.businessType, "cafetería de especialidad");
 });
 
@@ -215,7 +233,10 @@ test("T-002.9: un texto que cabe en su límite se conserva íntegro", () => {
     city: "Valencia",
   });
   const copy = genericCopy(brief);
-  // La composición «cafetería de especialidad en Valencia» cabe en seoDescription (155).
-  assert.equal(copy.seoDescription, "cafetería de especialidad en Valencia. Escríbenos y te contamos cómo podemos ayudarte.");
-  assert.match(copy.aboutBody, /^cafetería de especialidad en Valencia\./);
+  // La composición «cafetería de especialidad en Valencia» más el cierre del
+  // sector (hostelería) cabe en seoDescription (155), así que safeCompose deja
+  // la variante larga intacta: no la acorta ni cae a la corta. Es lo que se
+  // prueba aquí; el texto del cierre lo fija la tabla del sector.
+  assert.equal(copy.seoDescription, "Cafetería de especialidad en Valencia. Carta, reservas y pedidos, sin complicaciones.");
+  assert.match(copy.aboutBody, /^Cafetería de especialidad en Valencia\./);
 });
