@@ -17,6 +17,7 @@
 //
 // NO SE LLAMA NUNCA DIRECTAMENTE DESDE SERVER.TS. Solo internal-photos.ts lo usa.
 
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join, sep } from "node:path";
 import { libraryRoot } from "./library.js";
@@ -169,24 +170,65 @@ function toBankPhoto(entry: unknown, license: string): BankPhoto | undefined {
 }
 
 /**
+ * Clave de orden de una foto para una semilla dada.
+ *
+ * T-032a: dos sitios del mismo sector recibían siempre las mismas fotos, en el
+ * orden del manifiesto, así que el dueño cambiaba el diseño y volvía a salir la
+ * misma imagen. El orden pasa a depender de `siteId`: el hash sha256 de
+ * `semilla + id` ordena las candidatas de forma DISTINTA por sitio y ESTABLE
+ * para el mismo sitio (mismo hash, mismo orden, siempre).
+ *
+ * El separador NUL evita la colisión trivial ("ab" + "c" = "a" + "bc"): los ids
+ * de Unsplash no llevan NUL, así que el par (semilla, id) es unívoco.
+ */
+function seedKey(seed: string, id: string): string {
+  return createHash("sha256").update(`${seed}\u0000${id}`).digest("hex");
+}
+
+/**
+ * Reordena por hash de `seed + id`. `sort` es estable en V8, así que un empate
+ * de hash (imposible en la práctica) mantiene el orden del manifiesto y el
+ * resultado sigue siendo determinista. No pierde ni duplica fotos: es un sort.
+ */
+function orderBySeed(photos: BankPhoto[], seed: string): BankPhoto[] {
+  const keyed = photos.map((photo) => ({ photo, key: seedKey(seed, photo.id) }));
+  keyed.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+  return keyed.map((entry) => entry.photo);
+}
+
+/**
  * Fotos del banco.
  *
  * - Con `sector`: las de ese sector en esa orientación.
  * - Si ese sector no tiene NINGUNA de esa orientación: las de `neutro`.
  * - Sin `sector`: todas las de esa orientación, de todos los sectores.
  *
+ * - Con `seed` (el `siteId`): el resultado se reordena por hash de
+ *   `seed + id`, para que dos sitios del mismo sector no reciban las mismas
+ *   fotos en el mismo orden. El orden se aplica DESPUÉS de filtrar por sector y
+ *   orientación, y también sobre la caída a `neutro`.
+ * - Sin `seed`: orden del manifiesto, como antes de T-032a.
+ *
  * Si el manifiesto falta o está roto devuelve [] y no lanza.
  */
-export async function listBankPhotos(orientation: BankOrientation, sector?: Sector): Promise<BankPhoto[]> {
+export async function listBankPhotos(
+  orientation: BankOrientation,
+  sector?: Sector,
+  seed?: string,
+): Promise<BankPhoto[]> {
   const all = await loadManifest();
   const ofOrientation = all.filter((p) => p.orientation === orientation);
-  if (sector === undefined) return ofOrientation;
   // Un sector que no está en la lista cerrada se trata como `neutro`: la ruta
   // interna ya lo valida, esto es la segunda barrera.
-  const wanted = isSector(sector) ? sector : FALLBACK_SECTOR;
+  const wanted = sector === undefined ? undefined : isSector(sector) ? sector : FALLBACK_SECTOR;
+
+  const pick = (photos: BankPhoto[]): BankPhoto[] =>
+    seed === undefined || seed === "" ? photos : orderBySeed(photos, seed);
+
+  if (wanted === undefined) return pick(ofOrientation);
   const own = ofOrientation.filter((p) => p.sector === wanted);
-  if (own.length > 0) return own;
-  return ofOrientation.filter((p) => p.sector === FALLBACK_SECTOR);
+  if (own.length > 0) return pick(own);
+  return pick(ofOrientation.filter((p) => p.sector === FALLBACK_SECTOR));
 }
 
 /**

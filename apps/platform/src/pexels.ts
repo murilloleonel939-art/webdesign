@@ -253,7 +253,15 @@ function safeFileUrl(raw: string): URL | undefined {
 
 // Lee el cuerpo cortando en `maxBytes`. Acumular primero y comprobar despues
 // dejaria que un servidor hostil llenara la memoria antes del limite.
-async function readCapped(res: Response, maxBytes: number): Promise<Buffer | undefined> {
+//
+// Se exporta porque `unsplash.ts` (otro proveedor, mismo problema) la reutiliza:
+// el tope de bytes y el corte del stream no se duplican. `logEvent` permite que
+// cada modulo registre sus fallos con su propio nombre, sin perder trazas.
+export async function readCapped(
+  res: Response,
+  maxBytes: number,
+  logEvent: string = "pexels_download_failed",
+): Promise<Buffer | undefined> {
   const body = res.body;
   if (!body || typeof body.getReader !== "function") {
     // Respuesta sin stream (o doble de pruebas): se comprueba el tamano entero.
@@ -287,7 +295,7 @@ async function readCapped(res: Response, maxBytes: number): Promise<Buffer | und
       chunks.push(Buffer.from(value));
     }
   } catch (error) {
-    console.warn("pexels_download_failed", { error: message(error) });
+    console.warn(logEvent, { error: message(error) });
     return undefined;
   }
   if (chunks.length === 0) return undefined;

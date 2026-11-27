@@ -24,6 +24,14 @@ import { downloadPhoto, isPexelsConfigured, searchPhotos, type PexelsOrientation
 import { appendFuente } from "./fuentes.js";
 import { readFromLibrary, saveToLibrary } from "./library.js";
 import { isSector, listBankPhotos, readBankPhoto, type BankPhoto, type Sector } from "./photo-bank.js";
+import {
+  downloadUnsplash,
+  isUnsplashConfigured,
+  notifyUnsplashDownload,
+  searchUnsplash,
+  type UnsplashPhoto,
+} from "./unsplash.js";
+import { isSafeUnsplashId, readFromUnsplashCache, saveToUnsplashCache, UNSPLASH_LICENSE } from "./unsplash-cache.js";
 
 // El agente de diseno escribe en el sitio, y esta ruta escribe en el sitio: el
 // scope tiene que ser el mismo que usan sus herramientas (`site:write`).
@@ -182,10 +190,10 @@ export async function handleInternalPhotos(
   });
 
   // ---- FUENTE DE CANDIDATOS -----------------------------------------------
-  // El orden importa y es el que fija T-020:
+  // El orden importa y es el que fija T-032c:
   // 1. Banco local, con el sector del brief: fotos ya verificadas del sector.
-  // 2. Pexels, solo si está configurado y el banco no llegó a `count`.
-  // 3. Unsplash, si algún día hay clave (hoy no hay cliente: no se llama).
+  // 2. Unsplash, si hay clave y el banco no llegó a `count`.
+  // 3. Pexels, si está configurado y aún no se llegó a `count`.
   // -------------------------------------------------------------------------
 
   // Orientación del banco: landscape para "landscape", square para "square",
@@ -193,8 +201,15 @@ export async function handleInternalPhotos(
   const bankOrientation: "landscape" | "square" =
     body.orientation === "square" ? "square" : "landscape";
 
+  // Unsplash solo distingue "landscape" y "squarish": portrait se pide como
+  // landscape, igual que hace el banco.
+  const unsplashOrientation: "landscape" | "squarish" =
+    body.orientation === "square" ? "squarish" : "landscape";
+
   // Sector cerrado: lo que no esté en la lista vale `neutro`, nunca un 400.
   const sector: Sector = isSector(body.sector) ? body.sector : "neutro";
+
+  type Source = "bank" | "pexels" | "unsplash";
 
   type Candidate = {
     id: string | number;
@@ -204,12 +219,16 @@ export async function handleInternalPhotos(
     width: number;
     height: number;
     src: { original: string; large2x: string; large: string; medium: string; tiny: string };
+    _source: Source;        // de dónde salió: decide descarga y dedupe
     _bankPhoto?: BankPhoto; // presente solo para candidatos del banco
+    _unsplashPhoto?: UnsplashPhoto; // presente solo para candidatos de Unsplash
   };
 
   // 1. Banco local. Construimos candidatos en el mismo formato que Pexels para
   // que el bucle de abajo sea idéntico para ambas fuentes.
-  const bankPhotos = await listBankPhotos(bankOrientation, sector);
+  // El `siteId` va como semilla (T-032a): así dos sitios del mismo sector no
+  // reciben las mismas fotos en el mismo orden, y cada sitio conserva el suyo.
+  const bankPhotos = await listBankPhotos(bankOrientation, sector, siteId);
   let candidates: Candidate[] = bankPhotos.map((bp) => ({
     id: bp.id,
     url: bp.sourceUrl,
@@ -218,10 +237,34 @@ export async function handleInternalPhotos(
     width: bp.width,
     height: bp.height,
     src: { original: "", large2x: "", large: "", medium: "", tiny: "" },
+    _source: "bank",
     _bankPhoto: bp,
   }));
 
-  // 2. Pexels, solo si el banco no llegó a lo pedido. Un banco completo NO paga
+  // 2. Unsplash, solo si el banco no llegó a lo pedido. UNA petición de búsqueda
+  // por petición de fotos: `perPage` deja margen para el dedupe por sitio sin
+  // pagar una segunda llamada.
+  if (candidates.length < body.count && isUnsplashConfigured()) {
+    const unsplashPhotos = await searchUnsplash(body.query, {
+      orientation: unsplashOrientation,
+      perPage: Math.min(30, body.count * 3),
+    });
+    // Un id que no sirve para nombrar una carpeta (`/`, `..`) se deja fuera:
+    // es una foto descartable, no un error que deba tumbar la petición.
+    candidates = candidates.concat(unsplashPhotos.filter((p) => isSafeUnsplashId(p.id)).map((p) => ({
+      id: p.id,
+      url: p.sourceUrl,
+      photographer: p.photographer,
+      alt: p.alt,
+      width: p.width,
+      height: p.height,
+      src: { original: "", large2x: "", large: "", medium: "", tiny: "" },
+      _source: "unsplash",
+      _unsplashPhoto: p,
+    })));
+  }
+
+  // 3. Pexels, si sigue faltando y está configurado. Un banco completo NO paga
   // una llamada externa; uno incompleto (p. ej. `despacho` tiene 2 landscape) sí
   // puede rellenarse, y el bucle de abajo los mezcla sin problema porque el
   // dedupe y la descarga se deciden por candidato, no por fuente.
@@ -238,45 +281,59 @@ export async function handleInternalPhotos(
       width: p.width,
       height: p.height,
       src: p.src,
+      _source: "pexels",
     })));
   }
-
-  // 3. Unsplash: previsto, pero hoy no hay cliente ni clave, así que no hay
-  // rama que ejecutar. Cuando exista, va aquí, después del banco.
 
   if (candidates.length === 0) {
     json(res, 200, { photos: [] });
     return true;
   }
 
-  // ---- BUCLE UNIFICADO (Pexels o banco) ------------------------------------
+  // ---- BUCLE UNIFICADO (banco, Unsplash o Pexels) --------------------------
+
+  /**
+   * Marca con la que este sitio ya recuerda una foto de FUERA.
+   *
+   * Pexels: `-<id>/` en su página. Unsplash: `/<id>` al FINAL de su página, que
+   * es el id de Unsplash (`https://unsplash.com/photos/<id>`). Así el dedupe de
+   * Unsplash va por id y no por URL: un enlace reescrito con `?utm=...` o un
+   * `credit_text` siguen casando. El banco no tiene marca (su URL es exacta),
+   * para que banco y Unsplash puedan convivir en la misma lista sin descartarse
+   * entre sí.
+   */
+  function externalMarker(photo: Candidate): string | undefined {
+    if (photo._source === "pexels") return `-${String(photo.id)}/`;
+    if (photo._source === "unsplash") return `/${String(photo.id)}`;
+    return undefined;
+  }
+
+  function yaEnElSitio(photo: Candidate): boolean {
+    if (photo.url !== "" && used.has(photo.url)) return true;
+    const marker = externalMarker(photo);
+    if (marker === undefined) return false;
+    for (const value of used) {
+      if (photo._source === "unsplash") {
+        // Se compara el FINAL de la ruta, no una subcadena: un `/<id>` en medio
+        // de otra ruta no es la misma foto. Query y `#` van fuera, porque no
+        // cambian de qué foto se trata.
+        const base = (value.split(/[?#]/)[0] ?? "").trimEnd();
+        const clean = base.endsWith("/") ? base.slice(0, -1) : base;
+        if (clean.endsWith(marker)) return true;
+      } else if (value.endsWith(marker) || value.includes(`${marker} `)) {
+        return true;
+      }
+    }
+    return false;
+  }
 
   const photos: Array<{ assetId: string; alt: string; width: number; height: number }> = [];
   for (const photo of candidates) {
     if (photos.length >= body.count) break;
 
-    // Dedupe por sitio, decidido POR CANDIDATO (el banco y Pexels pueden
-    // convivir en la misma lista).
-    // Para banco: la URL canónica es la página de la foto, exacta.
-    // Para Pexels: además del source_url, el sufijo "-<id>/" que sobrevive a un
-    //   enlace reescrito.
-    if (photo.url !== "" && used.has(photo.url)) continue;
-
-    let yaEnSitio = false;
-    if (photo._bankPhoto === undefined) {
-      // Comprobación original de Pexels: sufijo "-<id>/" en source_url o credit_text.
-      const idMark = `-${photo.id}/`;
-      for (const value of used) {
-        if (value === photo.url || value.endsWith(idMark) || value.includes(`${idMark} `)) {
-          yaEnSitio = true;
-          break;
-        }
-      }
-    } else {
-      // Para el banco la URL canónica es exacta; ya la comprobamos arriba con
-      // used.has(photo.url). Nada más que hacer aquí.
-    }
-    if (yaEnSitio) continue;
+    // Dedupe por sitio, decidido POR CANDIDATO: es lo que permite que el banco,
+    // Unsplash y Pexels compartan lista sin pisarse.
+    if (yaEnElSitio(photo)) continue;
 
     let content: Buffer;
     let metaFile: { author: string; sourceUrl: string; license: string; mime: string };
@@ -295,11 +352,50 @@ export async function handleInternalPhotos(
         license: photo._bankPhoto.license,
         mime: file.mime,
       };
+    } else if (photo._source === "unsplash" && photo._unsplashPhoto) {
+      // ---- UNSPLASH --------------------------------------------------------
+      // CACHÉ ANTES QUE RED: si la foto ya se bajó para cualquier sitio, no se
+      // vuelve a pedir a Unsplash ni se gasta cuota de descarga.
+      const info = photo._unsplashPhoto;
+      const cached = await readFromUnsplashCache(info.id);
+      if (cached) {
+        console.info("unsplash_cache_hit", { id: info.id });
+        content = cached.content;
+        metaFile = {
+          author: cached.meta.photographer,
+          sourceUrl: cached.meta.sourceUrl,
+          license: UNSPLASH_LICENSE,
+          mime: cached.meta.mime,
+        };
+      } else {
+        console.info("unsplash_cache_miss", { id: info.id });
+        const downloaded = await downloadUnsplash(info);
+        if (!downloaded) continue;
+        const saved = await saveToUnsplashCache({
+          photo: info,
+          content: downloaded.content,
+          mime: downloaded.mime,
+          query: body.query,
+        });
+        // Una vez por descarga NUEVA, no por uso: el aviso es cortesía con el
+        // fotógrafo (y condición de su API), no un requisito para publicar.
+        // `notifyUnsplashDownload` no lanza, así que esperarlo no puede tumbar
+        // la subida.
+        await notifyUnsplashDownload(info);
+        content = downloaded.content;
+        metaFile = {
+          author: saved.photographer,
+          sourceUrl: saved.sourceUrl,
+          license: UNSPLASH_LICENSE,
+          mime: saved.mime,
+        };
+      }
     } else {
       // ---- PEXELS ----------------------------------------------------------
       // BIBLIOTECA ANTES QUE RED: si la foto ya se bajo para cualquier sitio,
       // no se vuelve a pedir a Pexels.
-      // Solo los candidatos de Pexels llegan aquí, y su id es numérico.
+      // Solo los candidatos de Pexels llegan hasta aquí (el resto ya volvió
+      // arriba), y su id es numérico: si no lo es, no hay nada que pedir.
       const pexelsId = typeof photo.id === "number" ? photo.id : undefined;
       if (pexelsId === undefined) continue;
       const cached = await readFromLibrary(pexelsId);
