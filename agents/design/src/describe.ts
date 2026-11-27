@@ -133,8 +133,36 @@ const BUSINESS_MAX = 120;
 /** Tope de la ciudad. Coincide con `quickBriefSchema`. */
 const CITY_MAX = 80;
 
-/** Mínimo del tipo de negocio: con 3 o menos caracteres no dice nada ("web"). */
+/** Mínimo del tipo de negocio: por debajo de 3 no hay palabra que publicar. */
 const BUSINESS_MIN = 3;
+
+/**
+ * Resto mínimo cuando lo que se quita es una coletilla del dueño («somos»,
+ * «trabajo en»).
+ *
+ * POR QUÉ HACE FALTA UN MÍNIMO PROPIO: esas coletillas se parecen al principio de
+ * un nombre de verdad («somos dos», «trabajo en alto»), y quitarlas dejaba una
+ * palabra suelta publicada como negocio. Con el listón en 6, un resto corto hace
+ * que se descarte el barrido entero y se conserve lo que escribió el dueño.
+ */
+const OWNER_MIN_REST = 6;
+
+/**
+ * A partir de cuántos dígitos un texto no es un tipo de negocio.
+ *
+ * Cinco: un teléfono tiene nueve y una dirección suele llevar más. Un nombre de
+ * negocio con un número dentro («taller 24 horas», «café 1900») se queda muy por
+ * debajo, y el que llega justo a cinco ya es más teléfono que nombre.
+ */
+const MAX_BUSINESS_DIGITS = 5;
+
+/**
+ * Artículos que se quitan TRAS una coletilla del dueño («somos un bar» → «bar»,
+ * «me dedico a la fontanería» → «fontanería»). Incluye los determinados, que no
+ * se tocan en el barrido general para no cargarse un nombre propio que empiece
+ * por «La» («La Espiga»).
+ */
+const OWNER_ARTICLES = ["unos ", "unas ", "una ", "un ", "los ", "las ", "el ", "la "] as const;
 
 /**
  * Cola " en <ciudad>", al final o seguida de coma.
@@ -160,9 +188,31 @@ function isCity(candidate: string): boolean {
   return candidate !== "" && candidate.length <= CITY_MAX && !/\d/.test(candidate);
 }
 
-/** ¿Lo que queda sirve como tipo de negocio? */
+/**
+ * ¿Lo que queda sirve como tipo de negocio?
+ *
+ * POR QUÉ NO BASTA CON "TIENE ALGO": `"+34 600 123 123"` y `"hola@despacho.es"`
+ * pasaban el filtro viejo (solo rechazaba lo que era todo dígitos) y acababan
+ * publicados como titular del hero y como `seo.title`. Un contacto NO es un tipo
+ * de negocio, y una web que se llama «hola@despacho.es» no se puede vender.
+ *
+ * Las tres condiciones: algo más que el mínimo, ni correo ni teléfono (`@`, `+`)
+ * y al menos una letra. Un número DENTRO de un nombre real sigue valiendo
+ * («taller 24 horas»), que es lo que distingue este caso del anterior.
+ */
 function isBusinessType(candidate: string): boolean {
-  return candidate.length > BUSINESS_MIN && !/^\d+$/.test(candidate);
+  // Tres letras ya son un negocio («bar», «spa», «tax»): antes el mínimo era 4 y
+  // «somos un bar» se quedaba sin tipo. Lo que no vale con tres letras es el
+  // encargo otra vez («web»), y de eso se encarga `NOISE`.
+  if (candidate.length < BUSINESS_MIN) return false;
+  if (candidate.includes("@") || candidate.includes("+")) return false;
+  // Un teléfono escrito con letras delante («Tel. 600 123 123», «WhatsApp
+  // 600123123») pasaba por tener letras y se publicaba como titular. Un nombre
+  // de negocio no lleva cinco dígitos ni de casualidad; «taller 24 horas» lleva
+  // dos y sigue siendo un tipo de negocio.
+  const digits = candidate.match(/\d/g)?.length ?? 0;
+  if (digits >= MAX_BUSINESS_DIGITS) return false;
+  return /\p{L}/u.test(candidate);
 }
 
 /**
@@ -180,12 +230,33 @@ export function describeFromText(text: string): Described {
   //      encargo al principio («tengo un negocio de...»), al final («... hazme
   //      una landing page») o en los dos sitios, y quitar solo un lado deja el
   //      otro publicado.
+  const original = rest;
   for (let pass = 0; pass < 4; pass += 1) {
     const before = rest;
+    let quitoColetillaDelDueno = false;
+    let quitoArticulo = false;
     const lower = rest.toLowerCase();
     for (const prefix of PREFIXES) {
       if (!lower.startsWith(prefix)) continue;
+      // ¿Es una coletilla de las que el dueño usa para presentarse («somos»,
+      // «trabajo en») o una petición explícita («hazme una web para»)? Solo las
+      // primeras pueden comerse el principio de un nombre real.
+      quitoColetillaDelDueno = OWNER_PREFIXES.some((owner) => prefix === owner || prefix.startsWith(`${owner} `));
       rest = clean(rest.slice(prefix.length));
+      // Tras la coletilla suele quedar el artículo («somos un bar», «me dedico a
+      // la fontanería»). Se quita aquí, pegado a la colectilla y no en el
+      // barrido general: «La Espiga» es un nombre y no se toca.
+      if (quitoColetillaDelDueno) {
+        for (const article of OWNER_ARTICLES) {
+          // SOLO EN MINÚSCULA: «un», «la», «el»... son artículos; «La Espiga» es
+          // el nombre del negocio y forma parte de él. Comparar en minúsculas se
+          // comía el «La» de «soy La Espiga» y publicaba «Espiga».
+          if (!rest.startsWith(article)) continue;
+          rest = clean(rest.slice(article.length));
+          quitoArticulo = true;
+          break;
+        }
+      }
       break;
     }
     const withTail = rest.toLowerCase();
@@ -202,6 +273,16 @@ export function describeFromText(text: string): Described {
       }
     }
     if (rest === before) break;
+    // GUARDA: si quitar «somos» o «trabajo en» deja un resto sin sustancia
+    // («somos dos» → «dos», «trabajo en alto» → «alto»), el barrido se descarta
+    // y se conserva el texto original. Un texto real no se recorta por parecerse
+    // a una coletilla; antes, «somos dos» se publicaba como «Dos».
+    //
+    // EXCEPCIÓN: si había artículo («somos un bar»), el resto ya es el sustantivo
+    // que se buscaba y el mínimo no aplica: «bar» es el negocio.
+    if (quitoColetillaDelDueno && !quitoArticulo && rest.length < OWNER_MIN_REST) {
+      return isBusinessType(original) ? { businessType: original.slice(0, BUSINESS_MAX) } : {};
+    }
   }
 
   // 2b. Lo que queda es un saludo, o el encargo otra vez ("web", "landing
