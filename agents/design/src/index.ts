@@ -42,6 +42,10 @@ export { classifyShape, type SiteShape } from "./classify.js";
 
 export { SECTORS, sectorForBrief, type Sector } from "./sector.js";
 
+export { productForBrief } from "./product.js";
+
+export { themeForProduct, themeTrace, themeSummary, type SiteTheme, type ThemeTrace } from "./theme.js";
+
 export {
   createStore,
   saveCheckpoint,

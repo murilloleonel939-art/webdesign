@@ -5,6 +5,9 @@ import { briefValueOk } from "./copy.js";
 import { genericCopy } from "./generic-copy.js";
 import { GALLERY_MIN, MIN_METRICS, MIN_PLANS, MIN_TESTIMONIALS, completeCopy, ownerContact, plannedTypes, planSections } from "./plan.js";
 import { classifyShape } from "./classify.js";
+import { productForBrief } from "./product.js";
+import { sectorForBrief } from "./sector.js";
+import { themeTrace, themeSummary } from "./theme.js";
 
 // Borrador del modo rápido (spec 9.1, paso 6).
 //
@@ -382,14 +385,25 @@ export function draftSite(brief: QuickBrief, preset: Preset, copy?: SiteCopy, ph
     }
   }
 
+  // T-029: el tema sale del producto del catálogo (paleta + estilo + pareja
+  // tipográfica), no del preset fijo. Sin producto, respaldo por sector. El
+  // `presetId` se sigue guardando para trazabilidad (y el preset sigue mandando
+  // en la landing de una página: orden de secciones y dials).
+  const product = productForBrief(brief);
+  const sector = sectorForBrief(brief);
+  const { theme } = themeTrace(product, sector);
+
   const doc = {
     schemaVersion: 1 as const,
     meta: { name: safeText(docName(brief, text), neutralName), lang: "es" as const },
     design: {
       brief: safeText(designBrief(brief), ""),
-      idea: safeText(preset.summary, ""),
+      // `idea` resume el tema que de verdad se pinta (estilo, paleta y pareja
+      // del catálogo). Antes era el resumen del preset fijo, que ya no decide
+      // el aspecto y habría descrito un tema que la página no tiene.
+      idea: safeText(themeSummary(product, sector), safeText(preset.summary, "")),
       // La frase del dueño va aparte porque los otros dos campos no la guardan:
-      // `brief` se compone con los campos y `idea` es el resumen del preset.
+      // `brief` se compone con los campos e `idea` es el resumen del tema.
       // Sin esto, su burbuja en el chat mostraba "buffet de abogados en
       // barranquilla" en vez de la frase que escribió. `description` es el
       // `prompt` del panel, ya recortado a 500 por el servidor.
@@ -402,13 +416,13 @@ export function draftSite(brief: QuickBrief, preset: Preset, copy?: SiteCopy, ph
       },
     },
     theme: {
-      colors: preset.colors,
-      typography: { family: preset.typography.family, scale: preset.typography.scale },
+      colors: theme.colors,
+      typography: { family: theme.typography.family, scale: theme.typography.scale },
       spacing: {
-        margin: clamp(preset.spacing.margin, 0, 200, 48),
-        sectionGap: clamp(preset.spacing.sectionGap, 0, 400, 64),
+        margin: clamp(theme.spacing.margin, 0, 200, 48),
+        sectionGap: clamp(theme.spacing.sectionGap, 0, 400, 64),
       },
-      radius: preset.radius,
+      radius: theme.radius,
     },
     pages,
     assets: usedPhotos.map((p) => (containsMarker(p.alt) ? { id: p.assetId } : { id: p.assetId, alt: p.alt })),

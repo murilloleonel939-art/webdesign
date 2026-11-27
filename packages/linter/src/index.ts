@@ -20,9 +20,15 @@ export interface LintFinding {
 // (packages/renderer/src/theme-css.ts). Estaban solo cinco familias, mientras
 // los presets de la biblioteca usan otras cuatro: aplicar un preset dejaba el
 // sitio impublicable con FONT_NOT_HOSTED.
+//
+// T-030a: las cinco direcciones tipográficas (editorial, clasica, calida,
+// moderna, rotunda) tienen fuente propia servida desde /fonts/*.ttf y también
+// cuentan como "hospedadas": son el valor que escribe `directionForStyle`
+// (agents/design/src/theme.ts) en `theme.typography.family`.
 const HOSTED_FONTS = [
   "Inter", "Instrument Sans", "Libre Franklin", "Archivo", "Space Grotesk", "Nunito",
   "Source Serif 4", "Fraunces", "Merriweather", "Serif", "Mono",
+  "editorial", "clasica", "calida", "moderna", "rotunda",
 ];
 const MAX_PAGE_BYTES = 20 * 1024 * 1024;
 const LONG_TEXT = 2500;

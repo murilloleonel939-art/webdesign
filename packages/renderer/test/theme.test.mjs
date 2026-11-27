@@ -309,3 +309,97 @@ test("T-023: el formulario hereda tipografia y se maqueta en rejilla", () => {
     assert.ok(etiqueta, `${id}: la etiqueta no se separa del campo`);
   }
 });
+
+// ---------------------------------------------------------------------------
+// T-030a: cinco direcciones tipograficas con fuente propia servida desde
+// /fonts/<archivo>.ttf. A diferencia del catalogo T-029 (arriba), estas SI
+// prometen @font-face porque el archivo existe en packages/renderer/fonts/ y
+// se copia al release.
+// ---------------------------------------------------------------------------
+
+const DIRECTIONS = {
+  editorial: { headline: "Gloock", body: "Crimson Pro" },
+  clasica: { headline: "Libre Baskerville", body: "Instrument Sans" },
+  calida: { headline: "Lora", body: "Instrument Sans" },
+  moderna: { headline: "Instrument Sans", body: "Instrument Sans" },
+  rotunda: { headline: "YoungSerif", body: "Outfit" },
+};
+
+test("T-030a: las cinco direcciones declaran @font-face con archivo propio en /fonts/", () => {
+  for (const [direction] of Object.entries(DIRECTIONS)) {
+    const css = themeCss({ ...theme, typography: { family: direction, scale: "normal" } });
+    assert.ok(/@font-face/.test(css), `${direction}: falta @font-face`);
+    assert.match(css, /src:url\("\/fonts\/[^"]+\.ttf"\) format\("truetype"\)/, `${direction}: sin url de fuente propia`);
+    assert.match(css, /font-display:swap/, `${direction}: sin font-display:swap`);
+    assert.equal(/fonts\.googleapis|fonts\.gstatic|https?:\/\/[^"')]*\.(woff|ttf)/i.test(css), false, `${direction}: fuente de terceros`);
+    assert.equal((css.match(/{/g) ?? []).length, (css.match(/}/g) ?? []).length, `${direction}: CSS desbalanceado`);
+  }
+});
+
+test("T-030a: cada direccion pinta su titular y su cuerpo con la fuente correcta", () => {
+  for (const [direction, pair] of Object.entries(DIRECTIONS)) {
+    const css = themeCss({ ...theme, typography: { family: direction, scale: "normal" } });
+    const bodyFam = /body\{[^}]*font-family:([^;}]+)/.exec(css)?.[1] ?? "";
+    assert.ok(bodyFam.includes(pair.body), `${direction}: el cuerpo deberia usar ${pair.body} -> ${bodyFam}`);
+    if (pair.headline !== pair.body) {
+      const headFam = /h1,h2,h3,blockquote\{font-family:([^;}]+)/.exec(css)?.[1] ?? "";
+      assert.ok(headFam.includes(pair.headline), `${direction}: el titular deberia usar ${pair.headline} -> ${headFam}`);
+    } else {
+      // moderna: titular y cuerpo son la misma fuente, no hace falta regla aparte.
+      assert.ok(bodyFam.includes(pair.headline), `${direction}: titular y cuerpo deberian compartir fuente`);
+    }
+  }
+});
+
+test("T-030a: el catalogo antiguo (T-029) sigue sin prometer @font-face", () => {
+  // Las direcciones nuevas no deben filtrarse a las familias viejas que no
+  // tienen archivo: romperia exactamente lo que T-023 corrigio.
+  for (const f of ["Inter", "Fraunces", "Source Serif 4", "Merriweather", "Space Grotesk", "Nunito"]) {
+    const css = themeCss({ ...theme, typography: { family: f, scale: "normal" } });
+    assert.equal(/@font-face/.test(css), false, `${f}: no deberia declarar @font-face`);
+  }
+});
+
+// --- T-030b: que archivos .ttf sirve cada direccion -------------------------
+// El CSS referencia /fonts/<archivo>.ttf; la release debe llevar exactamente
+// esos archivos. Esta tabla es la fuente de verdad para `publish`.
+
+test("T-030b: fontsForTheme devuelve solo los archivos de la direccion", async () => {
+  const { fontsForTheme } = await import("../dist/theme-css.js");
+  const esperado = {
+    editorial: ["Gloock-Regular.ttf", "CrimsonPro-Regular.ttf", "CrimsonPro-Bold.ttf"],
+    clasica: ["LibreBaskerville-Regular.ttf", "InstrumentSans-Regular.ttf", "InstrumentSans-Bold.ttf"],
+    calida: ["Lora-Regular.ttf", "Lora-Bold.ttf", "InstrumentSans-Regular.ttf", "InstrumentSans-Bold.ttf"],
+    moderna: ["InstrumentSans-Regular.ttf", "InstrumentSans-Bold.ttf"],
+    rotunda: ["YoungSerif-Regular.ttf", "Outfit-Regular.ttf", "Outfit-Bold.ttf"],
+  };
+  for (const [direction, fonts] of Object.entries(esperado)) {
+    const got = [...fontsForTheme({ ...theme, typography: { family: direction, scale: "normal" } })];
+    assert.deepEqual(got, fonts, `${direction}: archivos inesperados`);
+  }
+});
+
+test("T-030b: fontsForTheme no promete archivos para el catalogo antiguo", async () => {
+  // Un tema viejo no tiene .ttf propio: su release se sirve sin `fonts/`.
+  const { fontsForTheme } = await import("../dist/theme-css.js");
+  for (const f of ["Inter", "Fraunces", "Serif", "Space Grotesk", "Nunito", "Mono"]) {
+    assert.deepEqual([...fontsForTheme({ ...theme, typography: { family: f, scale: "normal" } })], [], `${f}: no deberia pedir fuentes`);
+  }
+});
+
+test("T-030b: cada archivo de fontsForTheme existe y el CSS lo referencia", async () => {
+  const { fontsForTheme, FONTS_DIR } = await import("../dist/theme-css.js");
+  const { existsSync, statSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  for (const direction of ["editorial", "clasica", "calida", "moderna", "rotunda"]) {
+    const css = themeCss({ ...theme, typography: { family: direction, scale: "normal" } });
+    for (const name of fontsForTheme({ ...theme, typography: { family: direction, scale: "normal" } })) {
+      const file = join(FONTS_DIR, name);
+      assert.ok(existsSync(file), `${direction}: falta ${file}`);
+      assert.ok(statSync(file).size > 0, `${direction}: ${name} vacio`);
+      // Si el CSS no la nombra, sobra en la release; si la nombra y no esta en
+      // la lista, el navegador daria 404 en produccion.
+      assert.ok(css.includes(`/fonts/${name}`), `${direction}: el CSS no referencia ${name}`);
+    }
+  }
+});

@@ -15,6 +15,8 @@ import {
   normalizeBrief,
   planSections,
   runFastDesign,
+  themeForProduct,
+  productForBrief,
 } from "../dist/index.js";
 
 // Preset de prueba con la forma exacta del catálogo (migración 0009). No se
@@ -100,7 +102,10 @@ test("draft: el borrador valida contra site-schema y no inventa contenido", () =
   // ahora se escriben con el copy genérico, que no afirma nada del negocio.)
   assert.ok(sections.every((s) => s.type !== "testimonial"));
   assert.ok(sections.some((s) => s.type === "features"), "las ventajas se escriben con el copy");
-  assert.equal(doc.theme.colors.accent, PRESET.colors.accent);
+  // T-029: el tema ya no lo pone el preset sino el producto del catálogo
+  // (cafetería → bakery-cafe). Se afirma el valor real, no el del preset.
+  assert.deepEqual(doc.theme, themeForProduct(productForBrief(normalizeBrief(BRIEF))));
+  assert.notEqual(doc.theme.colors.accent, PRESET.colors.accent);
 
   // Ningún precio del preset se hereda: la sección ni siquiera se escribe.
   // (Cambiado en T-002.3: antes salía con el marcador; ahora se omite.)
@@ -414,8 +419,10 @@ test("draft: ownerPrompt conserva la frase literal del dueño", () => {
   const frase = "quiero una pagina web para un buffet de abogados en barranquilla";
   const doc = draftSite(normalizeBrief({ description: frase }), PRESET);
   assert.equal(doc.design.ownerPrompt, frase);
-  // Los dos campos viejos siguen significando lo mismo: no se cambia su sentido.
-  assert.equal(doc.design.idea, PRESET.summary);
+  // T-029: `idea` resume el tema real (estilo + paleta + pareja del catálogo),
+  // no el preset fijo, que ya no decide el aspecto. `brief` sigue igual.
+  assert.match(doc.design.idea, /^Estilo .+ para .+; paleta: .+; tipografía: .+/);
+  assert.notEqual(doc.design.idea, PRESET.summary);
   assert.notEqual(doc.design.brief, frase);
   assert.equal(validateSiteDocument(doc).ok, true);
 });

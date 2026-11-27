@@ -12,14 +12,18 @@ import type { SiteDocument } from "@webdesign/site-schema";
 
 type Theme = SiteDocument["theme"];
 
-// Solo pilas del sistema. La CSP del sitio es `default-src 'self'` y no tiene
-// `font-src`, asi que la unica forma de traer un .woff2 seria servirlo desde el
-// dominio de cada sitio: eso vive en el release y en Caddy, no en esta hoja.
-// Mientras no exista esa ruta, el CSS no puede prometer una familia que no va a
-// llegar: en produccion `document.fonts` estaba vacio y "Fraunces" se pintaba
-// con Times. Por eso cada pila lleva, despues del nombre comercial, serif y
-// sans REALES que el sistema ya tiene instaladas; el nombre va primero porque
-// si el dueno la tiene, manda.
+// Directorio con los .ttf de las cinco direcciones, resuelto desde el propio
+// modulo compilado (`dist/theme-css.js` -> `fonts/`). Lo usa `publish` para
+// hardlinkear a la release solo los archivos que el tema pide: la ruta la
+// conoce quien tiene las fuentes, no quien publica.
+// Sin `node:url` a proposito: `apps/platform/ui/panel.tsx` importa `themeCss`
+// de este mismo paquete y lo empaqueta para el navegador, donde un builtin de
+// Node no resuelve. `pathname` basta porque el despliegue es Linux.
+export const FONTS_DIR = decodeURIComponent(new URL("../fonts/", import.meta.url).pathname);
+
+// Pilas del sistema, usadas como cola de respaldo detras de las fuentes
+// propias y por las familias del catalogo antiguo que no tienen archivo
+// (quedan documentadas mas abajo, en FAMILY_FALLBACK).
 const SANS = 'system-ui, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif';
 // Cola serif. Cada pila serif termina exactamente en esta cadena.
 const SERIF = 'ui-serif, Georgia, "Times New Roman", Times, serif';
@@ -27,16 +31,45 @@ const SERIF = 'ui-serif, Georgia, "Times New Roman", Times, serif';
 // Old Style y Palatino, Windows Palatino Linotype, Book Antiqua y Georgia,
 // Linux Liberation Serif, DejaVu Serif y Noto Serif. Sin ellas, todas las serif
 // caian en el mismo Times.
-//
-// Lo que esta pila NO puede hacer: inventar una serif en un equipo que no tenga
-// ninguna. Medido con Chromium en un contenedor Linux, todas las candidatas
-// menos FreeSerif dan el mismo ancho para la misma cadena (624 px): el sistema
-// tiene una sola serif. Diferenciar de verdad las serif del catalogo exige
-// servir .woff2 desde el dominio del sitio, y eso vive en el release, no aqui.
 const BOOK_SERIF = '"Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua"';
 const LINUX_SERIF = '"Liberation Serif", "DejaVu Serif", "Noto Serif"';
 const CHARTER = 'Charter, "Bitstream Charter"';
 
+// Cinco direcciones tipograficas (T-030a). Cada una trae su propio archivo en
+// `packages/renderer/fonts/`, servido desde el dominio del sitio (sin
+// font-src de terceros: `default-src 'self'` ya cubre /fonts/*.ttf). El
+// nombre comercial de la fuente propia va primero porque @font-face la
+// declara bajo ese mismo nombre; despues va una pila real del sistema por si
+// el .ttf no llegase a cargar (conexion lenta, bloqueo de recursos).
+//
+// titular -> cuerpo:
+//   editorial: Gloock -> Crimson Pro
+//   clasica:   Libre Baskerville -> Instrument Sans
+//   calida:    Lora -> Instrument Sans
+//   moderna:   Instrument Sans -> Instrument Sans
+//   rotunda:   YoungSerif -> Outfit
+const HEADLINE_FAMILY: Record<string, string> = {
+  editorial: `Gloock, ${BOOK_SERIF}, ${CHARTER}, ${LINUX_SERIF}, ${SERIF}`,
+  clasica: `"Libre Baskerville", ${BOOK_SERIF}, ${CHARTER}, ${LINUX_SERIF}, ${SERIF}`,
+  calida: `Lora, ${BOOK_SERIF}, ${CHARTER}, ${LINUX_SERIF}, ${SERIF}`,
+  moderna: `"Instrument Sans", ${SANS}`,
+  rotunda: `"YoungSerif", ${BOOK_SERIF}, ${CHARTER}, ${LINUX_SERIF}, ${SERIF}`,
+};
+const BODY_FAMILY: Record<string, string> = {
+  editorial: `"Crimson Pro", ${SERIF}`,
+  clasica: `"Instrument Sans", ${SANS}`,
+  calida: `"Instrument Sans", ${SANS}`,
+  moderna: `"Instrument Sans", ${SANS}`,
+  rotunda: `Outfit, ${SANS}`,
+};
+// Direcciones cuyo titular es serif: la regla de cabecera se emite antes del
+// cuerpo (ver nota sobre `theme.test.mjs` mas abajo).
+const DIRECTION_SERIF_HEADLINE = new Set(["editorial", "clasica", "calida", "rotunda"]);
+export const TYPOGRAPHY_DIRECTIONS = new Set(Object.keys(HEADLINE_FAMILY));
+
+// Catalogo antiguo (T-029, presets anteriores a las 5 direcciones): sin
+// archivo propio, pila del sistema tal cual. Se conserva para no romper temas
+// ya guardados que todavia usen estos nombres.
 const FAMILY_FALLBACK: Record<string, string> = {
   Inter: `Inter, ${SANS}`,
   "Instrument Sans": `"Instrument Sans", ${SANS}`,
@@ -52,17 +85,75 @@ const FAMILY_FALLBACK: Record<string, string> = {
   Mono: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
 };
 
-// Familias serif del catalogo. Lista explicita y no una comprobacion sobre el
-// nombre: "Fraunces" y "Merriweather" no terminan en "Serif" y "Space Grotesk"
-// no es una serif que se pueda deducir leyendo el texto.
+// Familias serif del catalogo antiguo. Lista explicita y no una comprobacion
+// sobre el nombre: "Fraunces" y "Merriweather" no terminan en "Serif" y
+// "Space Grotesk" no es una serif que se pueda deducir leyendo el texto.
 const SERIF_FAMILIES = new Set(["Serif", "Source Serif 4", "Fraunces", "Merriweather"]);
 
+function isDirection(name: string): boolean {
+  return TYPOGRAPHY_DIRECTIONS.has(name);
+}
+
 function isSerif(name: string): boolean {
+  if (isDirection(name)) return DIRECTION_SERIF_HEADLINE.has(name);
   return SERIF_FAMILIES.has(name);
 }
 
-function family(name: string): string {
+// Pila de titulares: una direccion nueva resuelve a su fuente propia; el
+// catalogo antiguo sigue resolviendo a su pila de sistema.
+function headlineFamily(name: string): string {
+  if (isDirection(name)) return HEADLINE_FAMILY[name]!;
   return FAMILY_FALLBACK[name] ?? SANS;
+}
+
+// Pila de cuerpo: una direccion nueva trae su propia fuente de cuerpo; el
+// catalogo antiguo usa la misma pila que antes (sans si el titular era serif,
+// si no la pila de la familia).
+function bodyFamilyFor(name: string): string {
+  if (isDirection(name)) return BODY_FAMILY[name]!;
+  return isSerif(name) ? SANS : (FAMILY_FALLBACK[name] ?? SANS);
+}
+
+// `@font-face` de las cinco direcciones. `font-display: swap` evita el texto
+// invisible mientras carga el .ttf; el origen es siempre el dominio del
+// sitio (`/fonts/<archivo>.ttf`), copiado ahi por el release.
+const FONT_FACES = `@font-face{font-family:"Gloock";src:url("/fonts/Gloock-Regular.ttf") format("truetype");font-weight:400;font-style:normal;font-display:swap}
+@font-face{font-family:"Crimson Pro";src:url("/fonts/CrimsonPro-Regular.ttf") format("truetype");font-weight:400;font-style:normal;font-display:swap}
+@font-face{font-family:"Crimson Pro";src:url("/fonts/CrimsonPro-Bold.ttf") format("truetype");font-weight:700;font-style:normal;font-display:swap}
+@font-face{font-family:"Libre Baskerville";src:url("/fonts/LibreBaskerville-Regular.ttf") format("truetype");font-weight:400;font-style:normal;font-display:swap}
+@font-face{font-family:"Instrument Sans";src:url("/fonts/InstrumentSans-Regular.ttf") format("truetype");font-weight:400;font-style:normal;font-display:swap}
+@font-face{font-family:"Instrument Sans";src:url("/fonts/InstrumentSans-Bold.ttf") format("truetype");font-weight:700;font-style:normal;font-display:swap}
+@font-face{font-family:"Lora";src:url("/fonts/Lora-Regular.ttf") format("truetype");font-weight:400;font-style:normal;font-display:swap}
+@font-face{font-family:"Lora";src:url("/fonts/Lora-Bold.ttf") format("truetype");font-weight:700;font-style:normal;font-display:swap}
+@font-face{font-family:"YoungSerif";src:url("/fonts/YoungSerif-Regular.ttf") format("truetype");font-weight:400;font-style:normal;font-display:swap}
+@font-face{font-family:"Outfit";src:url("/fonts/Outfit-Regular.ttf") format("truetype");font-weight:400;font-style:normal;font-display:swap}
+@font-face{font-family:"Outfit";src:url("/fonts/Outfit-Bold.ttf") format("truetype");font-weight:700;font-style:normal;font-display:swap}
+`;
+
+// Archivos .ttf que sirve cada direccion (T-030b). Misma tabla que `FONT_FACES`:
+// una direccion lleva el archivo de su titular y los de su cuerpo, incluido el
+// Bold cuando la hoja lo declara con `font-weight:700` — si falta, el navegador
+// sintetiza la negrita y la fuente pesa mas que la real. El catalogo antiguo
+// (T-029) no aparece: no tiene archivo y se sirve con la pila del sistema.
+const DIRECTION_FONTS: Record<string, readonly string[]> = {
+  editorial: ["Gloock-Regular.ttf", "CrimsonPro-Regular.ttf", "CrimsonPro-Bold.ttf"],
+  clasica: ["LibreBaskerville-Regular.ttf", "InstrumentSans-Regular.ttf", "InstrumentSans-Bold.ttf"],
+  calida: ["Lora-Regular.ttf", "Lora-Bold.ttf", "InstrumentSans-Regular.ttf", "InstrumentSans-Bold.ttf"],
+  moderna: ["InstrumentSans-Regular.ttf", "InstrumentSans-Bold.ttf"],
+  rotunda: ["YoungSerif-Regular.ttf", "Outfit-Regular.ttf", "Outfit-Bold.ttf"],
+};
+
+/**
+ * Archivos .ttf que hay que servir para este tema (T-030b).
+ *
+ * Lista vacia cuando el tema usa una familia del catalogo antiguo: ese sitio no
+ * promete `@font-face`, asi que su release no lleva `fonts/` y sigue funcionando.
+ * Es la unica fuente de verdad: `publish` no duplica la tabla.
+ */
+export function fontsForTheme(theme: Theme): string[] {
+  const direction = theme.typography.family;
+  if (!isDirection(direction)) return [];
+  return [...DIRECTION_FONTS[direction]!];
 }
 
 // El radio afecta a bordes de tarjetas, campos y botones: se centraliza.
@@ -86,14 +177,21 @@ export function themeCss(theme: Theme): string {
   // Margenes y separacion vienen del documento y estan acotados por el esquema.
   const margin = theme.spacing.margin;
   const gap = theme.spacing.sectionGap;
-  const serifHeadings = isSerif(theme.typography.family);
-  const serifStack = family(theme.typography.family);
-  const bodyFamily = serifHeadings ? SANS : serifStack;
+  const direction = theme.typography.family;
+  const serifHeadings = isSerif(direction);
+  const headlineStack = headlineFamily(direction);
+  const bodyFamily = bodyFamilyFor(direction);
   // Cuando el preset empareja serif + sans, la regla de titulares se emite
   // ANTES del cuerpo. No es capricho: `theme.test.mjs` decide si una familia es
   // serif leyendo la PRIMERA declaracion `font-family:` de la hoja.
-  const headline = serifHeadings ? `h1,h2,h3,blockquote{font-family:${serifStack}}\n` : "";
-  return `:root{
+  const headline = serifHeadings ? `h1,h2,h3,blockquote{font-family:${headlineStack}}\n` : "";
+  // Las cinco direcciones nuevas traen sus .ttf: el @font-face solo se emite
+  // cuando el tema usa una de ellas. El catalogo antiguo (T-029) no tiene
+  // archivo propio y sigue prometiendo solo su pila de sistema: emitirle un
+  // @font-face sin fuente servida repetiria el fallo de `document.fonts` vacio.
+  const faces = isDirection(direction) ? FONT_FACES : "";
+  return `${faces}:root{
+
 --ground:${theme.colors.ground};
 --ink:${theme.colors.ink};
 --accent:${theme.colors.accent};

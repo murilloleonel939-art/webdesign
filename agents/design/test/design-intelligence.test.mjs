@@ -28,6 +28,7 @@ test("recuentos: 194 productos, 34 patrones, 89 estilos, 74 parejas tipograficas
     patterns: 34,
     styles: 89,
     typography: 74,
+    palettes: 194,
   });
   assert.equal(data.generatedFrom.skills, "ui-ux-pro-max");
   assert.equal(data.generatedFrom.verifiedAt, "2026-11-04");

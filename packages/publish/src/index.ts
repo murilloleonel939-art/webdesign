@@ -1,10 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import type { Pool } from "pg";
 import { withUser, type Tx } from "@webdesign/db";
 import { lintSite, blocksPublication, type LintFinding } from "@webdesign/linter";
 import { lintRelease, needsOwnerConfirmation } from "@webdesign/lint-visual";
 import { publishRelease, switchRelease, listVersions } from "@webdesign/releases";
-import { renderPage } from "@webdesign/renderer";
+import { renderPage, fontsForTheme, FONTS_DIR } from "@webdesign/renderer";
 import { validateSiteDocument, type SiteDocument } from "@webdesign/site-schema";
 
 // Flujo de publicacion (spec 4.3): validar -> lint -> renderizar -> escribir release
@@ -87,8 +89,29 @@ export function slugToFile(slug: string): string {
   return `${slug.replace(/^\//, "").replace(/\/$/, "")}/index.html`;
 }
 
-export async function publish(pool: Pool, opts: PublishOptions): Promise<PublishResult> {
-  const validated = validateSiteDocument(opts.doc);
+/**
+ * `.ttf` que la release debe servir, ya mapeados a su ruta publica (T-030b).
+ *
+ * El CSS del tema referencia `/fonts/<archivo>.ttf` desde el dominio del sitio;
+ * hasta ahora nadie copiaba esos archivos a la release, asi que en produccion
+ * daban 404 y el navegador usaba la pila de respaldo. Aqui se enlazan una sola
+ * vez por release, con la ruta exacta que pide el CSS.
+ *
+ * Solo se enlazan las fuentes que el tema usa (`fontsForTheme`), no las once.
+ * Un archivo que falte en el paquete se omite en vez de tumbar la publicacion:
+ * el CSS ya trae la pila del sistema detras y el sitio sigue siendo usable.
+ */
+export function fontFiles(theme: SiteDocument["theme"]): Record<string, string> {
+  const files: Record<string, string> = {};
+  for (const name of fontsForTheme(theme)) {
+    const source = join(FONTS_DIR, name);
+    if (!existsSync(source)) continue;
+    files[`fonts/${name}`] = source;
+  }
+  return files;
+}
+
+export async function publish(pool: Pool, opts: PublishOptions): Promise<PublishResult> {  const validated = validateSiteDocument(opts.doc);
   // Un documento invalido no se puede publicar nunca: no hay nada que renderizar.
   if (!validated.ok) {
     return { ok: false, blocked: true, findings: lintSite(opts.doc, opts.licensedAssetIds ? { licensedAssetIds: opts.licensedAssetIds } : {}) };
@@ -186,7 +209,13 @@ export async function publish(pool: Pool, opts: PublishOptions): Promise<Publish
     }
 
     // Ya con la certeza de que no hay otro activo, se escribe el release.
-    const version = publishRelease(opts.sitesRoot, opts.siteId, files, opts.assetFiles ?? {});
+    // Las fuentes del tema se suman a los assets: mismo hardlink y misma
+    // comprobacion de rutas. Un tema del catalogo antiguo no aporta ninguna,
+    // asi que su release sale sin `fonts/` y sigue funcionando como antes.
+    const version = publishRelease(opts.sitesRoot, opts.siteId, files, {
+      ...(opts.assetFiles ?? {}),
+      ...fontFiles(doc.theme),
+    });
     await tx.query(
       `INSERT INTO site_versions (id, site_id, version, schema_version, doc, doc_hash, created_by, note)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,

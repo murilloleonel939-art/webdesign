@@ -283,6 +283,7 @@ const productRows = readCsv("products", broken);
 const landingRows = readCsv("landing", broken);
 const styleRows = readCsv("styles", broken);
 const typographyRows = readCsv("typography", broken);
+const colorRows = readCsv("colors", broken);
 
 const products = withIds(
   productRows.map((row) => ({
@@ -323,6 +324,9 @@ const styles = withIds(
     bestFor: row["Best For"],
     avoidFor: row["Do Not Use For"],
     cssVariables: row["Design System Variables"],
+    // T-029: solo 6 de 89 estilos traen `--border-radius` en las variables; otros
+    // 8 lo dicen en esta columna real. `theme.ts` la lee como segunda fuente.
+    cssKeywords: row["CSS/Technical Keywords"],
   })),
   (row) => row.label,
   collisions,
@@ -353,6 +357,40 @@ const typography = withIds(
   collisions,
 );
 
+// palettes (T-029): `id` + las columnas reales de colors.csv (sin "No"), en
+// camelCase. `productType` es la columna "Product Type" tal cual: el `id` sale de
+// ella con el mismo slug, asi que coincide con el `id` del producto.
+const PALETTE_KEYS = {
+  "Product Type": "productType",
+  Primary: "primary",
+  "On Primary": "onPrimary",
+  Secondary: "secondary",
+  "On Secondary": "onSecondary",
+  Accent: "accent",
+  "On Accent": "onAccent",
+  Background: "background",
+  Foreground: "foreground",
+  Card: "card",
+  "Card Foreground": "cardForeground",
+  Muted: "muted",
+  "Muted Foreground": "mutedForeground",
+  Border: "border",
+  Destructive: "destructive",
+  "On Destructive": "onDestructive",
+  Ring: "ring",
+  Notes: "notes",
+};
+
+const palettes = withIds(
+  colorRows.map((row) => {
+    const entry = {};
+    for (const [column, key] of Object.entries(PALETTE_KEYS)) entry[key] = row[column];
+    return entry;
+  }),
+  (row) => row.productType,
+  collisions,
+);
+
 const summary = JSON.parse(readFileSync(join(SRC_DIR, "catalog-summary.json"), "utf8"));
 
 const payload = {
@@ -364,12 +402,14 @@ const payload = {
       patterns: patterns.length,
       styles: styles.length,
       typography: typography.length,
+      palettes: palettes.length,
     },
   },
   products,
   patterns,
   styles,
   typography,
+  palettes,
 };
 
 mkdirSync(dirname(OUT_FILE), { recursive: true });
