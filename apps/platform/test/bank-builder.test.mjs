@@ -112,9 +112,28 @@ function memoryCache() {
   return {
     store,
     readCache: async (id) => store.get(id),
-    saveCache: async ({ photo, content, mime }) => {
-      store.set(photo.id, { meta: { mime }, content });
+    saveCache: async ({ photo, content, mime, query }) => {
+      store.set(photo.id, {
+        meta: {
+          id: photo.id,
+          alt: photo.alt,
+          photographer: photo.photographer,
+          photographerUrl: photo.photographerUrl,
+          sourceUrl: photo.sourceUrl,
+          downloadLocation: photo.downloadLocation,
+          mime,
+          query,
+          savedAt: new Date().toISOString(),
+        },
+        content,
+      });
       return { id: photo.id };
+    },
+    // La caché es la lista de ids que hay en disco; aquí, las claves del mapa.
+    listCache: async () => [...store.keys()],
+    markNotified: async (id) => {
+      const entry = store.get(id);
+      if (entry) entry.meta = { ...entry.meta, notifiedAt: new Date().toISOString() };
     },
   };
 }
@@ -425,8 +444,10 @@ test("6. un fallo de descarga se cuenta y no corrompe el manifiesto", async () =
     image: (url) => (url.pathname.includes("rota") ? undefined : imageFromUrl(url)),
   });
 
+  // Se piden tres portadas: el manifiesto ya trae una, así que hay dos huecos y
+  // las dos candidatas se intentan (el orden lo decide el ranking, no la API).
   startBankBuild(
-    { sectors: ["despacho"], hero: 2, gallery: 0 },
+    { sectors: ["despacho"], hero: 3, gallery: 0 },
     { bankRoot: root, fetch: fetchFalso, ...cache },
   );
   const run = await settle();
@@ -680,4 +701,286 @@ test("13. dos procesos escriben a la vez sin dejar temporales ni JSON a medias",
   // Y los créditos se pueden leer enteros.
   const creditos = await readFile(join(root, "unsplash", "CREDITS.md"), "utf8");
   assert.match(creditos, /^\| Foto \| Autor \| Licencia \|$/m);
+});
+
+// ---------------------------------------------------------------------------
+// 14. Caché primero: rellenar sin gastar ni una petición
+// ---------------------------------------------------------------------------
+
+const CONSULTA_DESPACHO = "modern office interior desks";
+
+/** Mete una foto ya descargada en la caché en memoria. */
+function enCache(cache, { id, alt, query = CONSULTA_DESPACHO, width = 1600, height = 900, notifiedAt }) {
+  cache.store.set(id, {
+    meta: {
+      id,
+      alt,
+      photographer: "Autora en caché",
+      photographerUrl: "https://unsplash.com/@cache",
+      sourceUrl: `https://unsplash.com/photos/${id}`,
+      downloadLocation: `https://api.unsplash.com/photos/${id}/download`,
+      mime: "image/jpeg",
+      query,
+      savedAt: new Date().toISOString(),
+      ...(notifiedAt === undefined ? {} : { notifiedAt }),
+    },
+    content: jpeg(width, height),
+  });
+}
+
+test("14. la caché rellena el sector sin buscar ni descargar (0 peticiones)", async () => {
+  const root = await tempRoot();
+  const cache = memoryCache();
+  enCache(cache, { id: "cache-1", alt: "Modern office interior with desks" });
+  enCache(cache, { id: "cache-2", alt: "Bright office workspace with chairs and desks" });
+
+  // `fetch` que falla si alguien lo llama: la caché tiene que bastar.
+  const fetchFalso = fakeFetch({
+    search: () => {
+      throw new Error("no se debe buscar en la red");
+    },
+    image: () => {
+      throw new Error("no se debe descargar");
+    },
+  });
+
+  startBankBuild(
+    { sectors: ["despacho"], hero: 2, gallery: 0 },
+    { bankRoot: root, fetch: fetchFalso, ...cache },
+  );
+  const run = await settle();
+
+  assert.deepEqual(run.sectors[0].added, { hero: 2, gallery: 0 });
+  assert.deepEqual(run.sectors[0].fromCache, { hero: 2, gallery: 0 });
+  assert.equal(run.requestsUsed, 0, "ni una petición");
+  assert.equal(fetchFalso.calls.length, 0, "fetch ni se tocó");
+
+  const doc = await readManifest(root);
+  assert.deepEqual(doc.photos.map((p) => p.id).sort(), ["cache-1", "cache-2"]);
+  assert.equal(doc.photos[0].width, 1600);
+});
+
+test("15. la caché que no encaja no se usa: se busca en la red", async () => {
+  const root = await tempRoot();
+  const cache = memoryCache();
+  // Cuadrada (no vale para portada), de otro sector y con otra consulta.
+  enCache(cache, { id: "cuadrada", alt: "Modern office interior with desks", width: 1200, height: 1200 });
+  enCache(cache, { id: "otro-sector", alt: "Hair salon interior with mirrors" });
+  enCache(cache, { id: "otra-consulta", alt: "Modern office interior with desks", query: "something else" });
+
+  const candidatos = [rawPhoto({ id: "de-red", alt: "Modern office interior with a long desk" })];
+  const fetchFalso = fakeFetch({ search: () => candidatos, image: imageFromUrl });
+
+  startBankBuild(
+    { sectors: ["despacho"], hero: 1, gallery: 0 },
+    { bankRoot: root, fetch: fetchFalso, ...cache },
+  );
+  const run = await settle();
+
+  assert.deepEqual(run.sectors[0].added, { hero: 1, gallery: 0 });
+  assert.deepEqual(run.sectors[0].fromCache, { hero: 0, gallery: 0 });
+  assert.ok(fetchFalso.calls.some((u) => u.pathname === "/search/photos"), "se buscó de verdad");
+
+  const doc = await readManifest(root);
+  assert.deepEqual(doc.photos.map((p) => p.id), ["de-red"]);
+});
+
+// ---------------------------------------------------------------------------
+// 16. Ranking: se guardan las mejores, no las primeras
+// ---------------------------------------------------------------------------
+
+test("16. el ranking puntúa por términos del sector y por proporción, siempre igual", async () => {
+  // Se ejecuta dos veces el mismo escenario: si el orden dependiera del azar o
+  // del orden de la API, las dos pasadas darían cosas distintas.
+  const ejecutar = async (candidatas) => {
+    const root = await tempRoot();
+    const cache = memoryCache();
+    let servido = false;
+    const fetchFalso = fakeFetch({
+      search: () => {
+        if (servido) return [];
+        servido = true;
+        // La API las devuelve en un orden: si se guardara por llegada, ganaría
+        // la primera de la lista.
+        return candidatas;
+      },
+      image: imageFromUrl,
+    });
+    startBankBuild(
+      { sectors: ["despacho"], hero: 2, gallery: 0 },
+      { bankRoot: root, fetch: fetchFalso, ...cache },
+    );
+    const run = await settle();
+    assert.equal(run.reason, null);
+    return (await readManifest(root)).photos.map((p) => p.id);
+  };
+
+  // A) MISMOS términos del sector ("office" una vez cada una): decide la
+  // proporción. La mejor lleva id posterior, así que no gana por desempate.
+  const porProporcion = await ejecutar([
+    rawPhoto({ id: "aaa-cruzada", alt: "Office interior with a wide view", width: 3100, height: 2000 }),
+    rawPhoto({ id: "zzz-16-9", alt: "Office interior with a wide view", width: 3200, height: 1800 }),
+  ]);
+  assert.equal(porProporcion[0], "zzz-16-9", "misma descripción: gana la proporción del recorte");
+
+  // B) MISMA proporción 16:9: decide el número de términos del sector. La de más
+  // términos también lleva id posterior.
+  const porTerminos = await ejecutar([
+    rawPhoto({ id: "aaa-generica", alt: "Bright modern office at sunset", width: 3200, height: 1800 }),
+    rawPhoto({ id: "zzz-especifica", alt: "Office interior with wooden desks and chairs", width: 3200, height: 1800 }),
+  ]);
+  assert.equal(porTerminos[0], "zzz-especifica", "misma proporción: gana la que nombra más el sector");
+
+  // Y repetir el escenario da exactamente el mismo orden.
+  assert.deepEqual(await ejecutar([
+    rawPhoto({ id: "aaa-generica", alt: "Bright modern office at sunset", width: 3200, height: 1800 }),
+    rawPhoto({ id: "zzz-especifica", alt: "Office interior with wooden desks and chairs", width: 3200, height: 1800 }),
+  ]), porTerminos);
+});
+
+// ---------------------------------------------------------------------------
+// 17. Tope de fotos por ejecución
+// ---------------------------------------------------------------------------
+
+test("17. maxPhotos corta la pasada en done/photo_cap y el siguiente clic sigue", async () => {
+  const root = await tempRoot();
+  const cache = memoryCache();
+  const candidatos = [0, 1, 2, 3].map((i) => rawPhoto({ id: `cascada-${i}`, alt: `Modern office interior with desks ${i}` }));
+  let servido = false;
+  const fetchFalso = fakeFetch({
+    search: () => {
+      if (servido) return [];
+      servido = true;
+      return candidatos;
+    },
+    image: imageFromUrl,
+  });
+
+  startBankBuild(
+    { sectors: ["despacho"], hero: 4, gallery: 0, maxPhotos: 2 },
+    { bankRoot: root, fetch: fetchFalso, ...cache },
+  );
+  const primero = await settle();
+
+  assert.equal(primero.status, "done");
+  assert.equal(primero.reason, "photo_cap");
+  assert.deepEqual(primero.sectors[0].added, { hero: 2, gallery: 0 });
+  assert.deepEqual(primero.sectors[0].missing, { hero: 2, gallery: 0 });
+  assert.equal(primero.cap, 2);
+  assert.equal((await readManifest(root)).photos.length, 2, "solo dos, aunque sobraba presupuesto");
+
+  // Segundo clic: sin tope de peticiones, añade las siguientes.
+  servido = false;
+  startBankBuild(
+    { sectors: ["despacho"], hero: 4, gallery: 0, maxPhotos: 2 },
+    { bankRoot: root, fetch: fetchFalso, ...cache },
+  );
+  const segundo = await settle();
+  assert.deepEqual(segundo.sectors[0].added, { hero: 2, gallery: 0 });
+  assert.deepEqual(segundo.sectors[0].missing, { hero: 0, gallery: 0 });
+  assert.equal((await readManifest(root)).photos.length, 4);
+});
+
+// ---------------------------------------------------------------------------
+// 18. El aviso a Unsplash no se repite
+// ---------------------------------------------------------------------------
+
+test("18. el aviso se hace una vez y queda anotado; con notifiedAt no se repite", async () => {
+  const root = await tempRoot();
+  const cache = memoryCache();
+  const avisos = () => cache.store.get("foto-aviso")?.meta.notifiedAt;
+  const candidatos = [rawPhoto({ id: "foto-aviso", alt: "Modern office interior with desks" })];
+  let servido = false;
+  const fetchFalso = fakeFetch({
+    search: () => {
+      if (servido) return [];
+      servido = true;
+      return candidatos;
+    },
+    image: imageFromUrl,
+  });
+
+  startBankBuild(
+    { sectors: ["despacho"], hero: 1, gallery: 0 },
+    { bankRoot: root, fetch: fetchFalso, ...cache },
+  );
+  const run = await settle();
+  assert.deepEqual(run.sectors[0].added, { hero: 1, gallery: 0 });
+
+  const descargas = fetchFalso.calls.filter((u) => u.hostname === "images.unsplash.com").length;
+  const avisados = fetchFalso.calls.filter((u) => u.pathname.endsWith("/download")).length;
+  assert.equal(descargas, 1);
+  assert.equal(avisados, 1, "un aviso por descarga");
+  assert.ok(avisos(), "queda anotado en la caché");
+
+  // Segunda pasada sobre un banco limpio: la foto ya está en la caché y ya se
+  // anunció, así que ni se descarga ni se vuelve a avisar.
+  const root2 = await tempRoot();
+  const antes = fetchFalso.calls.length;
+  startBankBuild(
+    { sectors: ["despacho"], hero: 1, gallery: 0 },
+    { bankRoot: root2, fetch: fetchFalso, ...cache },
+  );
+  const segundo = await settle();
+  assert.deepEqual(segundo.sectors[0].fromCache, { hero: 1, gallery: 0 });
+  const nuevos = fetchFalso.calls.slice(antes);
+  assert.equal(nuevos.filter((u) => u.pathname.endsWith("/download")).length, 0, "no se avisa otra vez");
+  assert.equal(nuevos.filter((u) => u.hostname === "images.unsplash.com").length, 0, "no se descarga otra vez");
+});
+
+// ---------------------------------------------------------------------------
+// 19. maxPhotos inválido
+// ---------------------------------------------------------------------------
+
+test("19. maxPhotos inválido se rechaza", async () => {
+  for (const malo of [0, 51, "5", 2.5, -1, null]) {
+    assert.throws(() => parseBankBuildOptions({ maxPhotos: malo }), BankBuildInputError, JSON.stringify(malo));
+  }
+  assert.equal(parseBankBuildOptions({}).maxPhotos, 5, "por defecto, cinco");
+  assert.equal(parseBankBuildOptions({ maxPhotos: 1 }).maxPhotos, 1);
+  assert.equal(parseBankBuildOptions({ maxPhotos: 50 }).maxPhotos, 50);
+});
+
+// ---------------------------------------------------------------------------
+// 20. La misma foto no entra dos veces (caché y red solapadas)
+// ---------------------------------------------------------------------------
+
+test("20. una foto que está en la caché y vuelve en la búsqueda entra una sola vez", async () => {
+  const root = await tempRoot();
+  const cache = memoryCache();
+  // Caso real: una ejecución anterior murió después de guardar en la caché y
+  // antes de anotar en el manifiesto, así que la foto está en disco pero no
+  // consta. La búsqueda la devuelve de nuevo.
+  enCache(cache, { id: "solape", alt: "Modern office interior with wooden desks" });
+
+  let servido = false;
+  const fetchFalso = fakeFetch({
+    search: () => {
+      if (servido) return [];
+      servido = true;
+      return [rawPhoto({ id: "solape", alt: "Modern office interior with wooden desks and chairs" })];
+    },
+    image: imageFromUrl,
+  });
+
+  startBankBuild(
+    { sectors: ["despacho"], hero: 2, gallery: 0 },
+    { bankRoot: root, fetch: fetchFalso, ...cache },
+  );
+  const run = await settle();
+
+  // Una sola entrada y un solo fichero, aunque había dos huecos y la foto llegó
+  // por los dos caminos.
+  const doc = await readManifest(root);
+  assert.deepEqual(doc.photos.map((p) => p.id), ["solape"]);
+  assert.equal(run.sectors[0].added.hero, 1);
+  assert.equal(run.sectors[0].skipped.duplicate, 1, "la segunda llegada se cuenta como repetida");
+  assert.deepEqual(run.sectors[0].fromCache, { hero: 1, gallery: 0 });
+
+  const ficheros = (await readdir(join(root, "unsplash", "despacho"))).sort();
+  assert.deepEqual(ficheros, ["hero-01.jpg"], "un solo fichero en el sector");
+
+  // Y no se bajó nada: la que vino de la red sobraba antes de pedir el binario.
+  const descargas = fetchFalso.calls.filter((u) => u.hostname === "images.unsplash.com");
+  assert.equal(descargas.length, 0, "ni una descarga");
 });

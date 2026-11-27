@@ -243,8 +243,8 @@ function Operator({ onClose }: { onClose: () => void }) {
 // lanza la construcción y lee el progreso. Sin barra de porcentaje inventada:
 // lo que se enseña es lo que el servidor ha contado de verdad (añadidas,
 // faltantes y peticiones gastadas).
-interface BankRunSector { sector: string; planned: { hero: number; gallery: number }; added: { hero: number; gallery: number }; skipped: Record<string, number>; missing: { hero: number; gallery: number }; error?: string }
-interface BankRun { id: string; startedAt: string; finishedAt: string|null; status: string; reason: string|null; requestsUsed: number; budget: number; sectors: BankRunSector[] }
+interface BankRunSector { sector: string; planned: { hero: number; gallery: number }; added: { hero: number; gallery: number }; skipped: Record<string, number>; fromCache?: { hero: number; gallery: number }; missing: { hero: number; gallery: number }; error?: string }
+interface BankRun { id: string; startedAt: string; finishedAt: string|null; status: string; reason: string|null; requestsUsed: number; budget: number; cap: number; sectors: BankRunSector[] }
 interface BankInventory { total: number; sectors: Array<{ sector: string; hero: number; gallery: number }> }
 
 const BANK_SECTOR_NAMES: Record<string, string> = { despacho: "Despacho", hosteleria: "Hostelería", comercio: "Comercio", salud: "Salud", taller: "Taller", belleza: "Belleza", neutro: "Neutro" };
@@ -303,6 +303,8 @@ function BankSection() {
   const shown = run ?? last;
   const failed = shown?.status === "failed";
   const top = shown ? bankTopSkip(shown) : "";
+  // Total de la pasada: es lo que se compara con el tope de fotos por clic.
+  const anadidas = shown ? shown.sectors.reduce((n, s) => n + s.added.hero + s.added.gallery, 0) : 0;
   return <section className="bank" aria-labelledby="bank-title">
     <div className="bank-head">
       <h3 id="bank-title">Biblioteca de fotos</h3>
@@ -319,14 +321,18 @@ function BankSection() {
     <div className="bank-status" aria-live="polite">
       {shown === null && <p className="muted">Todavía no se ha construido nada en esta sesión.</p>}
       {shown !== null && <>
-        <p><strong>{running ? "En curso" : failed ? "No se pudo terminar" : "Terminado"}</strong>{shown.status !== "running" && ` · ${shown.requestsUsed} de ${shown.budget} peticiones usadas`}</p>
+        <p><strong>{running ? "En curso" : failed ? "No se pudo terminar" : "Terminado"}</strong>{shown.status !== "running" && ` · ${anadidas} de ${shown.cap} fotos de esta pasada · ${shown.requestsUsed} de ${shown.budget} peticiones usadas`}</p>
+        {shown.reason === "photo_cap" && <p className="muted small">Se añadieron {anadidas}; pulsa otra vez para seguir.</p>}
         {shown.reason === "budget_exhausted" && <p className="muted small">Se agotaron las peticiones de esta pasada. Lo que falte se puede añadir en otra.</p>}
         {shown.reason === "timeout" && <p className="muted small">Se paró por tiempo. Lo que falte se puede añadir en otra pasada.</p>}
         <ul>
-          {shown.sectors.map(s => <li key={s.sector}>
-            <span>{BANK_SECTOR_NAMES[s.sector] ?? s.sector}</span>
-            <span className="muted small">{s.added.hero} de portada · {s.added.gallery} de galería añadidas · faltan {s.missing.hero + s.missing.gallery}</span>
-          </li>)}
+          {shown.sectors.map(s => {
+            const deCache = (s.fromCache?.hero ?? 0) + (s.fromCache?.gallery ?? 0);
+            return <li key={s.sector}>
+              <span>{BANK_SECTOR_NAMES[s.sector] ?? s.sector}</span>
+              <span className="muted small">{s.added.hero} de portada · {s.added.gallery} de galería añadidas{deCache > 0 ? ` (${deCache} de la caché)` : ""} · faltan {s.missing.hero + s.missing.gallery}</span>
+            </li>;
+          })}
         </ul>
         {top !== "" && <p className="muted small">Lo que más se descartó: {top}.</p>}
       </>}

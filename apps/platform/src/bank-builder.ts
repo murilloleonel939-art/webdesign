@@ -30,14 +30,20 @@ import { lstat, mkdir, open, readFile, readdir, rename, unlink, writeFile } from
 import { dirname, join } from "node:path";
 import { extensionFor, sniffMime, type AssetKind } from "@webdesign/assets";
 import { _resetBankCache, bankRoot, isSector, SECTORS, type Sector } from "./photo-bank.js";
-import { altFor, filterPhoto, REJECT_REASONS } from "./photo-filter.js";
+import { altFor, filterPhoto, REJECT_REASONS, SECTOR_TERMS, type FilterResult } from "./photo-filter.js";
 import {
   downloadUnsplash,
   notifyUnsplashDownload,
   searchUnsplash,
   type UnsplashPhoto,
 } from "./unsplash.js";
-import { readFromUnsplashCache, saveToUnsplashCache } from "./unsplash-cache.js";
+import {
+  markUnsplashNotified,
+  readFromUnsplashCache,
+  saveToUnsplashCache,
+  unsplashCacheRoot,
+  type UnsplashCacheMeta,
+} from "./unsplash-cache.js";
 
 // ---------------------------------------------------------------------------
 // Constantes
@@ -49,6 +55,17 @@ const DEFAULT_GALLERY = 8;
 
 /** Presupuesto de peticiones por defecto. Una pasada completa gasta ~30. */
 const DEFAULT_MAX_REQUESTS = 40;
+
+/**
+ * Fotos por clic por defecto: cinco.
+ *
+ * POR QUÉ HAY TOPE DE FOTOS Y NO SOLO DE PETICIONES: el dueño quiere un banco
+ * grande que se reutiliza y crece a ratos, no una excursión de 98 descargas de
+ * golpe. Cinco por clic llenan un hueco real y dejan ver el resultado antes de
+ * seguir; el resto de la cuota queda para cuando haga falta.
+ */
+const DEFAULT_MAX_PHOTOS = 5;
+const MAX_PHOTOS = 50;
 const MAX_REQUESTS = 200;
 const MAX_TARGET = 12;
 
@@ -116,14 +133,21 @@ const CROP_SIZE: Readonly<Record<Kind, { width: number; height: number }>> = {
 
 export type BankBuildStatus = "running" | "done" | "failed";
 
-/** Por qué se acabó antes de tiempo. `null` si se llegó al objetivo. */
-export type BankBuildReason = "budget_exhausted" | "timeout";
+/**
+ * Por qué se acabó antes de tiempo. `null` si se llegó al objetivo.
+ *
+ * `photo_cap` no es un fallo: es el tope de fotos por clic. El operador vuelve a
+ * pulsar y sigue; por eso el panel lo cuenta como "añadidas", no como error.
+ */
+export type BankBuildReason = "budget_exhausted" | "timeout" | "photo_cap";
 
 export interface BankBuildOptions {
   sectors: Sector[];
   hero: number;
   gallery: number;
   maxRequests: number;
+  /** Tope de fotos añadidas en esta ejecución, sumando todos los sectores. */
+  maxPhotos: number;
 }
 
 export interface BankBuildSectorState {
@@ -132,6 +156,8 @@ export interface BankBuildSectorState {
   added: { hero: number; gallery: number };
   /** Rechazos contados por motivo (`duplicate`, `off_topic`, `download_failed`...). */
   skipped: Record<string, number>;
+  /** Añadidas que ya estaban en la caché de disco: coste 0 de cuota. */
+  fromCache: { hero: number; gallery: number };
   missing: { hero: number; gallery: number };
   error?: string;
 }
@@ -145,6 +171,8 @@ export interface BankBuildRun {
   reason: BankBuildReason | null;
   requestsUsed: number;
   budget: number;
+  /** Tope de fotos de esta ejecución (`maxPhotos`). */
+  cap: number;
   sectors: BankBuildSectorState[];
 }
 
@@ -162,8 +190,12 @@ export interface BankBuildDeps {
   fetch?: typeof fetch;
   /** Raíz del banco. Por defecto `bankRoot()`. */
   bankRoot?: string;
-  readCache?: (id: string) => Promise<{ meta: { mime: string }; content: Buffer } | undefined>;
+  readCache?: (id: string) => Promise<{ meta: UnsplashCacheMeta; content: Buffer } | undefined>;
   saveCache?: (entry: { photo: UnsplashPhoto; content: Buffer; mime: string; query: string }) => Promise<unknown>;
+  /** Ids de las fotos que hay en la caché en disco. */
+  listCache?: () => Promise<string[]>;
+  /** Anota que una foto ya se anunció a Unsplash. */
+  markNotified?: (id: string) => Promise<void>;
   /** Tope de tiempo en milisegundos. Por defecto 10 minutos. */
   timeoutMs?: number;
 }
@@ -203,11 +235,13 @@ function snapshot(run: BankBuildRun): BankBuildRun {
     reason: run.reason,
     requestsUsed: run.requestsUsed,
     budget: run.budget,
+    cap: run.cap,
     sectors: run.sectors.map((s) => ({
       sector: s.sector,
       planned: { hero: s.planned.hero, gallery: s.planned.gallery },
       added: { hero: s.added.hero, gallery: s.added.gallery },
       skipped: { ...s.skipped },
+      fromCache: { hero: s.fromCache.hero, gallery: s.fromCache.gallery },
       missing: { hero: s.missing.hero, gallery: s.missing.gallery },
       // `exactOptionalPropertyTypes`: la clave se omite, nunca vale `undefined`.
       ...(s.error === undefined ? {} : { error: s.error }),
@@ -265,6 +299,20 @@ function parseTarget(value: unknown, fallback: number): number {
   return value;
 }
 
+/**
+ * Tope de fotos por ejecución. Entero entre 1 y 50; ni cadenas ni decimales.
+ *
+ * Un cero no se admite: pedir una construcción que no puede añadir nada es un
+ * error de quien llama, no una ejecución que termina sola.
+ */
+function parsePhotoCap(value: unknown): number {
+  if (value === undefined) return DEFAULT_MAX_PHOTOS;
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1 || value > MAX_PHOTOS) {
+    throw new BankBuildInputError();
+  }
+  return value;
+}
+
 function parseBudget(value: unknown): number {
   if (value === undefined) return DEFAULT_MAX_REQUESTS;
   if (typeof value !== "number" || !Number.isInteger(value) || value < 1 || value > MAX_REQUESTS) {
@@ -282,7 +330,13 @@ function parseBudget(value: unknown): number {
  */
 export function parseBankBuildOptions(input: unknown): BankBuildOptions {
   if (input === undefined || input === null) {
-    return { sectors: [...SECTORS], hero: DEFAULT_HERO, gallery: DEFAULT_GALLERY, maxRequests: DEFAULT_MAX_REQUESTS };
+    return {
+      sectors: [...SECTORS],
+      hero: DEFAULT_HERO,
+      gallery: DEFAULT_GALLERY,
+      maxRequests: DEFAULT_MAX_REQUESTS,
+      maxPhotos: DEFAULT_MAX_PHOTOS,
+    };
   }
   if (!isRecord(input)) throw new BankBuildInputError();
   return {
@@ -290,6 +344,7 @@ export function parseBankBuildOptions(input: unknown): BankBuildOptions {
     hero: parseTarget(input["hero"], DEFAULT_HERO),
     gallery: parseTarget(input["gallery"], DEFAULT_GALLERY),
     maxRequests: parseBudget(input["maxRequests"]),
+    maxPhotos: parsePhotoCap(input["maxPhotos"]),
   };
 }
 
@@ -720,7 +775,18 @@ interface ResolvedDeps {
   saveCache: NonNullable<BankBuildDeps["saveCache"]>;
   download: typeof downloadUnsplash;
   notify: typeof notifyUnsplashDownload;
+  listCache: NonNullable<BankBuildDeps["listCache"]>;
+  markNotified: NonNullable<BankBuildDeps["markNotified"]>;
   timeoutMs: number;
+}
+
+/** Ids de la caché en disco. Una carpeta que no existe es una caché vacía. */
+async function listCacheIds(): Promise<string[]> {
+  try {
+    return await readdir(unsplashCacheRoot());
+  } catch {
+    return [];
+  }
 }
 
 function resolveDeps(deps: BankBuildDeps): ResolvedDeps {
@@ -732,6 +798,8 @@ function resolveDeps(deps: BankBuildDeps): ResolvedDeps {
     saveCache: deps.saveCache ?? saveToUnsplashCache,
     download: downloadUnsplash,
     notify: notifyUnsplashDownload,
+    listCache: deps.listCache ?? listCacheIds,
+    markNotified: deps.markNotified ?? markUnsplashNotified,
     timeoutMs: typeof timeout === "number" && timeout >= 0 ? timeout : DEFAULT_TIMEOUT_MS,
   };
 }
@@ -743,6 +811,12 @@ interface Ctx {
   /** Ids ya en el banco MÁS los aceptados en esta ejecución. */
   known: Set<string>;
   deadline: number;
+  /** Fotos añadidas en total en esta ejecución (para el tope `maxPhotos`). */
+  added: number;
+  /** Tope de fotos de esta ejecución. */
+  cap: number;
+  /** Ids ya anotados en el manifiesto: un id no puede entrar dos veces. */
+  inManifest: Set<string>;
 }
 
 function emptySkipped(): Record<string, number> {
@@ -771,10 +845,206 @@ function stopReason(ctx: Ctx): BankBuildReason | null {
   return null;
 }
 
+// ---------------------------------------------------------------------------
+// Elegir las mejores
+// ---------------------------------------------------------------------------
+
+/**
+ * Puntos del ranking. Suma explícita, no una caja negra: se puede ver por qué
+ * una foto gana a otra y ajustar un número sin reescribir la lógica.
+ */
+const SCORE = {
+  /** Por cada término del sector que aparezca en el alt... */
+  term: 4,
+  /** ...hasta este número: repetir "office office office" no vale más. */
+  maxTerms: 4,
+  /** Resolución de sobra sobre el mínimo exigido (hasta doblarlo). */
+  resolution: 6,
+  /** Proporción: cuanto más cerca del recorte que se guarda, mejor. */
+  aspect: 8,
+  /** Alt corto: dice poco del espacio que se va a publicar. */
+  shortAlt: -6,
+} as const;
+
+/**
+ * Veredicto de una candidata, con el alt CRUDO en inglés, y marca de conocida.
+ *
+ * ÚNICO SITIO QUE DECIDE: tanto la caché como la red pasan por aquí, así que una
+ * foto aceptada queda conocida en el acto venga de donde venga. Sin eso, la
+ * misma foto entra dos veces cuando la búsqueda devuelve algo que ya está en
+ * disco (pasa si una ejecución anterior murió entre guardar en caché y anotar en
+ * el manifiesto): el filtro no la vería como duplicada.
+ */
+function judgeCandidate(ctx: Ctx, sector: Sector, kind: Kind, photo: UnsplashPhoto): FilterResult {
+  const verdict = filterPhoto({
+    photo,
+    sector,
+    orientation: FILTER_ORIENTATION[kind],
+    knownIds: ctx.known,
+  });
+  if (verdict.accepted) ctx.known.add(photo.id);
+  return verdict;
+}
+
+/** Texto comparable: minúsculas y espacios colapsados. */
+function normaliseAlt(value: unknown): string {
+  return typeof value === "string" ? value.replace(/\s+/g, " ").trim().toLowerCase() : "";
+}
+
+/** ¿El alt nombra este término con límite de palabra? `bar` no es `barber`. */
+function mentions(alt: string, term: string): boolean {
+  const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?:^|[^a-z0-9])${escaped}(?=$|[^a-z0-9])`, "i").test(alt);
+}
+
+/**
+ * Puntuación de una foto ya aceptada por el filtro.
+ *
+ * POR QUÉ SE PUNTÚA EN VEZ DE COGER LA PRIMERA: Unsplash devuelve 30 resultados
+ * por consulta y el orden de la API no dice cuál encaja mejor con el negocio.
+ * Quedarse con las primeras llenaba el banco de fotos correctas pero flojas. La
+ * puntuación es determinista (sin azar): dos ejecuciones iguales dan lo mismo.
+ */
+export function scorePhoto(photo: UnsplashPhoto, sector: Sector, kind: Kind): number {
+  const alt = normaliseAlt(photo.alt);
+  const terms = SECTOR_TERMS[sector] ?? SECTOR_TERMS.neutro;
+  let hits = 0;
+  for (const term of terms) if (mentions(alt, term)) hits += 1;
+  const termScore = Math.min(hits, SCORE.maxTerms) * SCORE.term;
+
+  // Resolución: lo que sobre de la mínima del recorte, con techo al doblarla.
+  // Un techo porque una foto de 6000 px no es el doble de buena que una de 3000.
+  const required = CROP_SIZE[kind].width;
+  const minSide = Math.min(photo.width, photo.height);
+  const over = minSide > 0 && required > 0 ? Math.min(1, Math.max(0, minSide - required) / required) : 0;
+  const resolutionScore = over * SCORE.resolution;
+
+  // Proporción: distancia al recorte que se va a guardar (16:9 o 1:1).
+  const objetivo = kind === "hero" ? 16 / 9 : 1;
+  const ratio = photo.height > 0 ? photo.width / photo.height : 0;
+  const closeness = Math.max(0, 1 - Math.abs(ratio - objetivo) / objetivo);
+  const aspectScore = closeness * SCORE.aspect;
+
+  // Alt corto: "modern office" describe poco; el filtro ya rechaza el relleno,
+  // esto solo desempata hacia las descripciones que dicen algo del espacio.
+  const words = alt === "" ? 0 : alt.split(" ").length;
+  const shortPenalty = words < 5 ? SCORE.shortAlt : 0;
+
+  return termScore + resolutionScore + aspectScore + shortPenalty;
+}
+
+/**
+ * Ordena de mejor a peor.
+ *
+ * El desempate es por id (no por el orden en que llegaron): el orden de la API
+ * puede cambiar entre ejecuciones, y dos pasadas iguales tienen que dar el mismo
+ * resultado. `sort` de V8 es estable, pero el id lo hace explícito.
+ */
+function rankPhotos(photos: UnsplashPhoto[], sector: Sector, kind: Kind): UnsplashPhoto[] {
+  return photos
+    .map((photo) => ({ photo, score: scorePhoto(photo, sector, kind) }))
+    .sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      return a.photo.id < b.photo.id ? -1 : a.photo.id > b.photo.id ? 1 : 0;
+    })
+    .map((entry) => entry.photo);
+}
+
+// ---------------------------------------------------------------------------
+// Caché primero
+// ---------------------------------------------------------------------------
+
+/** Foto de la caché con la forma que espera el filtro. */
+function photoFromMeta(meta: UnsplashCacheMeta, size: { width: number; height: number }): UnsplashPhoto {
+  const text = (value: unknown): string => (typeof value === "string" ? value : "");
+  return {
+    id: text(meta.id),
+    width: size.width,
+    height: size.height,
+    // El alt CRUDO en inglés es lo que guarda la caché y lo que juzga el filtro.
+    alt: text(meta.alt),
+    url: text(meta.sourceUrl),
+    downloadLocation: text(meta.downloadLocation),
+    photographer: text(meta.photographer),
+    photographerUrl: text(meta.photographerUrl),
+    sourceUrl: text(meta.sourceUrl),
+    // No se va a descargar: esta foto ya está en disco.
+    regularUrl: "",
+  };
+}
+
+/**
+ * Candidatas que ya están en la caché de disco para este sector y tipo.
+ *
+ * POR QUÉ MIRA LA CACHÉ ANTES QUE LA RED: la caché es el banco de lo ya pagado.
+ * Volver a pedir a Unsplash una foto que ya está descargada tira cuota y tiempo;
+ * rellenar desde ahí no gasta ni una petición.
+ *
+ * Se exige que la `query` con la que se guardó sea una de las del sector (no
+ * hay campo `sector` en la caché y no se inventa), y se deja decidir al MISMO
+ * filtro: dimensiones y proporción reales del fichero, alt crudo y duplicados.
+ *
+ * El contenido NO se retiene: se mide y se suelta. Una caché con cientos de
+ * fotos no puede cargarse entera en memoria por mirar si sirve.
+ */
+async function cacheCandidates(
+  ctx: Ctx,
+  sector: Sector,
+  kind: Kind,
+  report: BankBuildSectorState,
+): Promise<UnsplashPhoto[]> {
+  const queries = new Set(SECTOR_QUERIES[sector].map((q) => q.toLowerCase()));
+  let ids: string[];
+  try {
+    ids = await ctx.deps.listCache();
+  } catch (error) {
+    console.warn("bank_build_cache_list_failed", { error: String((error as Error).message || error).slice(0, 120) });
+    return [];
+  }
+
+  const out: UnsplashPhoto[] = [];
+  const visto = new Set<string>();
+  for (const id of ids) {
+    if (typeof id !== "string" || id === "" || visto.has(id) || ctx.known.has(id)) continue;
+    visto.add(id);
+    const entry = await ctx.deps.readCache(id);
+    if (!entry) continue;
+    const query = typeof entry.meta.query === "string" ? entry.meta.query.toLowerCase() : "";
+    if (!queries.has(query)) continue;
+    const size = imageSize(entry.content);
+    if (!size) continue;
+    const photo = photoFromMeta(entry.meta, size);
+    const verdict = judgeCandidate(ctx, sector, kind, photo);
+    if (!verdict.accepted) {
+      bump(report.skipped, verdict.reason ?? "off_topic");
+      continue;
+    }
+    out.push(photo);
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Escritura de una foto
+// ---------------------------------------------------------------------------
+
+interface StoreOptions {
+  /** Contenido que ya está en la caché: esta foto no cuesta ni una petición. */
+  cached?: { meta: UnsplashCacheMeta; content: Buffer };
+  /** Consulta con la que se encontró (se guarda en la caché al descargar). */
+  query: string;
+}
+
+interface StoreResult {
+  saved: boolean;
+  /** `true` si el contenido vino de disco y no de Unsplash. */
+  fromCache: boolean;
+}
+
 /**
  * Guarda una foto aceptada: caché, descarga, aviso, fichero y manifiesto.
  *
- * Devuelve `true` solo si la foto quedó escrita Y anotada en el manifiesto: si
+ * `saved` solo es `true` si la foto quedó escrita Y anotada en el manifiesto: si
  * se escribe el fichero pero falla el manifiesto, esa foto no existe para el
  * resto del sistema y contarla como añadida sería mentir.
  */
@@ -784,44 +1054,63 @@ async function storePhoto(
   kind: Kind,
   report: BankBuildSectorState,
   photo: UnsplashPhoto,
-  query: string,
-): Promise<boolean> {
+  options: StoreOptions,
+): Promise<StoreResult> {
+  // DEFENSA DE FONDO: el manifiesto no puede tener el mismo id dos veces, venga
+  // la foto de donde venga. Si ya está anotada no se escribe fichero ni entrada:
+  // dos ficheros idénticos con el mismo id dejan el banco imposible de auditar.
+  if (ctx.inManifest.has(photo.id)) {
+    bump(report.skipped, "duplicate");
+    return { saved: false, fromCache: false };
+  }
+
   let content: Buffer;
   let mime: string;
+  let fromCache = false;
 
   // CACHÉ ANTES QUE RED, igual que en internal-photos.ts: una foto ya bajada no
-  // se vuelve a pedir ni se cobra dos veces. Un acierto de caché tampoco avisa a
-  // Unsplash, porque no es una descarga nueva.
-  const cached = await ctx.deps.readCache(photo.id);
+  // se vuelve a pedir ni se cobra dos veces.
+  const cached = options.cached ?? (await ctx.deps.readCache(photo.id));
   if (cached) {
     content = cached.content;
     mime = cached.meta.mime;
+    fromCache = true;
   } else {
     if (!spend(ctx.run)) {
       ctx.run.reason = "budget_exhausted";
-      return false;
+      return { saved: false, fromCache: false };
     }
     const downloaded = await ctx.deps.download(photo, ctx.deps.fetch, kind);
     if (!downloaded) {
       bump(report.skipped, "download_failed");
-      return false;
+      return { saved: false, fromCache: false };
     }
     content = downloaded.content;
     mime = downloaded.mime;
     try {
-      await ctx.deps.saveCache({ photo, content, mime, query });
+      await ctx.deps.saveCache({ photo, content, mime, query: options.query });
     } catch (error) {
       // La caché es un ahorro, no un requisito: si no se puede guardar, la foto
       // se escribe igual y la próxima vez se bajará de nuevo.
       console.warn("bank_build_cache_failed", { error: String((error as Error).message || error) });
     }
+    // AVISO A UNSPLASH: solo al descargar. Una foto que sale de la caché no se
+    // avisa nunca (ver `storePhoto`), así que aquí no hay nada que deduplicar:
+    // cada foto se baja como mucho una vez por ejecución (su id entra en
+    // `known` al aceptarse) y la caché evita la segunda. El aviso también gasta
+    // cuota, por eso se apunta `notifiedAt` en la caché: queda constancia de lo
+    // ya anunciado para cualquier ruta futura que reutilice esa entrada.
     if (spend(ctx.run)) {
-      // Cortesía con el fotógrafo y condición de la API. No lanza: si falla, se
-      // registra dentro de unsplash.ts y la foto se queda.
       await ctx.deps.notify(photo, ctx.deps.fetch);
+      try {
+        await ctx.deps.markNotified(photo.id);
+      } catch (error) {
+        // Si no se puede anotar, la foto se queda; solo se repetirá el aviso.
+        console.warn("bank_build_notify_mark_failed", { error: String((error as Error).message || error).slice(0, 120) });
+      }
     } else {
-      // Sin presupuesto para el aviso: se anota y se sigue, que la descarga ya
-      // está pagada y tirar la foto sería desperdiciarla.
+      // Sin presupuesto para el aviso: se sigue, que la descarga ya está pagada
+      // y tirar la foto sería desperdiciarla.
       ctx.run.reason = "budget_exhausted";
     }
   }
@@ -831,14 +1120,14 @@ async function storePhoto(
   const sniffed = content.byteLength >= 4 ? sniffMime(content.subarray(0, 16)) : undefined;
   if (!sniffed || !ACCEPTED_IMAGE_MIME.has(sniffed)) {
     bump(report.skipped, "download_failed");
-    return false;
+    return { saved: false, fromCache: false };
   }
 
   const size = imageSize(content) ?? CROP_SIZE[kind];
   const written = await writePhotoFile(join(unsplashDir(ctx.deps.root), sector), kind, content, sniffed);
   if (!written) {
     bump(report.skipped, "write_failed");
-    return false;
+    return { saved: false, fromCache: false };
   }
 
   const photoPageUrl = withUtm(photo.url !== "" ? photo.url : `https://unsplash.com/photos/${photo.id}`);
@@ -864,18 +1153,42 @@ async function storePhoto(
   // muere entre medias, sobra un fichero, que es recuperable; al revés, el
   // manifiesto apuntaría a un fichero que no existe.
   ctx.doc.photos.push(entry);
+  ctx.inManifest.add(photo.id);
   await writeManifestDoc(ctx.deps.root, ctx.doc);
   await writeCredits(ctx.deps.root, ctx.doc);
   _resetBankCache();
-  console.info("bank_build_photo_added", { sector, kind, file: entry.file });
-  return true;
+  ctx.added += 1;
+  console.info("bank_build_photo_added", { sector, kind, file: entry.file, fromCache });
+  return { saved: true, fromCache };
+}
+
+/**
+ * ¿Hay que parar de añadir fotos en este punto?
+ *
+ * Tres finales distintos, todos con la ejecución en `done`: objetivo alcanzado
+ * (no hay razón), tope de fotos de esta pasada (`photo_cap`) y lo de siempre
+ * (presupuesto o tiempo). El tope de fotos es el que deja al operador seguir
+ * pulsando; no es un error.
+ */
+function reachedLimit(ctx: Ctx, have: number, target: number): boolean {
+  if (have >= target) return true;
+  if (ctx.added >= ctx.cap) {
+    if (ctx.run.reason === null) ctx.run.reason = "photo_cap";
+    return true;
+  }
+  const reason = stopReason(ctx);
+  if (reason !== null) {
+    if (ctx.run.reason === null) ctx.run.reason = reason;
+    return true;
+  }
+  return false;
 }
 
 /**
  * Rellena un sector y un tipo hasta el objetivo.
  *
- * Se piden las consultas en orden y se para en cuanto se llega al objetivo: la
- * cuota es finita y el banco no necesita "un poco más" de lo pedido.
+ * ORDEN: primero la caché (gratis), después la red (cuesta). De cada tanda de
+ * candidatas se guardan las MEJORES hasta el hueco que quede.
  */
 async function fillSector(
   ctx: Ctx,
@@ -887,13 +1200,28 @@ async function fillSector(
   let have = countInManifest(ctx.doc, sector, kind);
   if (have >= target) return;
 
-  for (const query of SECTOR_QUERIES[sector]) {
-    if (have >= target) return;
-    const reason = stopReason(ctx);
-    if (reason !== null) {
-      if (ctx.run.reason === null) ctx.run.reason = reason;
-      return;
+  // 1. LO YA PAGADO: fotos descargadas antes para este sector y tipo.
+  const deCache = rankPhotos(await cacheCandidates(ctx, sector, kind, report), sector, kind);
+  for (const photo of deCache) {
+    if (reachedLimit(ctx, have, target)) return;
+    const entry = await ctx.deps.readCache(photo.id);
+    if (!entry) {
+      // Desapareció entre la medición y el uso (otra réplica la retiró).
+      bump(report.skipped, "download_failed");
+      continue;
     }
+    const result = await storePhoto(ctx, sector, kind, report, photo, { cached: entry, query: entry.meta.query });
+    if (result.saved) {
+      have += 1;
+      report.added[kind] += 1;
+      report.fromCache[kind] += 1;
+    }
+    if (ctx.run.reason !== null) return;
+  }
+
+  // 2. LA RED: solo si la caché no alcanzó.
+  for (const query of SECTOR_QUERIES[sector]) {
+    if (reachedLimit(ctx, have, target)) return;
     if (!spend(ctx.run)) {
       ctx.run.reason = "budget_exhausted";
       return;
@@ -904,30 +1232,25 @@ async function fillSector(
       ctx.deps.fetch,
     );
 
+    // Primero se decide quién entra (con el alt CRUDO en inglés, que es lo que
+    // juzga el filtro) y después se ordenan; guardar según llegan llenaba el
+    // banco con las primeras de la lista de Unsplash, no con las mejores.
+    const aceptadas: UnsplashPhoto[] = [];
     for (const photo of candidates) {
-      if (have >= target) return;
-      const stop = stopReason(ctx);
-      if (stop !== null) {
-        if (ctx.run.reason === null) ctx.run.reason = stop;
-        return;
-      }
-      // El alt CRUDO en inglés es el que juzga el filtro. El traducido se
-      // escribe al manifiesto, no aquí.
-      const verdict = filterPhoto({
-        photo,
-        sector,
-        orientation: FILTER_ORIENTATION[kind],
-        knownIds: ctx.known,
-      });
+      // Aceptada es conocida antes de bajarla (`judgeCandidate`), para no
+      // reintentarla con la siguiente consulta aunque la descarga falle.
+      const verdict = judgeCandidate(ctx, sector, kind, photo);
       if (!verdict.accepted) {
         bump(report.skipped, verdict.reason ?? "off_topic");
         continue;
       }
-      // Aceptada: se marca como conocida ANTES de bajarla, para no reintentarla
-      // con la siguiente consulta aunque la descarga falle.
-      ctx.known.add(photo.id);
-      const saved = await storePhoto(ctx, sector, kind, report, photo, query);
-      if (saved) {
+      aceptadas.push(photo);
+    }
+
+    for (const photo of rankPhotos(aceptadas, sector, kind)) {
+      if (reachedLimit(ctx, have, target)) return;
+      const result = await storePhoto(ctx, sector, kind, report, photo, { query });
+      if (result.saved) {
         have += 1;
         report.added[kind] += 1;
       }
@@ -999,17 +1322,19 @@ export function startBankBuild(input: unknown, deps: BankBuildDeps = {}): BankBu
     reason: null,
     requestsUsed: 0,
     budget: opts.maxRequests,
+    cap: opts.maxPhotos,
     sectors: opts.sectors.map((sector) => ({
       sector,
       planned: { hero: opts.hero, gallery: opts.gallery },
       added: { hero: 0, gallery: 0 },
       skipped: emptySkipped(),
+      fromCache: { hero: 0, gallery: 0 },
       missing: { hero: opts.hero, gallery: opts.gallery },
     })),
   };
   active = run;
   latest = run;
-  console.info("bank_build_start", { budget: run.budget, sectors: run.sectors.length });
+  console.info("bank_build_start", { budget: run.budget, cap: run.cap, sectors: run.sectors.length });
 
   const resolved = resolveDeps(deps);
   void runBuild(run, opts, resolved).catch((error: unknown) => {
@@ -1041,6 +1366,9 @@ async function runBuild(run: BankBuildRun, opts: BankBuildOptions, deps: Resolve
       doc,
       known: manifestIds(doc),
       deadline: Date.now() + deps.timeoutMs,
+      added: 0,
+      cap: run.cap,
+      inManifest: manifestIds(doc),
     };
     await execute(ctx, opts);
     run.status = "done";

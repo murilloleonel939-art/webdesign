@@ -18,11 +18,11 @@
 // Aquí NO se habla con la red: entra y sale contenido ya descargado. Quien
 // busca y descarga es unsplash.ts, y quien decide es internal-photos.ts.
 
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { extensionFor, sniffMime, type AssetKind } from "@webdesign/assets";
 import { libraryRoot } from "./library.js";
-import type { UnsplashPhoto } from "./unsplash.js";
+import { MAX_PHOTO_BYTES, type UnsplashPhoto } from "./unsplash.js";
 
 /** La licencia tal como la publica Unsplash, y como queda en `registerAsset`. */
 export const UNSPLASH_LICENSE = "Unsplash License";
@@ -60,6 +60,14 @@ export interface UnsplashCacheMeta {
   mime: string;
   query: string;
   savedAt: string;
+  /**
+   * Cuándo se avisó a Unsplash de que esta foto se usó (ISO), si se avisó.
+   *
+   * OPCIONAL Y COMPATIBLE: las entradas antiguas no lo tienen, y eso significa
+   * "no avisada". Existe porque el aviso también gasta cuota: sin este dato, la
+   * misma foto se anunciaría otra vez en cada ejecución que la reutiliza.
+   */
+  notifiedAt?: string;
 }
 
 /** Raíz de la caché: comparte `MEDIA_LIBRARY_ROOT` con la biblioteca de Pexels. */
@@ -94,9 +102,10 @@ function mimeOk(value: unknown): value is string {
  * Entrada de la caché, o `undefined` si no es utilizable.
  *
  * `undefined` si falta `meta.json`, si falta el fichero, si el fichero está
- * VACÍO y si sus primeros bytes no son del tipo que dice `meta.json` (fichero
- * truncado, sustituido o de otro tipo). En esos casos la entrada se BORRA para
- * no repetir la lectura y se vuelve a bajar la próxima vez.
+ * VACÍO, si pasa del tope de tamaño y si sus primeros bytes no son del tipo que
+ * dice `meta.json` (fichero truncado, sustituido o de otro tipo). En esos casos
+ * la entrada se BORRA para no repetir la lectura y se vuelve a bajar la próxima
+ * vez.
  */
 export async function readFromUnsplashCache(id: string): Promise<{ meta: UnsplashCacheMeta; content: Buffer } | undefined> {
   if (!isSafeUnsplashId(id)) return undefined;
@@ -113,11 +122,34 @@ export async function readFromUnsplashCache(id: string): Promise<{ meta: Unsplas
     await discard(id, root);
     return undefined;
   }
-  let content: Buffer;
+  const file = join(entryDir(id, root), fileName(id, meta.mime));
+  // Tope de tamaño ANTES de leer, con la MISMA constante que la descarga.
+  //
+  // POR QUÉ: la descarga de red ya está capada a `MAX_PHOTO_BYTES`, pero este
+  // fichero vive en el volumen de datos y lo puede sustituir cualquiera que
+  // escriba ahí (o un guardado anterior a medias). `readFile` sin tope se traga
+  // lo que haya en disco, y `bank-builder` copia el contenido tal cual al banco:
+  // un fichero de gigabytes agotaba la memoria del panel. Con `stat` primero, el
+  // fichero grande se descarta sin reservar su tamaño, y se repite el número de
+  // `unsplash.ts` en vez de inventar otro: dos topes distintos dejarían pasar
+  // por la caché lo que la red no deja bajar.
+  let size: number;
   try {
-    content = await readFile(join(entryDir(id, root), fileName(id, meta.mime)));
+    size = (await stat(file)).size;
   } catch {
     // meta sin fichero: entrada inservible, se retira para no repetir la lectura.
+    await discard(id, root);
+    return undefined;
+  }
+  if (size > MAX_PHOTO_BYTES) {
+    console.warn("unsplash_cache_too_large", { id, size });
+    await discard(id, root);
+    return undefined;
+  }
+  let content: Buffer;
+  try {
+    content = await readFile(file);
+  } catch {
     await discard(id, root);
     return undefined;
   }
@@ -161,6 +193,9 @@ export async function saveToUnsplashCache(entry: {
   const file = fileName(id, mime);
   const now = new Date().toISOString();
 
+  // Si la entrada ya estaba y tenía aviso, se conserva: reescribir el meta por
+  // una segunda descarga no puede hacer que la foto vuelva a anunciarse.
+  const previo = await readNotifiedAt(dir);
   const meta: UnsplashCacheMeta = {
     id,
     alt: photo.alt,
@@ -171,6 +206,7 @@ export async function saveToUnsplashCache(entry: {
     mime,
     query,
     savedAt: now,
+    ...(previo === undefined ? {} : { notifiedAt: previo }),
   };
 
   await mkdir(dir, { recursive: true });
@@ -182,4 +218,33 @@ export async function saveToUnsplashCache(entry: {
   await writeFile(tmpMeta, JSON.stringify(meta, null, 2), "utf8");
   await rename(tmpMeta, join(dir, "meta.json"));
   return meta;
+}
+
+/** `notifiedAt` del meta que ya hay, si lo hay. Nunca lanza. */
+async function readNotifiedAt(dir: string): Promise<string | undefined> {
+  try {
+    const previo = JSON.parse(await readFile(join(dir, "meta.json"), "utf8")) as { notifiedAt?: unknown };
+    return typeof previo.notifiedAt === "string" && previo.notifiedAt !== "" ? previo.notifiedAt : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Anota que la foto ya se anunció a Unsplash, para no volver a gastar cuota.
+ *
+ * Escritura atómica (`.tmp` + `rename`) como el resto del fichero: un meta a
+ * medias es una entrada que `readFromUnsplashCache` tiraría, y con ella la foto
+ * cacheada. Si el meta no existe, no se inventa: sin entrada no hay nada que
+ * marcar y la próxima descarga volverá a avisar, que es lo correcto.
+ */
+export async function markUnsplashNotified(id: string): Promise<void> {
+  const root = libraryRoot();
+  const dir = entryDir(id, root);
+  const meta = JSON.parse(await readFile(metaPath(id, root), "utf8")) as UnsplashCacheMeta;
+  if (!meta || typeof meta !== "object") return;
+  const siguiente: UnsplashCacheMeta = { ...meta, notifiedAt: new Date().toISOString() };
+  const tmp = join(dir, "meta.json.tmp");
+  await writeFile(tmp, JSON.stringify(siguiente, null, 2), "utf8");
+  await rename(tmp, join(dir, "meta.json"));
 }

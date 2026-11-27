@@ -391,7 +391,7 @@ test("V18. opciones con campo 'crop' o 'query' se ignoran y no cambian el recort
   const o = parseBankBuildOptions({ sectors: ["salud"], crop: "gallery", query: "cats" });
   assert.equal(o.crop, undefined);
   assert.equal(o.query, undefined);
-  assert.deepEqual(Object.keys(o).sort(), ["gallery", "hero", "maxRequests", "sectors"]);
+  assert.deepEqual(Object.keys(o).sort(), ["gallery", "hero", "maxPhotos", "maxRequests", "sectors"]);
 });
 
 // --- Caché: no reconsulta lo ya guardado ----------------------------------
