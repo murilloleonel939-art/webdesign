@@ -57,22 +57,10 @@ delega con órdenes explícitas (archivo, causa, cambio esperado, criterio de he
   los restos sin trazar (`docs/PLAN-VIABLE.md` y compañía) no entran por descuido.
 - Usar graphify y claude-mem para dar contexto en vez de releer. Objetivo: ahorro de tokens.
 
-### Regla de fallos y relevos
-Si un agente falla, **se avisa al usuario y se pasa el trabajo al siguiente modelo**. El relevo
-lo decide el usuario cuando quiera; por defecto, esta tabla:
-
-| Agente que falla | Continúa con | Motivo |
-| --- | --- | --- |
-| Lector (Haiku) | Sonnet 5.5 | Mayor capacidad de lectura y contexto |
-| Arquitecto (Fable 5.2) | Opus 5.5 | Es el siguiente en razonamiento |
-| Constructor (Sonnet) | Opus 5.5 | Es el rol del senior |
-| Constructor Senior (Opus) | Fable 5.2 | El Arquitecto replantea la ruta |
-| Testing (GPT 6.1) | Sonnet 5.5 | Ejecuta las pruebas como respaldo |
-| Security (GPT 6.2) | Opus 5.5 | Revisión profunda de seguridad |
-| GitHub (Haiku) | Sonnet 5.5 | Completa la subida |
-
-Si el relevo también falla, el caso vuelve al Arquitecto, que decide si replantea o pide ayuda
-humana. No se elige un relevo distinto por cuenta propia.
+### Regla de fallos
+Si un agente falla, se para y **se avisa al usuario**. **El relevo lo decide el usuario**, siempre:
+no hay tabla de relevos por defecto y nadie elige el modelo sustituto por su cuenta. Si el relevo
+que indica también falla, el caso vuelve al usuario, que decide si se replantea o se pide ayuda.
 
 Formato del aviso:
 
@@ -81,7 +69,7 @@ Formato del aviso:
 Agente: [nombre y modelo]
 Etapa: [qué estaba haciendo]
 Error: [descripción breve]
-Acción: se continúa con → [modelo de relevo]
+Acción: esperando decisión del usuario
 ```
 
 ### Modelos en este arnés

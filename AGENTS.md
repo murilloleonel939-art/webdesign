@@ -14,8 +14,8 @@ Security (GPT 6.2 Sol) → aprobación del Arquitecto → GitHub (Haiku 5.5).
 - El Arquitecto decide la ruta y es el único que la cambia. No escribe código, no commitea.
 - Testing y Security devuelven los fallos al Constructor; nada se publica con uno de los dos en rojo.
 - Los commits y el push los hace el rol GitHub, con **ficheros explícitos**: nunca `git add -A`.
-- Si un agente falla, se avisa al usuario con el formato de `WORK_STATE.md` y no se elige
-  relevo por cuenta propia.
+- Si un agente falla, se para, se avisa al usuario con el formato de `WORK_STATE.md` y **el
+  relevo lo decide el usuario**. Nadie elige el modelo sustituto por su cuenta.
 
 ## Skill de seguridad
 
