@@ -1,5 +1,6 @@
 import { budgetSchema, type BudgetTracker, type LlmClient } from "@webdesign/llm";
 import { FAST_BUDGET, normalizeBrief, runFastDesign, sectorForBrief, type FastDesignDeps, type FastDesignResult, type Preset, type Sector } from "@webdesign/agent-design";
+import { mergeOwnerContent, type SiteDocument } from "@webdesign/site-schema";
 
 // Job del agente de diseño (spec 9.1, Fase 4; punto C).
 //
@@ -16,6 +17,16 @@ export interface DesignJob {
   siteId: string;
   userId: string;
   brief: unknown;
+  /**
+   * El dueño pidió un cambio explícito en el chat de esta ejecución (T-027).
+   *
+   * Su texto no basta para saberlo: `brief.description` lleva también la frase
+   * con la que creó el sitio. Lo decide el panel, que es el único que ve si el
+   * dueño escribió en el compositor, y viaja aquí como marca explícita. Con la
+   * marca, sus textos escritos a mano no se conservan: si se conservaran, su
+   * petición no se aplicaría nunca. Sus datos sí se conservan siempre.
+   */
+  changeRequest?: boolean;
 }
 
 /** Estado final que se escribe en `agent_runs.status` (0014 lo acota). */
@@ -233,6 +244,13 @@ export async function processDesignJob(deps: DesignDeps, job: DesignJob): Promis
 
     console.info("design_photos", { runId: job.runId, hero: photosTally.hero, gallery: photosTally.gallery });
 
+    // Fusión con lo que ya estaba (T-027). `current` es el borrador tal como se
+    // leyó ANTES de ejecutar, y es la referencia correcta: si el dueño guardó
+    // mientras el agente trabajaba, el guardado de abajo falla por revisión y no
+    // se escribe nada. El diseño aporta estructura, orden y estilo; el dueño
+    // aporta sus datos y el texto que escribió a mano.
+    const doc = mergedDocument(current.doc, result.doc, job.changeRequest === true);
+
     const limit = budgetLimit(result);
     if (limit !== undefined) {
       // Hubo borrador valido, pero la ejecucion se quedo sin presupuesto antes
@@ -240,13 +258,13 @@ export async function processDesignJob(deps: DesignDeps, job: DesignJob): Promis
       // resultado del guardado NO se ignora: si el dueno cambio el borrador o
       // el documento no valida, el motivo se lo dice a el y no un falso "listo".
       const savedBudget = await deps.saveDraft({
-        userId: job.userId, siteId: job.siteId, doc: result.doc, expectedRev: current.rev,
+        userId: job.userId, siteId: job.siteId, doc, expectedRev: current.rev,
       });
       return await finish(deps, job, "budget_exhausted", budgetReason(limit, savedBudget), savedBudget.ok ? savedBudget.rev : undefined);
     }
 
     const saved = await deps.saveDraft({
-      userId: job.userId, siteId: job.siteId, doc: result.doc, expectedRev: current.rev,
+      userId: job.userId, siteId: job.siteId, doc, expectedRev: current.rev,
     });
     if (saved.ok) {
       return await finish(deps, job, "ok", summary(), saved.rev);
@@ -265,6 +283,28 @@ export async function processDesignJob(deps: DesignDeps, job: DesignJob): Promis
     // todo ha ido mal. Un fallo al revocar no cambia el resultado del job.
     await deps.revokeToken(job.runId, job.userId).catch(() => undefined);
   }
+}
+
+/**
+ * Funde el rediseño con el borrador que ya había, justo antes de guardar (T-027).
+ *
+ * `runFastDesign` reconstruye el documento desde el preset: sin esta fusión, un
+ * rediseño borraba los testimonios, los precios y las cifras que el dueño había
+ * escrito en el panel, su titular corregido a mano y su teléfono. Es la clase de
+ * pérdida que hace que un cliente se vaya, y el agente no puede evitarla solo:
+ * no sabe qué escribió el dueño.
+ *
+ * La fusión no adivina: lee las marcas `ownerEdited` que dejó el guardado del
+ * panel y conserva lo que ellas señalan. Lo demás (estructura, orden, estilo y
+ * los textos que nadie tocó) sigue viniendo del rediseño.
+ */
+function mergedDocument(previous: unknown, next: SiteDocument, changeRequest: boolean): SiteDocument {
+  const merged = mergeOwnerContent(previous, next, changeRequest ? { changeRequest: true } : {});
+  // Se registra solo el hecho, nunca el texto del dueño.
+  if (JSON.stringify(merged) !== JSON.stringify(next)) {
+    console.info("design_owner_merge", { kept: true, changeRequest });
+  }
+  return merged;
 }
 
 /**

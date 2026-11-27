@@ -86,4 +86,26 @@ if (process.env.DB_TEST_CONFIRM !== "destroy-test-db" || !process.env.DB_TEST_UR
       (await tx.query("SELECT actor_type FROM audit_log WHERE action = 'draft.save' ORDER BY at DESC LIMIT 1")).rows);
     assert.equal(rows[0].actor_type, "agent");
   });
+
+  test("T-027: el guardado del panel marca el prop que escribió el dueño", async () => {
+    const r = await saveDraft(pool, {
+      userId: OWNER, siteId: SITE, doc: doc("El titular del dueño"), expectedRev: 4, actorType: "user", markOwnerEdits: true,
+    });
+    assert.equal(r.ok, true);
+    const loaded = await loadDraft(pool, OWNER, SITE);
+    // El titular es el único prop de la sección y cambió: queda marcado.
+    assert.deepEqual(loaded.doc.pages[0].sections[0].ownerEdited, ["headline"]);
+    assert.equal(loaded.doc.pages[0].sections[0].props.headline, "El titular del dueño");
+  });
+
+  test("T-027: un guardado del agente no marca nada como del dueño", async () => {
+    // Mismo cambio de titular, pero por la via del agente: sin marca no hay
+    // prueba de autoría, y una marca falsa congelaría el texto para siempre.
+    const r = await saveDraft(pool, {
+      userId: OWNER, siteId: SITE, doc: doc("Reescrito por el agente"), expectedRev: 5, actorType: "agent",
+    });
+    assert.equal(r.ok, true);
+    const loaded = await loadDraft(pool, OWNER, SITE);
+    assert.equal(loaded.doc.pages[0].sections[0].ownerEdited, undefined);
+  });
 }

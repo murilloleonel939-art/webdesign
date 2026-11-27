@@ -232,3 +232,46 @@ test("testimonials y metrics salen en el HTML y su CSS no trae colores literales
   assert.ok(rules.length >= 8, `reglas: ${rules.length}`);
   for (const r of rules) assert.doesNotMatch(r, /#[0-9a-f]{3,8}\b|rgba?\(|hsla?\(/i, r);
 });
+
+// T-026: un documento con las tres secciones de prueba social llenas (los
+// mínimos que exige el panel: 3 cifras, 1 testimonio, 1 plan) valida contra
+// siteSchema y las tres se renderizan en el HTML publicado.
+test("T-026: metrics (3), testimonials (1) y pricing (1) validan y renderizan juntos", () => {
+  const d = doc();
+  d.pages[0].sections.push(
+    {
+      id: "s_metrics", type: "metrics",
+      props: { heading: "En cifras", items: [
+        { value: "+120", label: "pacientes al año" },
+        { value: "15 años", label: "de experiencia" },
+        { value: "4,9/5", label: "valoración media" },
+      ] },
+    },
+    {
+      id: "s_testimonials", type: "testimonials",
+      props: { heading: "Opiniones", ownerProvided: true, items: [
+        { quote: "Un trato excelente de principio a fin.", name: "Marta López", role: "Paciente" },
+      ] },
+    },
+    {
+      id: "s_pricing", type: "pricing",
+      props: { heading: "Precios", plans: [
+        { name: "Consulta inicial", price: "$299", features: ["Valoración completa", "Informe escrito"], highlighted: true },
+      ] },
+    },
+  );
+  const result = validateSiteDocument(d);
+  assert.equal(result.ok, true, result.ok ? "" : JSON.stringify(result.errors));
+
+  const html = renderPage(d, "p_home");
+  assert.match(html, /class="metrics"/);
+  assert.match(html, /\+120/);
+  assert.match(html, /pacientes al año/);
+  assert.match(html, /class="testimonials"/);
+  assert.match(html, /Un trato excelente de principio a fin\./);
+  assert.match(html, /Marta López/);
+  assert.match(html, /class="pricing"/);
+  assert.match(html, /Consulta inicial/);
+  assert.match(html, /\$299/);
+  assert.match(html, /Valoración completa/);
+});

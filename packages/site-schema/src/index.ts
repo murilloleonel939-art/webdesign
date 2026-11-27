@@ -110,6 +110,19 @@ export const sectionSchema = z
     type: z.enum(SECTION_TYPES),
     variant: z.string().max(40).optional(),
     props: z.record(z.string(), z.unknown()),
+    /**
+     * Props que escribió el dueño a mano (T-027).
+     *
+     * Es la única prueba fiable de autoría que hay en el documento: el rediseño
+     * del agente regenera la página entera y, sin esta marca, pisaría el titular
+     * o el teléfono que el dueño acababa de corregir. La escribe el guardado del
+     * panel (`markOwnerEdits`), nunca el agente, y es opcional para que los
+     * documentos ya guardados sigan validando sin migración.
+     *
+     * Granularidad por prop de la sección, no por sección: así el rediseño puede
+     * cambiar el subtítulo que nadie tocó sin llevarse el titular que sí.
+     */
+    ownerEdited: z.array(z.string().max(40)).max(40).optional(),
   })
   .superRefine((s, ctx) => {
     const r = propsByType[s.type].safeParse(s.props);
@@ -170,3 +183,9 @@ export function validateSiteDocument(input: unknown): ValidationResult {
   if (r.success) return { ok: true, doc: r.data };
   return { ok: false, errors: r.error.issues.map((i) => `${i.path.join(".") || "document"}: ${i.message}`) };
 }
+
+// Autoría del contenido (T-027): el dueño marca lo que escribe y el rediseño del
+// agente lo respeta. Vive junto al esquema porque los dos lados del contrato
+// (el guardado del panel y el agente) ya dependen de este paquete.
+export { markOwnerEdits, mergeOwnerContent } from "./owner.js";
+export type { MergeOwnerOptions } from "./owner.js";

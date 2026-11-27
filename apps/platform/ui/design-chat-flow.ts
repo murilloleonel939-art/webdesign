@@ -48,12 +48,17 @@ export const QUESTIONS: readonly Question[] = [
  *
  * `prompt` une lo que el dueño escribio al crear el sitio con lo que escriba
  * en el compositor; el servidor lo guarda recortado a 500.
+ *
+ * `changeRequest` distingue un rediseño de una petición: si el dueño escribió en
+ * el compositor, está pidiendo un cambio concreto y sus textos viejos no deben
+ * conservarse (`mergeOwnerContent`), o su petición no se aplicaría nunca. No se
+ * deduce del texto —eso sería adivinar— sino de dónde se escribió.
  */
 export function buildPayload(
   answers: Partial<Record<BriefKey, string>>,
   initialPrompt: string | undefined,
   composerText: string,
-): { brief: Partial<Record<BriefKey, string>>; prompt: string } | null {
+): { brief: Partial<Record<BriefKey, string>>; prompt: string; changeRequest: boolean } | null {
   const brief: Partial<Record<BriefKey, string>> = {};
   // Solo se envian los campos escritos: un campo vacio no es un dato.
   for (const q of QUESTIONS) {
@@ -66,7 +71,7 @@ export function buildPayload(
     .slice(0, 500)
     .trim();
   if (!Object.keys(brief).length && !prompt) return null;
-  return { brief, prompt };
+  return { brief, prompt, changeRequest: composerText.trim().length > 0 };
 }
 
 /** Enter envia; Mayusculas hace salto de linea; el teclado chino no envia nada. */

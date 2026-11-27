@@ -27,7 +27,7 @@ const COOKIE = "sid=token-de-prueba";
  * directo y el resto va por `withUser`. Se contestan las dos cosas y se anota
  * cada sentencia para poder afirmar sobre el INSERT.
  */
-function fakePool({ owns = true, run = undefined, session = true, draftRev = 0, checkpoint = undefined, latest = undefined } = {}) {
+function fakePool({ owns = true, run = undefined, session = true, draftRev = 0, draftDoc = undefined, checkpoint = undefined, latest = undefined } = {}) {
   const seen = [];
   const client = {
     async query(sql, params) {
@@ -42,7 +42,7 @@ function fakePool({ owns = true, run = undefined, session = true, draftRev = 0, 
       if (/SELECT rev FROM site_drafts/.test(sql)) return { rows: draftRev > 0 ? [{ rev: draftRev }] : [] };
       // `loadDraft` trae revision y documento.
       if (/SELECT rev, doc FROM site_drafts/.test(sql)) {
-        return { rows: draftRev > 0 ? [{ rev: draftRev, doc: { schemaVersion: 1 } }] : [] };
+        return { rows: draftRev > 0 ? [{ rev: draftRev, doc: draftDoc ?? { schemaVersion: 1 } }] : [] };
       }
       return { rows: [] };
     },
@@ -256,5 +256,47 @@ test("P13 pedir la ultima ejecucion sin ninguna responde 404", async () => {
     assert.ok(q, "la consulta de la ultima ejecucion no se hizo");
     // Filtra por dueno en el SQL: RLS sola no basta.
     assert.deepEqual(q.params, [SITE, USER]);
+  });
+});
+
+// --- Herencia del brief en un rediseño (T-028) -------------------------------
+
+test("P14 con borrador, un cuerpo vacío hereda el brief y no se rechaza", async () => {
+  // El dueño pide un rediseño desde el chat sin volver a dar sus datos: el panel
+  // manda el cuerpo vacío. Antes eso era un 400 y, más tarde, un sitio encogido a
+  // landing. Ahora el brief se completa con lo que ya sabe el borrador.
+  const doc = {
+    meta: { name: "Clínica Dental Sonrisa" },
+    design: { brief: "clínica dental en Medellín", ownerPrompt: "" },
+    pages: [{ id: "p", slug: "/", seo: {}, sections: [{ id: "s_c", type: "contact", props: { email: "hola@sonrisadental.co" } }] }],
+  };
+  const saved = process.env.REDIS_URL;
+  delete process.env.REDIS_URL;
+  try {
+    await withServer({ draftRev: 3, draftDoc: doc }, async ({ port, fake }) => {
+      const r = await call(port, "POST", `/api/sites/${SITE}/design-runs`, {});
+      // Llega hasta la cola: sin Redis la respuesta es 503, no un brief inválido.
+      assert.equal(r.status, 503);
+      assert.deepEqual(r.json, { error: "agent_unavailable" });
+      // Se leyó el borrador antes de decidir, y la ejecución se creó.
+      const leido = fake.find(/SELECT rev, doc FROM site_drafts WHERE site_id = \$1$/);
+      assert.ok(leido, "no se leyó el borrador del sitio");
+      assert.deepEqual(leido.params, [SITE]);
+      assert.match(fake.sql(), /INSERT INTO agent_runs/);
+    });
+  } finally {
+    if (saved !== undefined) process.env.REDIS_URL = saved;
+  }
+});
+
+test("P15 sin borrador el cuerpo vacío sigue siendo 400", async () => {
+  // Sin documento del que heredar no hay nada que completar: se mantiene el
+  // corte de P03 y no se gasta una ejecución en un brief sin un solo dato.
+  await withServer({ draftRev: 0 }, async ({ port, fake }) => {
+    const r = await call(port, "POST", `/api/sites/${SITE}/design-runs`, {});
+    assert.equal(r.status, 400);
+    assert.deepEqual(r.json, { error: "invalid_brief" });
+    assert.deepEqual(fake.find(/SELECT rev, doc FROM site_drafts WHERE site_id = \$1$/)?.params, [SITE]);
+    assert.equal(/INSERT INTO agent_runs/.test(fake.sql()), false);
   });
 });

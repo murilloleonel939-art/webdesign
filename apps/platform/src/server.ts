@@ -29,6 +29,7 @@ import { registerAsset, type AssetKind } from "@webdesign/assets";
 import { quickBriefSchema, designAgent, FAST_BUDGET } from "@webdesign/agent-design";
 import { diagnosticsEnabled, tokenMatches, runDiagnostics } from "./diagnose.js";
 import { handleInternalPhotos } from "./internal-photos.js";
+import { completeBriefInput } from "./brief-inherit.js";
 
 // Punto de entrada de `platform`: healthcheck, panel y vista previa aislada.
 // La vista previa vive en su propio subdominio, con su propia cookie (spec 5.5).
@@ -687,6 +688,10 @@ async function handleApi(pool: import("pg").Pool, sitesRoot: string, req: Incomi
       const r = await saveDraft(pool, {
         userId: session.userId, siteId, doc: body.doc,
         expectedRev: Number(body.expectedRev ?? 0), actorType: "user",
+        // Es el único guardado interactivo: aquí se marca qué props escribió el
+        // dueño (T-027) para que un rediseño no las pise. El agente, el deshacer
+        // y la reparación del borrador no marcan nada.
+        markOwnerEdits: true,
       });
       if (r.ok) {
         json(res, 200, { rev: r.rev, findings: r.findings });
@@ -1015,10 +1020,20 @@ async function handleApi(pool: import("pg").Pool, sitesRoot: string, req: Incomi
     // contexto para el resumen, no un sexto dato del negocio.
     const rawPrompt = (body as { prompt?: unknown } | undefined)?.prompt;
     const promptText = typeof rawPrompt === "string" ? rawPrompt.trim().slice(0, 500) : "";
-    const briefInput = {
+    // El dueño escribió una instrucción en el compositor (T-027): es una
+    // petición de cambio, y sus textos escritos a mano no se conservan. Se lee de
+    // una marca explícita del panel, no del texto.
+    const changeRequest = (body as { changeRequest?: unknown } | undefined)?.changeRequest === true;
+    // Herencia del brief (T-028): el panel sólo manda lo que el dueño contestó en
+    // esta sesión, así que un rediseño pedido sin volver a dar los datos llegaba
+    // con el brief vacío y encogía el sitio a una landing. Lo que el documento ya
+    // sabe (nombre, tipo, ciudad, servicio, contacto) rellena los huecos, nunca
+    // lo que el dueño acaba de escribir. Sin borrador no cambia nada.
+    const draft = await loadDraft(pool, session.userId, siteId);
+    const briefInput = completeBriefInput({
       ...(body && typeof body === "object" ? body : {}),
       ...(promptText ? { description: promptText } : {}),
-    };
+    }, draft?.doc);
     const parsedBrief = quickBriefSchema.safeParse(briefInput);
     // Los campos son opcionales por separado, pero el brief entero no: sin un
     // solo dato el agente no puede escribir nada y la ejecucion se gastaria
@@ -1071,7 +1086,10 @@ async function handleApi(pool: import("pg").Pool, sitesRoot: string, req: Incomi
 
     try {
       const { enqueueDesignRun } = await import("@webdesign/workers");
-      await enqueueDesignRun({ url: redisUrl }, { runId, siteId, userId: session.userId, brief: parsedBrief.data });
+      await enqueueDesignRun({ url: redisUrl }, {
+        runId, siteId, userId: session.userId, brief: parsedBrief.data,
+        ...(changeRequest ? { changeRequest: true } : {}),
+      });
     } catch (e) {
       console.warn("design_enqueue_failed", { siteId, runId, error: String((e && (e as Error).message) || e) });
       await withUser(pool, session.userId, async (tx) => {

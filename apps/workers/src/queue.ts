@@ -184,6 +184,9 @@ export function startDesignWorker(connection: { url: string }, deps: DesignDeps)
         siteId: job.data.siteId,
         userId: job.data.userId,
         brief: job.data.brief,
+        // Petición explícita del dueño en el chat (T-027): el único dato del job
+        // que cambia cómo se fusiona el diseño con lo que él ya había escrito.
+        ...(job.data.changeRequest === true ? { changeRequest: true } : {}),
       }),
     { connection: { url: connection.url }, concurrency: AGENT_DESIGN_CONCURRENCY },
   );

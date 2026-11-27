@@ -446,3 +446,35 @@
   .delivery-actions{flex-direction:column;align-items:stretch}
   .delivery-btn-publish,.delivery-btn-change{width:100%;justify-content:center}
 }
+
+/* Pestaña «Contenido» (T-026): cifras, testimonios y precios del dueño. */
+.content-tab{max-width:640px;margin:0 auto;padding:28px 20px 60px;display:flex;flex-direction:column;gap:22px}
+.content-tab h2{margin:0;font-size:clamp(20px,2.2vw,26px);font-weight:800;letter-spacing:-.025em}
+.content-block{display:flex;flex-direction:column;gap:10px;padding:16px;border-radius:16px;background:var(--canvas-2,#f4f5f7)}
+.content-block h3{margin:0;font-size:15px;font-weight:800}
+.content-hint{margin:0;font-size:12.5px;color:var(--muted,#6b7280)}
+.content-row{display:flex;align-items:center;gap:8px}
+.content-row--stack{flex-direction:column;align-items:stretch;gap:8px;padding:10px;border-radius:12px;background:var(--surface,#fff)}
+.content-row input[type="text"],
+.content-row input:not([type]),
+.content-row input[type="email"],
+.content-tab input,
+.content-tab textarea{
+  flex:1;min-width:0;padding:9px 11px;border-radius:10px;border:1px solid var(--border,#d8dadf);
+  font-size:13.5px;font-family:inherit;background:var(--surface,#fff);color:var(--ink,#111);
+}
+.content-tab textarea{min-height:64px;resize:vertical}
+.content-highlight{display:flex;align-items:center;gap:6px;font-size:12.5px;white-space:nowrap}
+.content-remove{flex:0 0 auto;padding:6px 10px;border-radius:8px}
+.content-field{position:relative;flex:1;min-width:0;display:flex}
+.content-field--block{display:block}
+.content-field input,.content-field textarea{width:100%}
+.content-counter{
+  position:absolute;right:8px;bottom:6px;font-size:10.5px;color:var(--muted,#6b7280);
+  background:var(--surface,#fff);padding:0 2px;pointer-events:none;
+}
+
+@media (max-width:720px){
+  .content-tab{padding:18px 12px 48px}
+  .content-row{flex-wrap:wrap}
+}

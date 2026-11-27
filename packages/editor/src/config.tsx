@@ -74,8 +74,24 @@ function AssetPicker({ assets, value, onChange }: {
   );
 }
 
-function makeRender(type: Section["type"], assets: readonly { id: string; path?: string }[]) {
-  const Component = SECTION_COMPONENTS[type] as unknown as (p: { section: Section; editing?: boolean; resolveAsset?: (id: string) => { src: string; alt: string } | undefined }) => ReactElement;
+/**
+ * Aviso de solo lectura sobre `ownerProvided` (T-028).
+ *
+ * No hay input a propósito: el valor lo fija el panel al confirmar el contenido,
+ * y el guardado del agente lo devuelve siempre a lo que ya había
+ * (`guardOwnerOnlyFields`). Si aquí hubiera una casilla, se podría marcar un
+ * testimonio inventado como verificado con un clic.
+ */
+function OwnerProvidedNote() {
+  return (
+    <p style={{ margin: 0, fontSize: 12, lineHeight: 1.45, color: "#6b7590" }}>
+      El contenido de este bloque sólo se publica si lo confirmas en la pestaña «Contenido» del panel.
+      Aquí no se edita: es la prueba de que el texto es tuyo.
+    </p>
+  );
+}
+
+function makeRender(type: Section["type"], assets: readonly { id: string; path?: string }[]) {  const Component = SECTION_COMPONENTS[type] as unknown as (p: { section: Section; editing?: boolean; resolveAsset?: (id: string) => { src: string; alt: string } | undefined }) => ReactElement;
   return function Render(props: Props) {
     const resolveAsset = (id: string) => { const asset = assets.find(a => a.id === id); return asset?.path ? { src: resolveEditorAssetPath(asset.path), alt: "" } : undefined; };
     return <Component section={{ id: "preview", type, props }} editing resolveAsset={resolveAsset} />;
@@ -145,26 +161,49 @@ export function buildEditorConfig(opts: EditorConfigOptions): Config {
         label: "Precios",
         fields: {
           heading: text("Título"),
-          plans: { type: "array", label: "Planes", arrayFields: { name: text("Nombre"), price: text("Precio") } },
+          // `features` (lo que incluye el plan) y `highlighted` (plan destacado)
+          // faltaban aqui: el dueno podia poner nombre y precio pero nunca lo
+          // que incluye el plan, y no habia forma de marcar el destacado desde
+          // el sidebar (T-026, hallazgo 1).
+          plans: {
+            type: "array", label: "Planes",
+            arrayFields: {
+              name: text("Nombre"),
+              price: text("Precio"),
+              features: { type: "array", label: "Qué incluye", arrayFields: { item: text("Incluye") }, getItemSummary: (item: any) => (typeof item?.item === "string" && item.item) || "Incluye…" },
+              highlighted: { type: "radio", label: "Plan destacado", options: [{ label: "Normal", value: false }, { label: "Destacado", value: true }] },
+            },
+            getItemSummary: (item: any) => (typeof item?.name === "string" && item.name) || "Plan",
+          },
         },
         defaultProps: { heading: "", plans: [] },
         render: makeRender("pricing", opts.assets ?? []),
       },
       testimonial: {
         label: "Testimonio",
-        fields: { quote: { type: "textarea", label: "Cita" }, author: text("Autor") },
-        // `ownerProvided` no es un campo: lo fija el dueno al guardar, no el agente.
-        defaultProps: { quote: "", author: "" },
+        fields: {
+          quote: { type: "textarea", label: "Cita" },
+          author: text("Autor"),
+          // `ownerProvided` NO es un campo editable (spec 6.2): significa «este
+          // testimonio lo dio el dueño y es verificable», y un input de texto lo
+          // dejaría marcar a cualquiera que abra el sidebar. Se confirma en la
+          // pestaña «Contenido» del panel, que guarda con `ownerProvided: true`
+          // sólo lo que el dueño escribe ahí. Aquí queda el aviso, de solo
+          // lectura, para que no parezca que al bloque le falta algo.
+          ownerProvidedNote: { type: "custom", label: "Publicación", render: () => <OwnerProvidedNote /> },
+        },
+        defaultProps: { quote: "", author: "", ownerProvided: false },
         render: makeRender("testimonial", opts.assets ?? []),
       },
       testimonials: {
         label: "Testimonios",
         fields: {
           heading: text("Título"),
-          items: { type: "array", label: "Testimonios", arrayFields: { quote: { type: "textarea", label: "Cita" }, name: text("Nombre"), role: text("Rol") } },
+          items: { type: "array", label: "Testimonios", arrayFields: { quote: { type: "textarea", label: "Cita" }, name: text("Nombre"), role: text("Rol") }, getItemSummary: (item: any) => (typeof item?.name === "string" && item.name) || "Testimonio" },
+          // Misma regla que en `testimonial`: `ownerProvided` no se edita aquí.
+          ownerProvidedNote: { type: "custom", label: "Publicación", render: () => <OwnerProvidedNote /> },
         },
-        // Igual que `testimonial`: `ownerProvided` no es un campo editable aqui.
-        defaultProps: { heading: "", items: [] },
+        defaultProps: { heading: "", items: [], ownerProvided: false },
         render: makeRender("testimonials", opts.assets ?? []),
       },
       metrics: {

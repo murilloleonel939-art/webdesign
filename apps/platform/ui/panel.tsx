@@ -379,6 +379,156 @@ function DeliveryOverlay({ siteId, PAGE, publishedUrl, onPublish, onClose, visua
   );
 }
 
+// Pestaña «Contenido» (T-026): cifras, testimonios y precios del dueño.
+// Estos tres tipos de sección solo los escribe el agente cuando el brief trae
+// `proof` (T-025); si no, nunca aparecen. Aquí se editan directamente las
+// secciones `metrics`/`testimonials`/`pricing` de la página, por el mismo
+// camino que ya usa el editor (`PUT /draft` con `expectedRev`), sin inventar
+// un endpoint nuevo.
+type Metric = { value: string; label: string };
+type Testimonial = { quote: string; name: string; role?: string };
+type Plan = { name: string; price: string; features: string[]; highlighted?: boolean };
+
+function findSection(doc: any, pageId: string, type: string): any {
+  const page = doc?.pages?.find((p: any) => p.id === pageId);
+  return page?.sections?.find((s: any) => s.type === type);
+}
+
+function nextSectionId(doc: any, pageId: string, type: string): string {
+  const existing = findSection(doc, pageId, type);
+  if (existing) return existing.id;
+  const page = doc?.pages?.find((p: any) => p.id === pageId);
+  const used = new Set((page?.sections ?? []).map((s: any) => s.id));
+  let n = 1;
+  while (used.has(`${type}-${n}`)) n++;
+  return `${type}-${n}`;
+}
+
+/** Reemplaza (o quita) una sección de un tipo dado en la página, sin tocar las demás. */
+function withSection(doc: any, pageId: string, type: string, props: Record<string, unknown> | null, extraProps?: Record<string, unknown>): any {
+  const pages = (doc.pages ?? []).map((p: any) => {
+    if (p.id !== pageId) return p;
+    const hadIndex = p.sections.findIndex((s: any) => s.type === type);
+    if (props === null) {
+      // Sin datos suficientes: la sección no se publica, se quita si existía.
+      if (hadIndex === -1) return p;
+      return { ...p, sections: p.sections.filter((_: any, i: number) => i !== hadIndex) };
+    }
+    const id = nextSectionId(doc, pageId, type);
+    const section = { id, type, props: { ...extraProps, ...props } };
+    const sections = hadIndex === -1 ? [...p.sections, section] : p.sections.map((s: any, i: number) => (i === hadIndex ? section : s));
+    return { ...p, sections };
+  });
+  return { ...doc, pages };
+}
+
+/** Contador de caracteres: solo se pinta cuando quedan menos de 10. */
+function Counter({ value, max }: { value: string; max: number }) {
+  const left = max - value.length;
+  if (left >= 10) return null;
+  return <small className="content-counter">{left}</small>;
+}
+
+function ContentTab({ siteId, PAGE, doc, rev, onSaved, onConflict }: {
+  siteId: string; PAGE: string; doc: any; rev: number;
+  onSaved: (doc: any, rev: number) => void; onConflict: () => void | Promise<void>;
+}) {
+  const metricsSection = findSection(doc, PAGE, "metrics");
+  const testimonialsSection = findSection(doc, PAGE, "testimonials");
+  const pricingSection = findSection(doc, PAGE, "pricing");
+  const [metrics, setMetrics] = useState<Metric[]>(metricsSection?.props?.items ?? []);
+  const [testimonials, setTestimonials] = useState<Testimonial[]>(testimonialsSection?.props?.items ?? []);
+  const [plans, setPlans] = useState<Plan[]>(pricingSection?.props?.plans ?? []);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function saveAll() {
+    setSaving(true); setError(null);
+    const cleanMetrics = metrics.filter((m) => m.value.trim() !== "" || m.label.trim() !== "");
+    const cleanTestimonials = testimonials.filter((t) => t.quote.trim() !== "" || t.name.trim() !== "");
+    const cleanPlans = plans
+      .map((p) => ({ ...p, features: p.features.filter((f) => f.trim() !== "") }))
+      .filter((p) => p.name.trim() !== "" || p.price.trim() !== "" || p.features.length > 0);
+
+    let next = withSection(doc, PAGE, "metrics", cleanMetrics.length >= 3 ? { heading: metricsSection?.props?.heading ?? "En cifras", items: cleanMetrics.slice(0, 6) } : null);
+    next = withSection(next, PAGE, "testimonials", cleanTestimonials.length >= 1
+      ? { heading: testimonialsSection?.props?.heading ?? "Opiniones", items: cleanTestimonials.slice(0, 6), ownerProvided: true }
+      : null);
+    next = withSection(next, PAGE, "pricing", cleanPlans.length >= 1 ? { heading: pricingSection?.props?.heading ?? "Precios", plans: cleanPlans.slice(0, 6) } : null);
+
+    const r = await api(`/api/sites/${siteId}/draft`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ doc: next, expectedRev: rev }) });
+    setSaving(false);
+    if (r.status === 409) { setError("Otro cambio fue guardado. Recargando…"); await onConflict(); return; }
+    if (!r.ok) { setError("No se pudo guardar"); return; }
+    const d = await r.json() as { rev: number };
+    onSaved(next, d.rev);
+  }
+
+  return <div className="content-tab">
+    <h2>Tu contenido</h2>
+    <p className="muted">Lo que escribas aquí aparece tal cual en tu web. Nada se publica inventado.</p>
+
+    <section className="content-block">
+      <h3>Cifras</h3>
+      <p className="content-hint">Sin cifras, esta sección no aparece en tu web. Necesitas al menos 3.</p>
+      {metrics.length === 0
+        ? <button className="ghost" onClick={() => setMetrics([{ value: "", label: "" }])}>Añadir cifra</button>
+        : <>
+          {metrics.map((m, i) => <div className="content-row" key={i}>
+            <span className="content-field"><input maxLength={20} placeholder="+120" value={m.value} onChange={e => setMetrics(metrics.map((x, j) => j === i ? { ...x, value: e.target.value } : x))}/><Counter value={m.value} max={20}/></span>
+            <span className="content-field"><input maxLength={80} placeholder="pacientes al año" value={m.label} onChange={e => setMetrics(metrics.map((x, j) => j === i ? { ...x, label: e.target.value } : x))}/><Counter value={m.label} max={80}/></span>
+            <button className="ghost content-remove" aria-label="Quitar cifra" onClick={() => setMetrics(metrics.filter((_, j) => j !== i))}>✕</button>
+          </div>)}
+          <button className="ghost" disabled={metrics.length >= 6} onClick={() => setMetrics([...metrics, { value: "", label: "" }])}>Añadir otra cifra</button>
+        </>}
+    </section>
+
+    <section className="content-block">
+      <h3>Testimonios</h3>
+      <p className="content-hint">Sin cifras, esta sección no aparece en tu web. Necesitas al menos 1.</p>
+      {testimonials.length === 0
+        ? <button className="ghost" onClick={() => setTestimonials([{ quote: "", name: "", role: "" }])}>Añadir testimonio</button>
+        : <>
+          {testimonials.map((t, i) => <div className="content-row content-row--stack" key={i}>
+            <span className="content-field content-field--block"><textarea maxLength={600} placeholder="Lo que dijo tu cliente" value={t.quote} onChange={e => setTestimonials(testimonials.map((x, j) => j === i ? { ...x, quote: e.target.value } : x))}/><Counter value={t.quote} max={600}/></span>
+            <div className="content-row">
+              <span className="content-field"><input maxLength={80} placeholder="Nombre" value={t.name} onChange={e => setTestimonials(testimonials.map((x, j) => j === i ? { ...x, name: e.target.value } : x))}/><Counter value={t.name} max={80}/></span>
+              <span className="content-field"><input maxLength={80} placeholder="Rol (opcional)" value={t.role ?? ""} onChange={e => setTestimonials(testimonials.map((x, j) => j === i ? { ...x, role: e.target.value } : x))}/><Counter value={t.role ?? ""} max={80}/></span>
+              <button className="ghost content-remove" aria-label="Quitar testimonio" onClick={() => setTestimonials(testimonials.filter((_, j) => j !== i))}>✕</button>
+            </div>
+          </div>)}
+          <button className="ghost" disabled={testimonials.length >= 6} onClick={() => setTestimonials([...testimonials, { quote: "", name: "", role: "" }])}>Añadir otro testimonio</button>
+        </>}
+    </section>
+
+    <section className="content-block">
+      <h3>Precios</h3>
+      <p className="content-hint">Sin cifras, esta sección no aparece en tu web. Necesitas al menos 1 plan.</p>
+      {plans.length === 0
+        ? <button className="ghost" onClick={() => setPlans([{ name: "", price: "", features: [""], highlighted: false }])}>Añadir plan</button>
+        : <>
+          {plans.map((p, i) => <div className="content-row content-row--stack" key={i}>
+            <div className="content-row">
+              <span className="content-field"><input maxLength={40} placeholder="Nombre del plan" value={p.name} onChange={e => setPlans(plans.map((x, j) => j === i ? { ...x, name: e.target.value } : x))}/><Counter value={p.name} max={40}/></span>
+              <span className="content-field"><input maxLength={20} placeholder="$299" value={p.price} onChange={e => setPlans(plans.map((x, j) => j === i ? { ...x, price: e.target.value } : x))}/><Counter value={p.price} max={20}/></span>
+              <label className="content-highlight"><input type="checkbox" checked={!!p.highlighted} onChange={e => setPlans(plans.map((x, j) => j === i ? { ...x, highlighted: e.target.checked } : x))}/> Destacado</label>
+              <button className="ghost content-remove" aria-label="Quitar plan" onClick={() => setPlans(plans.filter((_, j) => j !== i))}>✕</button>
+            </div>
+            {p.features.map((f, k) => <div className="content-row" key={k}>
+              <span className="content-field"><input maxLength={120} placeholder="Qué incluye" value={f} onChange={e => setPlans(plans.map((x, j) => j === i ? { ...x, features: x.features.map((y, l) => l === k ? e.target.value : y) } : x))}/><Counter value={f} max={120}/></span>
+              <button className="ghost content-remove" aria-label="Quitar línea" onClick={() => setPlans(plans.map((x, j) => j === i ? { ...x, features: x.features.filter((_, l) => l !== k) } : x))}>✕</button>
+            </div>)}
+            <button className="ghost" disabled={p.features.length >= 12} onClick={() => setPlans(plans.map((x, j) => j === i ? { ...x, features: [...x.features, ""] } : x))}>Añadir línea</button>
+          </div>)}
+          <button className="ghost" disabled={plans.length >= 6} onClick={() => setPlans([...plans, { name: "", price: "", features: [""], highlighted: false }])}>Añadir otro plan</button>
+        </>}
+    </section>
+
+    {error && <div className="alert">{error}</div>}
+    <button className="primary" disabled={saving} onClick={() => void saveAll()}>{saving ? "Guardando…" : "Guardar contenido"}</button>
+  </div>;
+}
+
 function Editor({ siteId }: { siteId: string }) {
   const PAGE = new URLSearchParams(location.search).get("page") ?? "p_home"; const [doc, setDoc] = useState<any>(null); const [rev, setRev] = useState(0); const [status, setStatus] = useState("Cargando tu editor…"); const [assets, setAssets] = useState<EditorAsset[]>([]); const [uploading, setUploading] = useState(false); const lastData = useRef<any>(null); const [blockers, setBlockers] = useState<string[]>([]);
   // Avisos de estilo (6.5): informan, no bloquean. El dueno decide publicar.
@@ -390,7 +540,7 @@ function Editor({ siteId }: { siteId: string }) {
   // Diseño del constructor (etapa C): pestaña activa, si el chat esta
   // colapsado (mas sitio para el lienzo), que ve el movil y si el agente
   // esta disenando ahora mismo (para el esqueleto animado del lienzo).
-  const [pageTab, setPageTab] = useState<"site" | "domain">("site");
+  const [pageTab, setPageTab] = useState<"site" | "domain" | "content">("site");
   const [chatCollapsed, setChatCollapsed] = useState(false);
   const [mobileView, setMobileView] = useState<"chat" | "site">("chat");
   const [designing, setDesigning] = useState(false);
@@ -607,6 +757,7 @@ function Editor({ siteId }: { siteId: string }) {
       {/* Pestañas: el sitio es lo activo; el dominio, lo que viene despues. */}
       <div className="builder-tabs" role="tablist" aria-label="Secciones del sitio">
         <button role="tab" className="builder-tab" aria-selected={pageTab === "site"} onClick={() => setPageTab("site")}>Sitio</button>
+        <button role="tab" className="builder-tab" aria-selected={pageTab === "content"} onClick={() => setPageTab("content")}>Contenido</button>
         <button role="tab" className="builder-tab" aria-selected={pageTab === "domain"} onClick={() => setPageTab("domain")}>Dominio</button>
       </div>
       <div className="builder-top-actions">
@@ -664,7 +815,7 @@ function Editor({ siteId }: { siteId: string }) {
 
       <section className="builder-canvas" aria-label="Tu sitio">
         <div className="builder-canvas-bar">
-          <span className="builder-canvas-tag">{pageTab === "domain" ? "Dominio" : "Tu sitio"}</span>
+          <span className="builder-canvas-tag">{pageTab === "domain" ? "Dominio" : pageTab === "content" ? "Tu contenido" : "Tu sitio"}</span>
           {/* Plegar el chat da el ancho entero al lienzo para editar a mano. */}
           <div className="builder-canvas-actions">
             <button className="ghost" onClick={() => setChatCollapsed(v => !v)} aria-pressed={chatCollapsed}>
@@ -687,6 +838,10 @@ function Editor({ siteId }: { siteId: string }) {
                   ? <>Tu sitio está en <strong>{publishedUrl.replace("https://", "")}</strong>. Cada cuenta puede tener un sitio publicado a la vez.</>
                   : "Publica el sitio y te damos una dirección. Mientras tanto, el borrador no se sirve en ningún dominio."}</p>
               </div></div>
+            : pageTab === "content"
+              ? <ContentTab siteId={siteId} PAGE={PAGE} doc={docRef.current ?? doc} rev={revRef.current ?? rev}
+                  onSaved={(nextDoc, nextRev) => { docRef.current = nextDoc; revRef.current = nextRev; setDoc(nextDoc); setRev(nextRev); setStatus("Guardado"); }}
+                  onConflict={async () => { await reloadDraft(); }}/>
             : designing || pendingDoc
               ? <div className="builder-skeleton" role="status" aria-label={designing ? "Diseñando tu sitio" : "Cargando tu sitio"}>
                   <div className="builder-skel builder-skel--hero"/>

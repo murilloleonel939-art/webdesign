@@ -40,6 +40,15 @@ test("buildPayload une initialPrompt y composerText con '. ' y recorta a 500", (
   assert.equal(r2.prompt.length, 500);
 });
 
+test("buildPayload marca cambio explícito solo si el dueño escribió en el compositor", () => {
+  // T-027: la marca decide si el rediseño conserva los textos del dueño. Tiene
+  // que salir de dónde escribió, no de comparar textos: la frase de creación del
+  // sitio también viaja en `prompt` y no es una petición de cambio.
+  assert.equal(buildPayload({}, "quiero una web para mi café", "").changeRequest, false);
+  assert.equal(buildPayload({}, undefined, "cambia el titular a Café Aurora").changeRequest, true);
+  assert.equal(buildPayload({ name: "Café" }, undefined, "  ").changeRequest, false);
+});
+
 test("isSendKey", () => {
   assert.equal(isSendKey({ key: "Enter", shiftKey: false, isComposing: false }), true);
   assert.equal(isSendKey({ key: "Enter", shiftKey: true, isComposing: false }), false);

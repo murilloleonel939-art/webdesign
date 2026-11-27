@@ -250,7 +250,14 @@ export function DesignChat({ siteId, initialPrompt, collapsed = false, onDraftCh
       res = await api(`/api/sites/${siteId}/design-runs`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(payload.prompt ? { ...payload.brief, prompt: payload.prompt } : payload.brief),
+        // `changeRequest` viaja solo cuando el dueño escribió en el compositor:
+        // eso es una petición de cambio y el servidor no conserva sus textos
+        // viejos (T-027). Un rediseño sin instrucción sí los conserva.
+        body: JSON.stringify({
+          ...payload.brief,
+          ...(payload.prompt ? { prompt: payload.prompt } : {}),
+          ...(payload.changeRequest ? { changeRequest: true } : {}),
+        }),
       });
     } catch {
       setPhase("asking");
