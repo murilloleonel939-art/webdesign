@@ -26,7 +26,7 @@
 // de disco antes de pedir nada a la red.
 
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { extensionFor, sniffMime, type AssetKind } from "@webdesign/assets";
 import { _resetBankCache, bankRoot, isSector, SECTORS, type Sector } from "./photo-bank.js";
@@ -374,6 +374,61 @@ function manifestIds(doc: ManifestDoc): Set<string> {
 }
 
 /**
+ * Ruta del temporal de una escritura atómica: `<destino>.<uuid>.tmp`.
+ *
+ * Se saca a una función propia y se exporta porque así la propiedad que importa
+ * se comprueba SIN esperas: el temporal vive en el mismo directorio que el
+ * destino —nunca en `os.tmpdir()`— y no se repite entre escrituras. Mirarlo con
+ * un vigía mientras se escribe no es fiable: entre el `writeFile` y el `rename`
+ * pasan microsegundos y los eventos del sistema se agrupan o se duplican, así
+ * que el test acaba contando cosas que no pasaron.
+ */
+export function temporaryPathFor(abs: string): string {
+  return `${abs}.${randomUUID()}.tmp`;
+}
+
+/**
+ * Escritura atómica de un fichero de texto: temporal propio, `writeFile` y
+ * `rename`. Sustituye al `.tmp` de nombre fijo.
+ *
+ * POR QUÉ EL SUFIJO ÚNICO: la plataforma puede correr con MÁS DE UNA RÉPLICA
+ * sobre el mismo volumen (`/data/biblioteca`). Con el temporal siempre llamado
+ * igual (`manifest.json.tmp`), dos procesos que escriben a la vez comparten
+ * fichero: uno escribe encima de lo que el otro acaba de dejar y el `rename`
+ * publica una mezcla de los dos documentos —un JSON imposible de leer—. Con un
+ * sufijo propio cada proceso escribe SU copia y solo publica la suya.
+ *
+ * El temporal vive en el MISMO directorio que el destino, no en `os.tmpdir()`:
+ * `rename` solo es atómico dentro del mismo sistema de ficheros, y `/tmp` puede
+ * ser otro.
+ *
+ * Y si algo falla a mitad, el temporal se borra: un `.tmp` huérfano por cada
+ * fallo acabaría llenando el volumen. El borrado es best-effort y no sustituye
+ * al error original, que es el que hay que ver.
+ *
+ * POR QUÉ SE EXPORTA: es la pieza que de verdad puede corromper un fichero del
+ * banco y se prueba mejor sola —fallos de `writeFile` y `rename`, temporales
+ * simultáneos, barrido del temporal— que montando una construcción entera para
+ * llegar hasta ella. Un test que copiara esta función probaría su copia, no
+ * esto.
+ */
+export async function writeAtomic(abs: string, content: string): Promise<void> {
+  const tmp = temporaryPathFor(abs);
+  try {
+    await writeFile(tmp, content, "utf8");
+    await rename(tmp, abs);
+  } catch (error) {
+    try {
+      await unlink(tmp);
+    } catch {
+      // El temporal puede no existir (si falló el `writeFile`): aquí no hay nada
+      // que hacer, y este error no puede tapar el de verdad.
+    }
+    throw error;
+  }
+}
+
+/**
  * Escritura atómica del manifiesto (`.tmp` + `rename`).
  *
  * DESPUÉS DE CADA FOTO, no al final: si el proceso muere a mitad, el manifiesto
@@ -384,10 +439,7 @@ function manifestIds(doc: ManifestDoc): Set<string> {
 async function writeManifestDoc(root: string, doc: ManifestDoc): Promise<void> {
   const dir = unsplashDir(root);
   await mkdir(dir, { recursive: true });
-  const abs = join(dir, MANIFEST_NAME);
-  const tmp = `${abs}.tmp`;
-  await writeFile(tmp, `${JSON.stringify(doc, null, 2)}\n`, "utf8");
-  await rename(tmp, abs);
+  await writeAtomic(join(dir, MANIFEST_NAME), `${JSON.stringify(doc, null, 2)}\n`);
 }
 
 /** Texto seguro para una celda de tabla Markdown. */
@@ -428,10 +480,7 @@ function creditsMarkdown(doc: ManifestDoc): string {
 async function writeCredits(root: string, doc: ManifestDoc): Promise<void> {
   const dir = unsplashDir(root);
   await mkdir(dir, { recursive: true });
-  const abs = join(dir, CREDITS_NAME);
-  const tmp = `${abs}.tmp`;
-  await writeFile(tmp, creditsMarkdown(doc), "utf8");
-  await rename(tmp, abs);
+  await writeAtomic(join(dir, CREDITS_NAME), creditsMarkdown(doc));
 }
 
 // ---------------------------------------------------------------------------

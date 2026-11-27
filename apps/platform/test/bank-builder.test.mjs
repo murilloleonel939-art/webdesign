@@ -14,6 +14,8 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { createApp } from "../dist/server.js";
 import {
   BankBuildBusyError,
@@ -166,6 +168,8 @@ async function settle(ms = 5000) {
 }
 
 const HERO_ALT = "Modern office interior with wooden desks";
+
+const execFileAsync = promisify(execFile);
 
 /**
  * Pool falso para las rutas del panel: solo las dos consultas que hacen falta
@@ -609,4 +613,71 @@ test("12. un manifiesto corrupto no tumba el servidor: GET /api/operator/bank da
     if (previo === undefined) delete process.env.PHOTO_BANK_ROOT;
     else process.env.PHOTO_BANK_ROOT = previo;
   }
+});
+
+// ---------------------------------------------------------------------------
+// 13. Dos procesos sobre el MISMO volumen: temporales exclusivos
+// ---------------------------------------------------------------------------
+
+// Guion que corre en un proceso aparte: una construcción corta que reescribe el
+// manifiesto y CREDITS.md varias veces. Dos de estos a la vez sobre la misma
+// carpeta es lo que pasa con más de una réplica de la plataforma.
+const CHILD_SCRIPT = `
+import { startBankBuild, getBankBuildState } from __DIST__;
+const root = process.argv[1];
+const tag = process.argv[2];
+const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xc0, 0x00, 0x11, 0x08, 0x03, 0x84, 0x06, 0x40, 0x03,
+  1, 0x11, 0, 2, 0x11, 0, 3, 0x11, 0, 0xff, 0xd9]);
+const items = [0, 1, 2, 3].map((i) => ({
+  id: tag + "-" + i,
+  width: 4000,
+  height: 2250,
+  alt_description: "Modern office interior with wooden desks " + i,
+  urls: { regular: "https://images.unsplash.com/photo-" + tag + "-" + i },
+  links: {
+    html: "https://unsplash.com/photos/" + tag + "-" + i,
+    download_location: "https://api.unsplash.com/photos/" + tag + "-" + i + "/download",
+  },
+  user: { name: "Autora en paralelo", links: { html: "https://unsplash.com/@paralelo" } },
+}));
+const fetchFalso = async (input) => {
+  const url = new URL(String(input));
+  if (url.pathname === "/search/photos") {
+    return new Response(JSON.stringify({ results: items }), { status: 200 });
+  }
+  if (url.hostname === "images.unsplash.com") return new Response(jpeg, { status: 200 });
+  return new Response("{}", { status: 200 });
+};
+startBankBuild(
+  { sectors: ["despacho"], hero: 4, gallery: 0, maxRequests: 40 },
+  { bankRoot: root, fetch: fetchFalso, readCache: async () => undefined, saveCache: async () => ({}) },
+);
+while (getBankBuildState().run !== null) await new Promise((r) => setTimeout(r, 5));
+`;
+
+test("13. dos procesos escriben a la vez sin dejar temporales ni JSON a medias", async () => {
+  const root = await tempRoot();
+  const dist = new URL("../dist/bank-builder.js", import.meta.url).href;
+  const script = CHILD_SCRIPT.replace("__DIST__", JSON.stringify(dist));
+
+  const lanzar = (tag) =>
+    execFileAsync(process.execPath, ["--input-type=module", "-e", script, root, tag], { timeout: 30000 });
+  // En paralelo de verdad: dos procesos, la misma raíz.
+  await Promise.all([lanzar("proc-a"), lanzar("proc-b")]);
+
+  // Ningún temporal huérfano, ni en la raíz del banco ni en el sector.
+  for (const dir of [join(root, "unsplash"), join(root, "unsplash", "despacho")]) {
+    const nombres = await readdir(dir);
+    assert.deepEqual(nombres.filter((n) => n.endsWith(".tmp")), [], `temporales en ${dir}`);
+  }
+
+  // El manifiesto es válido y es de uno de los dos, no una mezcla.
+  const doc = JSON.parse(await readFile(join(root, "unsplash", "manifest.json"), "utf8"));
+  assert.ok(Array.isArray(doc.photos), "photos sigue siendo una lista");
+  assert.ok(doc.photos.length > 0, "alguna foto quedó anotada");
+  assert.ok(doc.photos.every((p) => typeof p.id === "string" && typeof p.file === "string"));
+
+  // Y los créditos se pueden leer enteros.
+  const creditos = await readFile(join(root, "unsplash", "CREDITS.md"), "utf8");
+  assert.match(creditos, /^\| Foto \| Autor \| Licencia \|$/m);
 });
