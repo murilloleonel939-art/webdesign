@@ -83,7 +83,7 @@ function scanRaw(input: unknown, licensed: Set<string>): LintFinding[] {
         }
       }
 
-      if (type === "testimonial" && props["ownerProvided"] !== true) {
+      if ((type === "testimonial" || type === "testimonials") && props["ownerProvided"] !== true) {
         out.push({ code: "TESTIMONIAL_UNVERIFIED", severity: "error", pageId: pid, sectionId: sid, message: "lint.testimonialUnverified", autofixable: false });
       }
 

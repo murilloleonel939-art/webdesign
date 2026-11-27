@@ -9,7 +9,7 @@ const html = (section, opts) => renderToStaticMarkup(renderSection(section, opts
 
 test("every section type has a component", () => {
   assert.deepEqual(Object.keys(SECTION_COMPONENTS).sort(), [
-    "contact", "cta", "faq", "features", "gallery", "hero", "image", "pricing", "testimonial", "text",
+    "contact", "cta", "faq", "features", "gallery", "hero", "image", "metrics", "pricing", "testimonial", "testimonials", "text",
   ]);
 });
 
@@ -131,4 +131,29 @@ test("un hero con foto lleva hero--image y no el grafico", () => {
 test("el hero grafico se estila por clase, nunca por style en linea (CSP)", () => {
   const out = html({ id: "s1", type: "hero", props: { headline: "h", subline: "s" } });
   assert.equal(/\sstyle=/.test(out), false);
+});
+
+// T-025
+test("testimonials: sin confirmación del dueño no pinta citas; con ella, cita, nombre y rol sin foto", () => {
+  const props = { items: [{ quote: "Muy bien", name: "Ana", role: "Paciente" }] };
+  const off = html({ id: "s_t", type: "testimonials", props });
+  assert.ok(!off.includes("blockquote"));
+  const on = html({ id: "s_t", type: "testimonials", props: { ...props, ownerProvided: true } });
+  assert.match(on, /<blockquote>Muy bien<\/blockquote>/);
+  assert.match(on, /testimonials__name">Ana/);
+  assert.match(on, /testimonials__role">Paciente/);
+  assert.ok(!on.includes("<img"), "sin avatar");
+  assert.ok(!on.includes("style="), "sin estilos inline");
+});
+
+test("metrics: cifra y etiqueta como lista de definición", () => {
+  const out = html({ id: "s_m", type: "metrics", props: { heading: "En cifras", items: [{ value: "4,9 de 5", label: "en Google" }] } });
+  assert.match(out, /<h2>En cifras<\/h2>/);
+  assert.match(out, /<dt>en Google<\/dt><dd>4,9 de 5<\/dd>/);
+  assert.ok(!out.includes("style="));
+});
+
+test("pricing: el plan destacado lleva su clase", () => {
+  const out = html({ id: "s_p", type: "pricing", props: { plans: [{ name: "A", price: "1", features: [] }, { name: "B", price: "2", features: [], highlighted: true }] } });
+  assert.equal((out.match(/pricing__plan--featured/g) ?? []).length, 1);
 });

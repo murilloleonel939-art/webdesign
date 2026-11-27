@@ -119,12 +119,13 @@ export function FeaturesSection({ section }: SectionProps) {
 export function PricingSection({ section }: SectionProps) {
   const p = section.props as { heading?: unknown; plans?: unknown };
   const heading = typeof p.heading === "string" && p.heading.trim() ? p.heading : undefined;
-  const plans = Array.isArray(p.plans) ? (p.plans as { name: string; price: string; features: string[] }[]) : [];
+  const plans = Array.isArray(p.plans) ? (p.plans as { name: string; price: string; features: string[]; highlighted?: boolean }[]) : [];
   return (
     <section className="pricing" data-section-id={section.id}>
       {heading ? <h2>{heading}</h2> : null}
       {plans.map((plan, i) => (
-        <article key={i} className="pricing__plan">
+        // T-025: el plan destacado se marca con clase, no con estilo inline.
+        <article key={i} className={plan.highlighted === true ? "pricing__plan pricing__plan--featured" : "pricing__plan"}>
           <h3>{plan.name}</h3>
           <p className="pricing__price">{plan.price}</p>
           <ul>{Array.isArray(plan.features) ? plan.features.map((f, j) => <li key={j}>{f}</li>) : null}</ul>
@@ -144,6 +145,56 @@ export function TestimonialSection({ section }: SectionProps) {
     <section className="testimonial" data-section-id={section.id}>
       <blockquote>{quote}</blockquote>
       <cite>{author}</cite>
+    </section>
+  );
+}
+
+/**
+ * Varios testimonios (T-025): cita, nombre y rol. Sin foto a proposito: no hay
+ * retratos y un avatar de banco al lado de un nombre real seria mentir.
+ * Igual que `TestimonialSection`, sin la confirmacion del dueno no se pinta.
+ */
+export function TestimonialsSection({ section }: SectionProps) {
+  const p = section.props as { heading?: unknown; items?: unknown; ownerProvided?: unknown };
+  if (p.ownerProvided !== true) return <section className="testimonials" data-section-id={section.id} />;
+  const heading = typeof p.heading === "string" && p.heading.trim() ? p.heading : undefined;
+  const items = Array.isArray(p.items) ? (p.items as { quote?: unknown; name?: unknown; role?: unknown }[]) : [];
+  return (
+    <section className="testimonials" data-section-id={section.id}>
+      {heading ? <h2>{heading}</h2> : null}
+      <ul>
+        {items.map((it, i) => (
+          <li key={i}>
+            <figure>
+              <blockquote>{typeof it.quote === "string" ? it.quote : ""}</blockquote>
+              <figcaption>
+                <span className="testimonials__name">{typeof it.name === "string" ? it.name : ""}</span>
+                {typeof it.role === "string" && it.role.trim() ? <span className="testimonials__role">{it.role}</span> : null}
+              </figcaption>
+            </figure>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+/** Cifras con etiqueta (T-025). La cifra es texto: «4,9 de 5» no se formatea. */
+export function MetricsSection({ section }: SectionProps) {
+  const p = section.props as { heading?: unknown; items?: unknown };
+  const heading = typeof p.heading === "string" && p.heading.trim() ? p.heading : undefined;
+  const items = Array.isArray(p.items) ? (p.items as { value?: unknown; label?: unknown }[]) : [];
+  return (
+    <section className="metrics" data-section-id={section.id}>
+      {heading ? <h2>{heading}</h2> : null}
+      <dl>
+        {items.map((it, i) => (
+          <div key={i} className="metrics__item">
+            <dt>{typeof it.label === "string" ? it.label : ""}</dt>
+            <dd>{typeof it.value === "string" ? it.value : ""}</dd>
+          </div>
+        ))}
+      </dl>
     </section>
   );
 }
@@ -172,8 +223,12 @@ export function ContactSection({ section, editing }: SectionProps) {
     <section className="contact" data-section-id={section.id}>
       {email ? <a href={`mailto:${encodeURIComponent(email)}`}>{email}</a> : null}
       {phone ? <a href={`tel:${phone.replace(/[^\d+]/g, "")}`}>{phone}</a> : null}
-      {editing ? null : <LeadForm />}
-      <Cta cta={p.cta} editing={false} />
+      {/* T-023: en la pagina publicada el formulario ES la accion de contacto.
+          El CTA del documento se pintaba ademas del formulario y quedaban dos
+          botones a 60 px uno de otro ("Enviar" y "Escribir"), ninguno alineado
+          con los campos. En el editor no hay formulario, asi que ahi el CTA
+          sigue haciendo de marcador. */}
+      {editing ? <Cta cta={p.cta} editing={editing} /> : <LeadForm />}
     </section>
   );
 }
@@ -232,6 +287,8 @@ export const SECTION_COMPONENTS = {
   features: FeaturesSection,
   pricing: PricingSection,
   testimonial: TestimonialSection,
+  testimonials: TestimonialsSection,
+  metrics: MetricsSection,
   faq: FaqSection,
   contact: ContactSection,
   cta: CtaSection,

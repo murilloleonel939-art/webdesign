@@ -679,7 +679,9 @@ test("completitud: faq podada a 1 -> las 3 genéricas, sin nada del modelo", () 
   assert.equal(copy.faq.length, 1);
 
   const doc = draftSite(brief, PRESET, copy);
-  const faq = doc.pages[0].sections.find((s) => s.type === "faq");
+  // T-025: la portada de una cafetería sale de su patrón (sin FAQ); la FAQ
+  // vive en /sobre-nosotros, que conserva su estructura.
+  const faq = doc.pages.flatMap((p) => p.sections).find((s) => s.type === "faq");
   assert.deepEqual(faq.props.items, genericCopy(brief).faq);
   assert.doesNotMatch(JSON.stringify(doc), /¿Tenéis terraza\?|400 clientes/);
 });
@@ -1159,9 +1161,9 @@ test("Fix F: el texto del modelo que sí es suyo se sigue marcando como tal", ()
   const brief = normalizeBrief(BRIEF);
   const copy = guardCopy(validCopy(), brief).copy;
   const plan = planSections(brief, PRESET, copy);
-  // T-003.3: plan.pages[0] = portada con features y faq.
+  // T-025: features sigue en portada; la FAQ de una cafetería está en /sobre-nosotros.
   assert.equal(plan.pages[0].sections.find((s) => s.type === "features").origin, "copy_del_dueno");
-  assert.equal(plan.pages[0].sections.find((s) => s.type === "faq").origin, "copy_del_dueno");
+  assert.equal(plan.pages.flatMap((p) => p.sections).find((s) => s.type === "faq").origin, "copy_del_dueno");
 });
 
 // --- T-002.8: límites sistemáticos y origen separado del motivo -------------

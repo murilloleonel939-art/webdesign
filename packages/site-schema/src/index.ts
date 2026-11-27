@@ -3,7 +3,7 @@ import { z } from "zod";
 // Esquema del documento de sitio (spec 6.1). Formato canónico del que dependen
 // editor, agentes y renderer. Tipo desconocido = rechazado.
 
-export const SECTION_TYPES = ["hero", "text", "image", "gallery", "features", "pricing", "testimonial", "faq", "contact", "cta"] as const;
+export const SECTION_TYPES = ["hero", "text", "image", "gallery", "features", "pricing", "testimonial", "testimonials", "metrics", "faq", "contact", "cta"] as const;
 export type SectionType = (typeof SECTION_TYPES)[number];
 
 // Esquemas de enlace permitidos (spec 6.2). Nada de javascript: ni data:.
@@ -86,10 +86,19 @@ const propsByType: Record<SectionType, z.ZodTypeAny> = {
   image: z.object({ assetId: z.string(), alt: z.string().max(200).optional() }),
   gallery: z.object({ assetIds: z.array(z.string()).max(24) }),
   features: z.object({ heading: z.string().max(120).optional(), items: z.array(z.object({ title: z.string().max(80), body: z.string().max(300) })).max(12) }),
-  pricing: z.object({ heading: z.string().max(120).optional(), plans: z.array(z.object({ name: z.string().max(40), price: z.string().max(20), features: z.array(z.string().max(120)).max(12) })).max(6) }),
+  // `highlighted` marca el plan destacado (T-025). Opcional: los documentos ya
+  // guardados siguen validando y sin el ningun plan se destaca.
+  pricing: z.object({ heading: z.string().max(120).optional(), plans: z.array(z.object({ name: z.string().max(40), price: z.string().max(20), features: z.array(z.string().max(120)).max(12), highlighted: z.boolean().optional() })).max(6) }),
   // `ownerProvided` es booleano para que el linter pueda reportar TESTIMONIAL_UNVERIFIED;
   // solo el dueno puede ponerlo a true (spec 6.2) y el renderer no publica sin el.
   testimonial: z.object({ quote: z.string().max(600), author: z.string().max(80), ownerProvided: z.boolean().optional() }),
+  // Varios testimonios en un bloque (T-025): cita, nombre y rol, SIN foto (no
+  // hay retratos y un avatar falso miente). Misma regla que `testimonial`:
+  // sin `ownerProvided` el linter da TESTIMONIAL_UNVERIFIED y no se publica.
+  testimonials: z.object({ heading: z.string().max(120).optional(), items: z.array(z.object({ quote: z.string().max(600), name: z.string().max(80), role: z.string().max(80).optional() })).max(6), ownerProvided: z.boolean().optional() }),
+  // Cifras con etiqueta («15 años», «4,9 de 5»). Solo datos del dueno: el
+  // agente no escribe esta seccion sin ellos (T-025).
+  metrics: z.object({ heading: z.string().max(120).optional(), items: z.array(z.object({ value: z.string().max(20), label: z.string().max(80) })).max(6) }),
   faq: z.object({ items: z.array(z.object({ q: z.string().max(200), a: z.string().max(1200) })).max(20) }),
   contact: z.object({ email: z.string().email().optional(), phone: z.string().max(30).optional(), cta: ctaSchema.optional() }),
   cta: z.object({ headline: z.string().max(120), cta: ctaSchema }),

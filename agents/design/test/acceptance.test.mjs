@@ -54,7 +54,9 @@ const SKIP_COPY = JSON.stringify({
   ],
   processHeading: "Cómo trabajamos",
   process: [{ title: "Nos escribes", body: "Cuéntanos qué necesitas." }],
-  aboutHeading: "Quiénes somos",
+  // T-025: la portada compuesta pone el texto antes de las ventajas; sin su
+  // titular, el salto h1 -> h3 que esta prueba necesita sigue siendo alcanzable.
+  aboutHeading: "",
   aboutBody: "Cafetería de especialidad en Valencia.",
   faq: [],
   closingHeadline: "Hablemos",

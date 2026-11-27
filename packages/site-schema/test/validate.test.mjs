@@ -179,3 +179,24 @@ test("design.ownerPrompt no admite mas de 500 caracteres", () => {
   d.design.ownerPrompt = "a".repeat(501);
   assert.equal(validateSiteDocument(d).ok, false);
 });
+
+// T-025: testimonios, cifras y plan destacado.
+test("testimonials, metrics y pricing destacado validan con la forma esperada", () => {
+  const d = doc();
+  d.pages[0].sections.push(
+    { id: "s_t", type: "testimonials", props: { heading: "Opiniones", items: [{ quote: "Muy bien", name: "Ana", role: "Paciente" }, { quote: "Genial", name: "Luis" }], ownerProvided: true } },
+    { id: "s_m", type: "metrics", props: { items: [{ value: "15 años", label: "abiertos" }, { value: "4,9 de 5", label: "en Google" }] } },
+    { id: "s_p", type: "pricing", props: { plans: [{ name: "Básico", price: "40 €", features: ["a"] }, { name: "Pro", price: "90 €", features: ["b"], highlighted: true }] } },
+  );
+  const r = validateSiteDocument(d);
+  assert.equal(r.ok, true, r.ok ? "" : r.errors.join("; "));
+});
+
+test("testimonials sin nombre o metrics sin etiqueta se rechazan", () => {
+  const a = doc();
+  a.pages[0].sections.push({ id: "s_t", type: "testimonials", props: { items: [{ quote: "q" }] } });
+  assert.equal(validateSiteDocument(a).ok, false);
+  const b = doc();
+  b.pages[0].sections.push({ id: "s_m", type: "metrics", props: { items: [{ value: "15" }] } });
+  assert.equal(validateSiteDocument(b).ok, false);
+});

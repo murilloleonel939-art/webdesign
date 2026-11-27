@@ -187,6 +187,9 @@ export async function runFastDesign(deps: FastDesignDeps): Promise<FastDesignRes
   // 3b. Inventario y plan: decisiones en datos, antes de escribir nada.
   const inv = inventory(brief);
   const plan = planSections(brief, preset, copy, photos);
+  // T-025: lo que el patrón pedía y no se escribió (sin tipo o sin datos del
+  // dueño) se avisa aquí; el documento no lo lleva.
+  warnings.push(...plan.warnings);
 
   // 4. Checkpoint antes de tocar nada (spec 9.1, paso 5).
   const store = createStore(doc);

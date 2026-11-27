@@ -90,17 +90,21 @@ export function mergeEditedPage(original: SiteDocument, edited: SiteDocument): S
 
 // `ownerProvided` de un testimonio solo lo fija el dueno desde la interfaz (spec 6.2).
 // Un agente nunca puede escribirlo: se fuerza a lo que ya habia.
+// Tipos con `ownerProvided` (T-025 anade `testimonials`): ninguno puede llegar
+// verificado de la mano de un agente.
+const OWNER_ONLY = new Set(["testimonial", "testimonials"]);
+
 export function guardOwnerOnlyFields(original: SiteDocument, next: SiteDocument, actorType: "user" | "agent"): SiteDocument {
   if (actorType === "user") return next;
   const allowed = new Set(
-    original.pages.flatMap((p) => p.sections.filter((s) => s.type === "testimonial").map((s) => s.id)),
+    original.pages.flatMap((p) => p.sections.filter((s) => OWNER_ONLY.has(s.type)).map((s) => s.id)),
   );
   return {
     ...next,
     pages: next.pages.map((p) => ({
       ...p,
       sections: p.sections.map((s) => {
-        if (s.type !== "testimonial") return s;
+        if (!OWNER_ONLY.has(s.type)) return s;
         const prev = original.pages
           .flatMap((op) => op.sections)
           .find((os) => os.id === s.id);

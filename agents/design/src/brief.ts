@@ -47,6 +47,15 @@ export const quickBriefSchema = z.object({
    * de 9.1 sigue mandando (no se inventan clientes, cifras ni testimonios).
    */
   description: text(500).optional(),
+  /**
+   * Prueba social y precios que APORTA EL DUEÑO (T-025). Opcionales y fuera de
+   * `BRIEF_FIELDS`: no se piden en el modo rápido ni cuentan como pendientes.
+   * Es la única fuente de las secciones `testimonials`, `pricing` y `metrics`:
+   * sin esto, el agente las omite. Nunca se rellenan con una suposición.
+   */
+  testimonials: z.array(z.object({ quote: text(600), name: text(80), role: text(80).optional() })).max(6).optional(),
+  plans: z.array(z.object({ name: text(40), price: text(20), features: z.array(text(120)).max(12), highlighted: z.boolean().optional() })).max(3).optional(),
+  metrics: z.array(z.object({ value: text(20), label: text(80) })).max(4).optional(),
 });
 
 export type QuickBriefInput = z.infer<typeof quickBriefSchema>;
@@ -70,6 +79,38 @@ export interface QuickBrief {
   description?: string;
   /** Campos que faltaban y quedaron con el marcador. Nunca vacío por suposición. */
   pending: BriefField[];
+  /**
+   * Datos del dueño para prueba social y precios (T-025), ya sin marcador.
+   * Se omite la clave si no dio ninguno: así se distingue «no lo dio» de «vacío».
+   */
+  proof?: OwnerProof;
+}
+
+export interface OwnerTestimonial { quote: string; name: string; role?: string }
+export interface OwnerPlan { name: string; price: string; features: string[]; highlighted?: boolean }
+export interface OwnerMetric { value: string; label: string }
+
+/** Lo único de lo que pueden salir testimonios, precios y cifras. */
+export interface OwnerProof {
+  testimonials?: OwnerTestimonial[];
+  plans?: OwnerPlan[];
+  metrics?: OwnerMetric[];
+}
+
+/**
+ * Copia los datos de prueba del dueño, descartando cualquier elemento con el
+ * marcador (B1). Devuelve `undefined` si no queda nada.
+ */
+function ownerProof(data: QuickBriefInput): OwnerProof | undefined {
+  const clean = (v: unknown) => !containsMarker(JSON.stringify(v));
+  const out: OwnerProof = {};
+  const testimonials = (data.testimonials ?? []).filter(clean).map((t) => (t.role ? { quote: t.quote, name: t.name, role: t.role } : { quote: t.quote, name: t.name }));
+  const plans = (data.plans ?? []).filter(clean).map((p) => (p.highlighted === true ? { name: p.name, price: p.price, features: p.features, highlighted: true } : { name: p.name, price: p.price, features: p.features }));
+  const metrics = (data.metrics ?? []).filter(clean).map((m) => ({ value: m.value, label: m.label }));
+  if (testimonials.length > 0) out.testimonials = testimonials;
+  if (plans.length > 0) out.plans = plans;
+  if (metrics.length > 0) out.metrics = metrics;
+  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 /** Etiqueta en español de cada campo, para el mensaje de vuelta al dueño. */
@@ -128,6 +169,8 @@ export function normalizeBrief(input: unknown): QuickBrief {
       given.city = described.city;
     }
   }
+  const proof = parsed.success ? ownerProof(parsed.data) : undefined;
+  if (proof !== undefined) out.proof = proof;
   // `pending` se construye al final, con los campos ya rellenados: lo que salió
   // de la frase no se le vuelve a pedir al dueño en el panel.
   for (const field of BRIEF_FIELDS) {

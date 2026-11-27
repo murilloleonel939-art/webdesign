@@ -3,7 +3,7 @@ import { PENDING_MARKER, containsMarker, siteName, type QuickBrief } from "./bri
 import type { SiteCopy } from "./copy.js";
 import { briefValueOk } from "./copy.js";
 import { genericCopy } from "./generic-copy.js";
-import { GALLERY_MIN, completeCopy, ownerContact, plannedTypes, planSections } from "./plan.js";
+import { GALLERY_MIN, MIN_METRICS, MIN_PLANS, MIN_TESTIMONIALS, completeCopy, ownerContact, plannedTypes, planSections } from "./plan.js";
 import { classifyShape } from "./classify.js";
 
 // Borrador del modo rápido (spec 9.1, paso 6).
@@ -132,9 +132,28 @@ function buildSection(type: string, id: string, brief: QuickBrief, copy: SiteCop
       };
     case "contact":
       return { id, type: "contact", props: contactProps(brief) };
+    case "testimonials": {
+      // T-025: solo los testimonios que dio el dueño en su brief, tal cual. Sin
+      // ellos no hay sección: no existe un testimonio «genérico» honesto.
+      // `ownerProvided` es verdad porque el texto lo escribió él, no el modelo.
+      const items = brief.proof?.testimonials ?? [];
+      if (items.length < MIN_TESTIMONIALS) return undefined;
+      return { id, type: "testimonials", props: { heading: "Opiniones", items: items.slice(0, 3), ownerProvided: true } };
+    }
+    case "pricing": {
+      // T-025: precios del dueño, nunca de ejemplo. El preset de landing sigue
+      // omitiendo `pricing` en el plan, así que esto solo lo pide la portada.
+      const plans = brief.proof?.plans ?? [];
+      if (plans.length < MIN_PLANS) return undefined;
+      return { id, type: "pricing", props: { heading: "Precios", plans: plans.slice(0, 3) } };
+    }
+    case "metrics": {
+      const items = brief.proof?.metrics ?? [];
+      if (items.length < MIN_METRICS) return undefined;
+      return { id, type: "metrics", props: { heading: "En cifras", items: items.slice(0, 4) } };
+    }
     case "testimonial":
-    case "pricing":
-      // Inventar un testimonio o un precio es justo lo que 9.1 prohíbe.
+      // Inventar un testimonio es justo lo que 9.1 prohíbe.
       return undefined;
     case "image":
       return undefined;

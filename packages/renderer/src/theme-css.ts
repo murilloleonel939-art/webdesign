@@ -12,12 +12,30 @@ import type { SiteDocument } from "@webdesign/site-schema";
 
 type Theme = SiteDocument["theme"];
 
-// Solo pilas del sistema: la CSP del sitio no permite fuentes externas y
-// cargar Google Fonts revelaria el sitio del cliente a un tercero. La familia
-// elegida va primera por si el dueno la tiene instalada; si no, cae a la pila
-// del sistema sin dejar el texto sin tipografia.
-const SANS = 'system-ui, "Segoe UI", Roboto, Helvetica, Arial, sans-serif';
+// Solo pilas del sistema. La CSP del sitio es `default-src 'self'` y no tiene
+// `font-src`, asi que la unica forma de traer un .woff2 seria servirlo desde el
+// dominio de cada sitio: eso vive en el release y en Caddy, no en esta hoja.
+// Mientras no exista esa ruta, el CSS no puede prometer una familia que no va a
+// llegar: en produccion `document.fonts` estaba vacio y "Fraunces" se pintaba
+// con Times. Por eso cada pila lleva, despues del nombre comercial, serif y
+// sans REALES que el sistema ya tiene instaladas; el nombre va primero porque
+// si el dueno la tiene, manda.
+const SANS = 'system-ui, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif';
+// Cola serif. Cada pila serif termina exactamente en esta cadena.
 const SERIF = 'ui-serif, Georgia, "Times New Roman", Times, serif';
+// Candidatas serif reales por plataforma, antes de la cola: macOS trae Iowan
+// Old Style y Palatino, Windows Palatino Linotype, Book Antiqua y Georgia,
+// Linux Liberation Serif, DejaVu Serif y Noto Serif. Sin ellas, todas las serif
+// caian en el mismo Times.
+//
+// Lo que esta pila NO puede hacer: inventar una serif en un equipo que no tenga
+// ninguna. Medido con Chromium en un contenedor Linux, todas las candidatas
+// menos FreeSerif dan el mismo ancho para la misma cadena (624 px): el sistema
+// tiene una sola serif. Diferenciar de verdad las serif del catalogo exige
+// servir .woff2 desde el dominio del sitio, y eso vive en el release, no aqui.
+const BOOK_SERIF = '"Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua"';
+const LINUX_SERIF = '"Liberation Serif", "DejaVu Serif", "Noto Serif"';
+const CHARTER = 'Charter, "Bitstream Charter"';
 
 const FAMILY_FALLBACK: Record<string, string> = {
   Inter: `Inter, ${SANS}`,
@@ -27,18 +45,20 @@ const FAMILY_FALLBACK: Record<string, string> = {
   "Space Grotesk": `"Space Grotesk", ${SANS}`,
   Nunito: `Nunito, ${SANS}`,
   // Las serif nunca bajan al cuerpo: se reservan a los titulares.
-  Serif: `"Iowan Old Style", Palatino, ${SERIF}`,
-  "Source Serif 4": `"Source Serif 4", Charter, ${SERIF}`,
-  Fraunces: `Fraunces, "Hoefler Text", ${SERIF}`,
-  Merriweather: `Merriweather, Charter, ${SERIF}`,
+  Serif: `${BOOK_SERIF}, ${CHARTER}, ${LINUX_SERIF}, ${SERIF}`,
+  "Source Serif 4": `"Source Serif 4", ${BOOK_SERIF}, ${CHARTER}, ${LINUX_SERIF}, ${SERIF}`,
+  Fraunces: `Fraunces, ${BOOK_SERIF}, ${CHARTER}, ${LINUX_SERIF}, ${SERIF}`,
+  Merriweather: `Merriweather, ${BOOK_SERIF}, ${LINUX_SERIF}, ${SERIF}`,
   Mono: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
 };
 
+// Familias serif del catalogo. Lista explicita y no una comprobacion sobre el
+// nombre: "Fraunces" y "Merriweather" no terminan en "Serif" y "Space Grotesk"
+// no es una serif que se pueda deducir leyendo el texto.
+const SERIF_FAMILIES = new Set(["Serif", "Source Serif 4", "Fraunces", "Merriweather"]);
+
 function isSerif(name: string): boolean {
-  // Las claves de FAMILY_FALLBACK cuya pila usa una serif del sistema
-  // (`SERIF`): el nombre comercial no siempre termina en "Serif"
-  // ("Fraunces", "Merriweather"), asi que no sirve una regexp sobre el nombre.
-  return FAMILY_FALLBACK[name]?.includes(SERIF) ?? false;
+  return SERIF_FAMILIES.has(name);
 }
 
 function family(name: string): string {
@@ -97,8 +117,22 @@ img{max-width:100%;height:auto}
 a:focus-visible,button:focus-visible,summary:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px solid var(--accent);outline-offset:3px;border-radius:2px}
 section{padding:var(--gap) var(--margin);max-width:1140px;margin-inline:auto}
 
+/* Dos escalones de ritmo. Antes las ocho secciones compartian el mismo
+   \`padding\` y la pagina se apilaba con un unico tempo durante 4300 px: ni un
+   respiro corto, ni una seccion a sangre, nada que marcase el compas. Las
+   secciones de contenido respiran al doble y las de servicio a la mitad. */
+.features,.gallery,.pricing{padding-block:calc(var(--gap) * 1.5)}
+.faq,.contact{padding-block:calc(var(--gap) * .7)}
+
 /* Etiqueta de seccion: el hilo conductor del ritmo editorial. */
 .section-eyebrow{display:block;text-transform:uppercase;letter-spacing:.18em;font-size:.78rem;font-weight:700;color:var(--accent);margin-bottom:.9rem}
+/* Abridor de seccion. El esquema del sitio no tiene campo de etiqueta y aqui no
+   se inventa copy, asi que el eyebrow se dibuja: una raya de acento del mismo
+   ancho en las nueve secciones que abren con titular. Es el recurso que
+   sustituye al h2 pelado que arrancaba cada bloque a peso igual. */
+section[data-section-id]>h2::before{content:"";display:block;width:clamp(28px,4vw,44px);height:.22rem;margin:0 0 1.1rem;border-radius:min(2px,var(--radius));background:var(--accent)}
+.cta-block>h2::before{margin-inline:auto;background:var(--ground)}
+
 /* Cta pinta un <a class="cta">, no un enlace dentro de .cta: el selector
    .cta a nunca casaba y los botones salian como enlace subrayado. Se conserva
    la forma antigua por si algun preset envuelve el boton. */
@@ -113,7 +147,7 @@ section{padding:var(--gap) var(--margin);max-width:1140px;margin-inline:auto}
 
 // ---------------------------------------------------------------------------
 // Maquetacion de secciones. Se mantiene aparte para que el bloque de arriba
-// quede legible; `themeCss` (unico export que usan el renderer y el editor)
+// quede legible; \`themeCss\` (unico export que usan el renderer y el editor)
 // concatena esta parte al final.
 // ---------------------------------------------------------------------------
 function themeLayoutCss(theme: Theme): string {
@@ -123,15 +157,19 @@ function themeLayoutCss(theme: Theme): string {
    \`.hero--graphic\`). */
 .hero{position:relative;min-height:78vh;display:flex;flex-direction:column;justify-content:flex-end;align-items:flex-start;gap:0;padding-top:calc(var(--gap) * 1.6);padding-bottom:calc(var(--gap) * 1.2);background-color:var(--ground)}
 .hero > *{position:relative;z-index:10}
-.hero h1{font-size:calc(clamp(2.6rem,6vw,5.2rem) * ${s});letter-spacing:-.035em;line-height:1.02;font-weight:800;max-width:18ch;margin-bottom:.3em}
+.hero h1{font-size:calc(clamp(2.6rem,4.4vw,4rem) * ${s});letter-spacing:-.03em;line-height:1.02;font-weight:800;max-width:24ch;margin-bottom:.3em}
 .hero p{font-size:calc(1.25rem * ${s});opacity:.75;max-width:52ch;margin-bottom:0}
 .hero .cta,.cta-block .cta{margin-top:2.2rem}
 .hero--center{text-align:center;align-items:center}
 .hero--center h1,.hero--center p{margin-inline:auto}
-/* Si el hero lleva imagen, el texto se queda a la izquierda y la imagen
-   respira a la derecha. */
-.hero--image{display:grid;grid-template-columns:1.1fr .9fr;align-items:center;gap:calc(var(--gap) * .5)}
-.hero img{width:100%;height:auto;border-radius:calc(var(--radius) + 10px);box-shadow:0 30px 60px -30px color-mix(in srgb,var(--ink) 45%,transparent);object-fit:cover}
+/* Si el hero lleva imagen, el texto manda y la foto acompana: 1.4 contra .6.
+   Con \`1.1fr .9fr\` el titular se quedaba en 548 px y un titular de 54
+   caracteres rompia en cinco lineas de dos palabras. La foto baja de 448 a
+   ~300 px y el titular baja a tres lineas. */
+.hero--image{display:grid;grid-template-columns:1.4fr .6fr;align-items:center;gap:calc(var(--gap) * .5)}
+/* El radio del preset es para botones y tarjetas, no para la fotografia: con
+   \`pill\` el hero medía border-radius:1009px y la foto salia como un huevo. */
+.hero img{width:100%;height:auto;border-radius:min(12px,var(--radius));box-shadow:0 30px 60px -30px color-mix(in srgb,var(--ink) 45%,transparent);object-fit:cover}
 .hero--full{min-height:92vh}
 
 /* Hero SIN foto. El defecto no era el fondo liso: era que un titular suelto
@@ -161,20 +199,24 @@ function themeLayoutCss(theme: Theme): string {
 
 /* Ventajas en bento: seis columnas, la primera pieza ocupa cuatro y el resto
    dos. No es una rejilla uniforme de tarjetas iguales, que es el tic que hace
-   que todos los sitios parezcan el mismo. */
+   que todos los sitios parezcan el mismo.
+   El adorno se acota con \`:not(.features--steps)\` a proposito: antes
+   \`.features li:nth-child(6n+2)::before\` (especificidad 0,2,2) ganaba a
+   \`.features--steps li::before\` (0,1,2) y los pasos 02 y 03 se pintaban como un
+   circulo y un cuadrado en vez de numerarse. */
 .features ul,.features>ul{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(6,1fr);gap:calc(var(--gap) * .3)}
-.features li{grid-column:span 2;position:relative;display:flex;flex-direction:column;padding:1.7rem;border:1px solid color-mix(in srgb,var(--ink) 12%,transparent);border-radius:var(--radius);background:color-mix(in srgb,var(--ink) 3%,var(--ground));transition:transform 180ms ease,opacity 180ms ease}
-.features li:first-child{grid-column:span 4;grid-row:span 2;justify-content:flex-end;padding:2.2rem;background:color-mix(in srgb,var(--accent) 10%,var(--ground));border-color:color-mix(in srgb,var(--accent) 32%,transparent)}
-.features li:first-child h3{font-size:calc(1.7rem * ${s})}
+.features li{grid-column:span 2;position:relative;display:flex;flex-direction:column;padding:1.7rem;border:1px solid color-mix(in srgb,var(--ink) 12%,transparent);border-radius:min(12px,var(--radius));background:color-mix(in srgb,var(--ink) 3%,var(--ground));transition:transform 180ms ease,opacity 180ms ease}
+.features:not(.features--steps) li:first-child{grid-column:span 4;grid-row:span 2;justify-content:flex-end;padding:2.2rem;background:color-mix(in srgb,var(--accent) 10%,var(--ground));border-color:color-mix(in srgb,var(--accent) 32%,transparent)}
+.features:not(.features--steps) li:first-child h3{font-size:calc(1.7rem * ${s})}
 .features li:hover{transform:translateY(-3px);border-color:color-mix(in srgb,var(--accent) 45%,transparent)}
 /* Icono dibujado con CSS: cuadro redondeado tintado y un glifo por tarjeta.
    Ni SVG en linea ni data URI: la CSP solo permite self y https:. */
-.features li::before{content:"\\25C6";display:grid;place-items:center;width:44px;height:44px;margin-bottom:1.1rem;border-radius:14px;background:color-mix(in srgb,var(--accent) 18%,transparent);color:var(--accent);font-size:1.05rem;line-height:1}
-.features li:nth-child(6n+2)::before{content:"\\25CF";border-radius:50%}
-.features li:nth-child(6n+3)::before{content:"\\25A0";border-radius:8px}
-.features li:nth-child(6n+4)::before{content:"\\25B2";border-radius:6px}
-.features li:nth-child(6n+5)::before{content:"\\25C7";border-radius:14px}
-.features li:nth-child(6n+6)::before{content:"\\25CB";border-radius:50%}
+.features:not(.features--steps) li::before{content:"\\25C6";display:grid;place-items:center;width:44px;height:44px;margin-bottom:1.1rem;border-radius:14px;background:color-mix(in srgb,var(--accent) 18%,transparent);color:var(--accent);font-size:1.05rem;line-height:1}
+.features:not(.features--steps) li:nth-child(6n+2)::before{content:"\\25CF";border-radius:50%}
+.features:not(.features--steps) li:nth-child(6n+3)::before{content:"\\25A0";border-radius:8px}
+.features:not(.features--steps) li:nth-child(6n+4)::before{content:"\\25B2";border-radius:6px}
+.features:not(.features--steps) li:nth-child(6n+5)::before{content:"\\25C7";border-radius:14px}
+.features:not(.features--steps) li:nth-child(6n+6)::before{content:"\\25CB";border-radius:50%}
 .features h3{font-size:calc(1.15rem * ${s});margin-bottom:.45em}
 .features p{margin:0;opacity:.78;font-size:.95em;max-width:46ch}
 
@@ -182,23 +224,49 @@ function themeLayoutCss(theme: Theme): string {
    id de la seccion dice que es un proceso. Los numeros son texto de CSS, no
    HTML: asi el lector de pantalla no lee "01" antes de cada titular. */
 .features--steps ul{counter-reset:step;grid-template-columns:repeat(3,1fr);gap:calc(var(--gap) * .34)}
-.features--steps li{grid-column:auto;grid-row:auto;counter-increment:step;border:0;background:none;padding:0;padding-top:1.2rem;border-top:1px solid color-mix(in srgb,var(--ink) 18%,transparent)}
-.features--steps li::before{content:counter(step,decimal-leading-zero);width:auto;height:auto;background:none;border-radius:0;place-items:start;margin-bottom:.6rem;font-size:calc(2.6rem * ${s});font-weight:800;letter-spacing:-.04em;line-height:1;background-image:linear-gradient(120deg,var(--accent),color-mix(in srgb,var(--accent) 45%,var(--ink)));-webkit-background-clip:text;background-clip:text;color:transparent}
-.features--steps li:hover{transform:none;border-color:color-mix(in srgb,var(--accent) 60%,transparent)}
+/* Reset completo: sin \`grid-column\` heredado, sin fondo de tarjeta y sin radio
+   de 999px, que con \`pill\` dibujaba un arco suelto encima de cada paso. */
+.features--steps li{grid-column:auto;grid-row:auto;counter-increment:step;border:0;border-top:1px solid color-mix(in srgb,var(--ink) 18%,transparent);border-radius:0;background:none;padding:1.2rem 0 0}
+.features--steps li::before{content:counter(step,decimal-leading-zero);display:block;width:auto;height:auto;background:none;background-image:linear-gradient(120deg,var(--accent),color-mix(in srgb,var(--accent) 45%,var(--ink)));-webkit-background-clip:text;background-clip:text;color:transparent;border-radius:0;place-items:initial;margin-bottom:.6rem;font-size:calc(2.6rem * ${s});font-weight:800;letter-spacing:-.04em;line-height:1}
+.features--steps li:hover{transform:none;border-color:color-mix(in srgb,var(--accent) 60%,transparent);border-radius:0}
 .features--steps h3{font-size:calc(1.25rem * ${s})}
 
 /* Precios: las tarjetas se igualan en alto y el precio manda. */
 .pricing{display:grid;gap:calc(var(--gap) * .42);grid-template-columns:repeat(auto-fit,minmax(250px,1fr));align-items:stretch}
-.pricing__plan{display:flex;flex-direction:column;padding:1.9rem;border:1px solid color-mix(in srgb,var(--ink) 14%,transparent);border-radius:var(--radius);background:var(--ground)}
+.pricing__plan{display:flex;flex-direction:column;padding:1.9rem;border:1px solid color-mix(in srgb,var(--ink) 14%,transparent);border-radius:min(12px,var(--radius));background:var(--ground)}
 .pricing__plan h3{font-size:calc(1.05rem * ${s});text-transform:uppercase;letter-spacing:.08em;opacity:.7;margin-bottom:.6em}
 .pricing__price{font-size:calc(2.4rem * ${s});font-weight:700;line-height:1;margin:0 0 1.2em}
 .pricing__plan ul{list-style:none;margin:0;padding:0;display:grid;gap:.55em;font-size:.95em}
 .pricing__plan li{padding-left:1.5em;position:relative}
 .pricing__plan li::before{content:"";position:absolute;left:0;top:.55em;width:.5em;height:.5em;border-radius:50%;background:var(--accent)}
+.pricing__plan--featured{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent);background:color-mix(in srgb,var(--accent) 7%,var(--ground))}
+.pricing__plan--featured h3{opacity:1;color:var(--accent)}
 
-/* Galeria: rejilla uniforme, sin huecos ni saltos de alto. */
+/* Testimonios (T-025): tarjetas de cita con nombre y rol, sin foto. Todo sale
+   de --ink, --accent y --ground: ningun color propio. */
+.testimonials{padding-block:calc(var(--gap) * 1.2)}
+.testimonials ul{list-style:none;margin:0;padding:0;display:grid;gap:calc(var(--gap) * .3);grid-template-columns:repeat(auto-fit,minmax(260px,1fr))}
+.testimonials li{display:flex;padding:1.7rem;border:1px solid color-mix(in srgb,var(--ink) 12%,transparent);border-radius:min(12px,var(--radius));background:color-mix(in srgb,var(--ink) 3%,var(--ground))}
+.testimonials figure{margin:0;display:flex;flex-direction:column;justify-content:space-between;gap:1.2rem}
+.testimonials blockquote{margin:0;font-size:calc(1.08rem * ${s});line-height:1.55}
+.testimonials blockquote::before{content:"\\201C";display:block;color:var(--accent);font-size:2.4em;line-height:.6;margin-bottom:.2em}
+.testimonials figcaption{display:grid;gap:.15rem;font-size:.92em}
+.testimonials__name{font-weight:700}
+.testimonials__role{opacity:.65}
+
+/* Cifras (T-025): la cifra manda y la etiqueta va debajo. \`dt\` va antes en
+   el marcado para que el lector de pantalla lea etiqueta y valor en orden. */
+.metrics{padding-block:calc(var(--gap) * .9)}
+.metrics dl{margin:0;display:grid;gap:calc(var(--gap) * .3);grid-template-columns:repeat(auto-fit,minmax(160px,1fr))}
+.metrics__item{display:flex;flex-direction:column-reverse;gap:.35rem;padding-top:1rem;border-top:2px solid var(--accent)}
+.metrics dd{margin:0;font-size:calc(2.6rem * ${s});font-weight:800;letter-spacing:-.03em;line-height:1;color:var(--accent)}
+.metrics dt{font-size:.95em;opacity:.75}
+
+/* Galeria: rejilla uniforme, sin huecos ni saltos de alto. El radio de la
+   foto no es el del boton: con \`pill\` cada imagen de 333x250 salia como una
+   elipse y perdia las esquinas de un original cuadrado. */
 .gallery{display:grid;gap:calc(var(--gap) * .22);grid-template-columns:repeat(auto-fit,minmax(220px,1fr))}
-.gallery img{width:100%;height:100%;object-fit:cover;border-radius:var(--radius);display:block;aspect-ratio:4/3}
+.gallery img{width:100%;height:100%;object-fit:cover;border-radius:min(12px,var(--radius));display:block;aspect-ratio:4/3}
 .gallery--masonry img{aspect-ratio:3/4}
 .gallery--wide{grid-template-columns:1fr}
 .gallery--wide img{aspect-ratio:21/9}
@@ -206,40 +274,60 @@ function themeLayoutCss(theme: Theme): string {
 /* Imagen suelta: centrada y acotada, nunca a tamaño natural. object-fit no
    hace nada sin dimensiones: sin esto la imagen salia a tamano natural
    (1280 px) y desbordaba el ancho de lectura. */
-.image img{width:100%;height:auto;max-width:100%;border-radius:var(--radius);display:block;margin-inline:auto;max-height:70vh;object-fit:cover}
+.image img{width:100%;height:auto;max-width:100%;border-radius:min(12px,var(--radius));display:block;margin-inline:auto;max-height:70vh;object-fit:cover}
 
 /* Texto largo: columna legible y, en escritorio, titular fijo a la izquierda
-   con el cuerpo a la derecha, como una pagina "sobre nosotros" editorial. */
-.text{max-width:70ch}
-.text:has(h2){max-width:none;display:grid;grid-template-columns:.8fr 1.2fr;gap:calc(var(--gap) * .6)}
+   con el cuerpo a la derecha, como una pagina "sobre nosotros" editorial.
+   La seccion conserva los 1140 px del resto de la pagina: antes esta era la
+   unica de 1440 y su columna derecha no casaba con ninguna otra. */
+.text:has(h2){display:grid;grid-template-columns:.8fr 1.2fr;gap:calc(var(--gap) * .6)}
 .text:has(h2) h2{position:sticky;top:calc(var(--gap) * .5);align-self:start;max-width:16ch}
 .text:has(h2) p{max-width:62ch}
 
-/* Testimonio: cita destacada con su fuente. */
-.testimonial{max-width:70ch}
-.testimonial blockquote{margin:0 0 1rem;padding-left:1.4rem;border-left:3px solid var(--accent);font-size:calc(1.35rem * ${s});line-height:1.45}
+/* Testimonio: cita destacada con su fuente. La medida se acota en la cita, no
+   en la seccion: \`section{margin-inline:auto}\` centraba el bloque y lo sacaba
+   131 px a la derecha de la retícula que siguen las demas secciones. */
+.testimonial blockquote{margin:0 0 1rem;padding-left:1.4rem;border-left:3px solid var(--accent);font-size:calc(1.35rem * ${s});line-height:1.45;max-width:68ch}
 .testimonial blockquote p{margin:0;max-width:none}
-.testimonial cite{font-style:normal;font-size:.9em;opacity:.65}
+.testimonial cite{font-style:normal;font-size:.9em;opacity:.65;display:block;max-width:68ch}
 
 /* Preguntas: acordeon nativo, sin JS. El "+" gira a "–" con el propio atributo
    [open]: no hace falta transicion de layout para notar el cambio. */
-.faq{max-width:70ch}
-.faq details{border-bottom:1px solid color-mix(in srgb,var(--ink) 14%,transparent);padding:1.05rem 0}
+.faq details{border-bottom:1px solid color-mix(in srgb,var(--ink) 14%,transparent);padding:1.05rem 0;max-width:70ch}
 .faq summary{cursor:pointer;font-weight:650;font-size:calc(1.1rem * ${s});list-style:none;display:flex;justify-content:space-between;align-items:center;gap:1rem}
 .faq summary::-webkit-details-marker{display:none}
 .faq summary::after{content:"+";font-weight:400;opacity:.6;font-size:1.3em;transition:transform 160ms ease}
 .faq details[open] summary::after{transform:rotate(45deg)}
 .faq details p{margin:.8em 0 0;opacity:.78;max-width:none}
 
-/* Cierre: fondo oscuro propio con degradado violeta a cian (B6), deliberado y
-   de la paleta del cierre, no del tema claro del resto del sitio. */
-.cta-block{position:relative;overflow:hidden;text-align:center;padding-top:calc(var(--gap) * 1.3);padding-bottom:calc(var(--gap) * 1.3);background-color:#0b0b14;background-image:radial-gradient(70% 90% at 20% 15%,#7c3aed66,transparent 60%),radial-gradient(70% 90% at 85% 85%,#06b6d466,transparent 60%);border-radius:var(--radius)}
-.cta-block h2{max-width:22ch;margin-inline:auto;color:#f5f5f7;font-size:calc(clamp(2rem,4.4vw,3.4rem) * ${s})}
-.cta-block .cta,.cta-block .cta a{background:#f5a524;color:#0b0b14}
+/* Cierre. Antes era un bloque negro con degradado violeta a cian y boton ambar
+   escritos a mano (\`#0b0b14\`, \`#7c3aed\`, \`#06b6d4\`, \`#f5a524\`): no dependian
+   del tema, asi que los ocho presets terminaban identicos justo en el bloque
+   que la gente recuerda. Ahora es la tinta del preset con el acento del preset,
+   y cierra a sangre en vez de flotar con 150 px de fondo a los lados. */
+.cta-block{position:relative;overflow:hidden;text-align:center;max-width:none;margin-inline:0;padding-top:calc(var(--gap) * 1.3);padding-bottom:calc(var(--gap) * 1.3);padding-inline:max(var(--margin),calc((100% - 1140px) / 2));background:var(--ink);color:var(--ground);border-radius:0}
+.cta-block h2{max-width:22ch;margin-inline:auto;color:var(--ground);font-size:calc(clamp(2rem,4.4vw,3.4rem) * ${s})}
+.cta-block .cta,.cta-block .cta a{background:var(--accent);color:var(--ground)}
 
-.contact{text-align:center}
-.contact .lead-form{margin-inline:auto;text-align:left}
-.contact > a{display:inline-flex;align-items:center;gap:.5em;margin:0 .6rem 1rem;padding:.7em 1.2em;border:1px solid color-mix(in srgb,var(--ink) 20%,transparent);border-radius:var(--radius);text-decoration:none;font-weight:600}
+.contact{text-align:left}
+/* Un solo camino para escribir: el formulario. Antes convivian "Enviar" y un
+   segundo CTA "Escribir" a 60 px, ninguno de los dos alineado con el form. */
+.contact>a{display:inline-flex;align-items:center;gap:.5em;margin:0 .6rem 1rem 0;padding:.7em 1.2em;border:1px solid color-mix(in srgb,var(--ink) 20%,transparent);border-radius:min(10px,var(--radius));text-decoration:none;font-weight:600}
+
+/* Formulario. No habia ni una regla para el: \`.lead-form\` calculaba
+   \`display:block\` y los campos salian con el borde nativo del navegador, a
+   Arial 13.33 px (el textarea a monospace) dentro de un cuerpo de 18.24 px.
+   Rejilla de dos columnas, el mensaje a todo el ancho, y un unico boton. */
+.lead-form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1.15rem 1.5rem;align-items:start;max-width:46rem;margin-inline:auto;text-align:left}
+.lead-form .field{display:grid;gap:.45rem;min-width:0}
+.lead-form .field:last-of-type{grid-column:1/-1}
+.lead-form label{display:block;font-size:.88rem;font-weight:600;letter-spacing:.01em;opacity:.8}
+.lead-form input,.lead-form textarea{font:inherit;width:100%;padding:.72rem .9rem;background:var(--ground);color:var(--ink);border:1px solid color-mix(in srgb,var(--ink) 22%,transparent);border-radius:min(10px,var(--radius))}
+.lead-form input:focus,.lead-form textarea:focus{border-color:var(--accent)}
+.lead-form textarea{min-height:8.5rem;resize:vertical}
+.lead-form .consent{grid-column:1/-1;display:flex;align-items:flex-start;gap:.6rem;font-size:.92em;opacity:.85;font-weight:400}
+.lead-form input[type=checkbox]{width:auto;padding:0;border:0;accent-color:var(--accent);flex:none;margin-top:.25em}
+.lead-form button[type=submit]{grid-column:1/-1;justify-self:start}
 
 /* Barra de navegacion entre paginas (T-003.1): solo aparece cuando el sitio
    tiene mas de una pagina. Fila horizontal con separacion inferior, enlaces con
@@ -250,20 +338,20 @@ function themeLayoutCss(theme: Theme): string {
 .site-nav a:hover{opacity:1}
 .site-nav a[aria-current="page"]{font-weight:700;opacity:1;text-decoration:underline;text-underline-offset:.2em}
 
-/* Pie: siempre oscuro respecto al tema, con columnas y el enlace de vuelta al
-   contacto. Vive en una clase propia porque el renderer lo anade fuera de las
-   secciones del documento. */
-.site-footer{background:#0b0b14;color:#f5f5f7cc;padding:calc(var(--gap) * .6) var(--margin);margin-top:calc(var(--gap) * .5)}
-.site-footer{display:grid;grid-template-columns:1.4fr 1fr 1fr;gap:calc(var(--gap) * .4);max-width:1140px;margin-inline:auto}
+/* Pie: cierra con la tinta del tema y las mismas columnas. Antes eran dos
+   reglas peleandose (\`margin-top\` y luego \`margin-inline:auto\`), el negro
+   estaba escrito a mano y la banda medía 1140 px con 150 px de fondo a cada
+   lado, con esquinas rectas justo debajo de un cierre redondeado. */
+.site-footer{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(0,1fr);gap:calc(var(--gap) * .4);max-width:none;margin-inline:0;padding-block:calc(var(--gap) * .6);padding-inline:max(var(--margin),calc((100% - 1140px) / 2));background:var(--ink);color:color-mix(in srgb,var(--ground) 82%,var(--ink))}
 .site-footer a{color:inherit;text-decoration-color:currentColor}
 .site-footer p{margin:0;opacity:.75;max-width:40ch}
-.site-footer__brand{font-weight:700;font-size:1.1rem;color:#f5f5f7}
+.site-footer__brand{font-weight:700;font-size:1.1rem;color:var(--ground)}
 
 @media (prefers-reduced-motion:reduce){*{transition-duration:0.001ms !important;animation-duration:0.001ms !important}.features li:hover,.cta a:hover::after,.cta:hover::after,.btn:hover{transform:none}}
 
 @media (max-width:719px){
 .features ul,.features>ul{grid-template-columns:1fr}
-.features li,.features li:first-child{grid-column:span 1;grid-row:span 1}
+.features li,.features:not(.features--steps) li:first-child{grid-column:span 1;grid-row:span 1}
 .features--steps ul{grid-template-columns:1fr}
 .hero--image{grid-template-columns:1fr}
 /* Hero grafico en movil: el titular mantiene el tamano de cartel y la reticula
@@ -276,10 +364,15 @@ function themeLayoutCss(theme: Theme): string {
 .hero--graphic.hero--center::after{width:min(88vw,380px);top:auto;bottom:-44%;left:50%}
 .text:has(h2){grid-template-columns:1fr}
 .text:has(h2) h2{position:static}
+.lead-form{grid-template-columns:1fr}
 .site-footer{grid-template-columns:1fr}
+/* Las dos bandas de cierre conservan el padding-inline del escritorio (con su
+   max() sobre 1140 px) si no se recalculan aqui. */
+.cta-block,.site-footer{padding-inline:calc(var(--margin) * .6)}
 section{padding:calc(var(--gap) * .6) calc(var(--margin) * .6)}
-h1{font-size:calc(1.9rem * ${s})}
-.hero h1{font-size:calc(2.1rem * ${s})}
+/* Un solo tamaño de h1 en movil: antes \`h1{1.9rem}\` y \`.hero h1{2.1rem}\`
+   competian por el mismo titular y el segundo ganaba siempre. */
+.hero h1{font-size:calc(clamp(1.95rem,8.2vw,2.55rem) * ${s})}
 }
 `;
 }

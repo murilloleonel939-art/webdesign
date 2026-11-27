@@ -157,6 +157,25 @@ export function buildEditorConfig(opts: EditorConfigOptions): Config {
         defaultProps: { quote: "", author: "" },
         render: makeRender("testimonial", opts.assets ?? []),
       },
+      testimonials: {
+        label: "Testimonios",
+        fields: {
+          heading: text("Título"),
+          items: { type: "array", label: "Testimonios", arrayFields: { quote: { type: "textarea", label: "Cita" }, name: text("Nombre"), role: text("Rol") } },
+        },
+        // Igual que `testimonial`: `ownerProvided` no es un campo editable aqui.
+        defaultProps: { heading: "", items: [] },
+        render: makeRender("testimonials", opts.assets ?? []),
+      },
+      metrics: {
+        label: "Cifras",
+        fields: {
+          heading: text("Título"),
+          items: { type: "array", label: "Cifras", arrayFields: { value: text("Cifra"), label: text("Etiqueta") } },
+        },
+        defaultProps: { heading: "", items: [] },
+        render: makeRender("metrics", opts.assets ?? []),
+      },
       faq: {
         label: "Preguntas",
         fields: { items: { type: "array", label: "Preguntas", arrayFields: { q: text("Pregunta"), a: { type: "textarea", label: "Respuesta" } } } },

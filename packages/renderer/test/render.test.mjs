@@ -215,3 +215,20 @@ test("T-003.1: validateSiteDocument sigue pasando (esquema no tocado)", () => {
   assert.equal(validateSiteDocument(doc()).ok, true, "1 página");
   assert.equal(validateSiteDocument(multiDoc()).ok, true, "3 páginas");
 });
+
+// T-025: las secciones nuevas se renderizan y su CSS usa solo tokens del tema.
+test("testimonials y metrics salen en el HTML y su CSS no trae colores literales", () => {
+  const d = doc();
+  d.pages[0].sections.push(
+    { id: "s_t", type: "testimonials", props: { items: [{ quote: "Muy bien", name: "Ana" }], ownerProvided: true } },
+    { id: "s_m", type: "metrics", props: { items: [{ value: "15 años", label: "abiertos" }] } },
+  );
+  const html = renderPage(d, "p_home");
+  assert.match(html, /class="testimonials"/);
+  assert.match(html, /Muy bien/);
+  assert.match(html, /class="metrics"/);
+  assert.match(html, /15 años/);
+  const rules = html.split("\n").filter((l) => /^\.(testimonials|metrics|pricing__plan--featured)/.test(l));
+  assert.ok(rules.length >= 8, `reglas: ${rules.length}`);
+  for (const r of rules) assert.doesNotMatch(r, /#[0-9a-f]{3,8}\b|rgba?\(|hsla?\(/i, r);
+});

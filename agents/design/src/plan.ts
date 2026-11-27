@@ -3,6 +3,7 @@ import type { SiteCopy } from "./copy.js";
 import type { Preset, SitePhotos } from "./draft.js";
 import { genericCopy } from "./generic-copy.js";
 import { classifyShape, type SiteShape } from "./classify.js";
+import { PATTERN_SECTION_TYPE, considerationType, patternFor, productForBrief, type ResolvedPattern } from "./product.js";
 
 /** Mínimo de fotos de la galería para que exista como sección. */
 export const GALLERY_MIN = 3;
@@ -17,6 +18,13 @@ const CANONICAL = ["features", "text", "process", "faq"] as const;
 export const MIN_SERVICES = 3;
 export const MIN_PROCESS = 3;
 export const MIN_FAQ = 2;
+/**
+ * Mínimos de las secciones que solo salen de datos del dueño (T-025). Por
+ * debajo, la sección no existe: no se completa con nada.
+ */
+export const MIN_TESTIMONIALS = 1;
+export const MIN_PLANS = 1;
+export const MIN_METRICS = 3;
 
 // Inventario y plan (spec 9.1: brief → inventario → recomendación → plan →
 // checkpoint → construcción → validación).
@@ -128,7 +136,7 @@ export type PlanAction = "write" | "degrade" | "omit";
  * De dónde sale el TEXTO de una sección (T-002.8). Solo depende del contenido,
  * nunca del preset: el mismo texto da el mismo origen con cualquier preset.
  */
-export type SectionOrigin = "copy_del_dueno" | "copy_generico" | "contacto_del_dueno" | "contacto_generico";
+export type SectionOrigin = "copy_del_dueno" | "copy_generico" | "contacto_del_dueno" | "contacto_generico" | "datos_del_dueno";
 
 export interface PlannedSection {
   type: string;
@@ -154,10 +162,25 @@ export interface PlannedPage {
   sections: PlannedSection[];
 }
 
+/** De dónde sale la composición de la portada (T-025). */
+export interface Composition {
+  /** Producto del catálogo que casó con el brief; ausente si ninguno. */
+  productId?: string;
+  patternId: string;
+  match: ResolvedPattern["match"];
+}
+
 export interface Plan {
   presetId: string;
   shape: SiteShape;
   pages: PlannedPage[];
+  /** Solo en `site`: producto y patrón que compusieron la portada. */
+  composition?: Composition;
+  /**
+   * Secciones que el patrón pedía y no se escriben, con el motivo. No rompen
+   * el documento: el agente las pasa a `warnings` del resultado.
+   */
+  warnings: string[];
 }
 
 /**
@@ -228,6 +251,7 @@ export function planSections(brief: QuickBrief, preset: Preset, copy?: SiteCopy,
       presetId: preset.id,
       shape,
       pages: [{ slug: "/", title: preset.id, sections: buildPresetSections() }],
+      warnings: [],
     };
   }
 
@@ -237,7 +261,7 @@ export function planSections(brief: QuickBrief, preset: Preset, copy?: SiteCopy,
   const makeSections = (...types: string[]): PlannedSection[] => {
     const result: PlannedSection[] = [];
     for (const t of types) {
-      const supports = sectionSupported(t, text, galleryPhotos);
+      const supports = sectionSupported(t, text, galleryPhotos, brief);
       // La galería sale de la búsqueda de fotos, no del preset (mismo motivo que en landing).
       if (supports) result.push(write(t, t, t === "gallery" ? "fotos_de_la_busqueda" : "preset"));
       // No se añade omit: en el plan de sitio las páginas ya están definidas,
@@ -246,16 +270,107 @@ export function planSections(brief: QuickBrief, preset: Preset, copy?: SiteCopy,
     return result;
   };
 
+  // T-025: la portada sale del patrón del producto, no de una tabla fija. Las
+  // páginas interiores conservan su estructura.
+  const home = composeHome(brief, text, galleryPhotos, write);
   return {
     presetId: preset.id,
     shape,
+    composition: home.composition,
+    warnings: home.warnings,
     pages: [
-      { slug: "/",              title: preset.id, sections: makeSections("hero", "features", "faq", "cta") },
+      { slug: "/",              title: preset.id, sections: home.sections },
       { slug: "/servicios",     title: "Servicios",       sections: makeSections("hero", "features", "process", "gallery", "cta") },
       { slug: "/sobre-nosotros",title: "Sobre nosotros",  sections: makeSections("hero", "text", "faq") },
       { slug: "/contacto",      title: "Contacto",        sections: makeSections("hero", "contact") },
     ],
   };
+}
+
+/**
+ * Portada de un sitio compuesta desde el patrón del producto (T-025).
+ *
+ * 1. `productForBrief` → `patternFor` (o el respaldo).
+ * 2. Cada sección del patrón se traduce con `PATTERN_SECTION_TYPE`; después se
+ *    añaden las consideraciones del producto («Patient testimonials», «Online
+ *    booking», «Insurance»…) que tengan tipo y no estén ya.
+ * 3. Solo se escribe lo que se puede escribir sin inventar (`sectionSupported`).
+ *    Lo que falta va a `warnings`, nunca al documento: así `plan.pages` y
+ *    `doc.pages` siguen teniendo las mismas secciones.
+ * 4. Orden: `hero` primero; contenido en el orden del patrón; `contact` y `cta`
+ *    al final. `features` es obligatoria si el copy la sostiene (un negocio sin
+ *    sus servicios en portada no vende nada).
+ *
+ * La galería NO va en la portada aunque el patrón la pida: las fotos ya están
+ * repartidas (T-022), la principal en el hero y la galería en /servicios.
+ */
+function composeHome(
+  brief: QuickBrief,
+  text: SiteCopy,
+  galleryPhotos: number,
+  write: (type: string, as: string, reason: string) => PlannedSection,
+): { sections: PlannedSection[]; warnings: string[]; composition: Composition } {
+  const product = productForBrief(brief);
+  const resolved = patternFor(product);
+  const warnings: string[] = [];
+  if (resolved.match === "respaldo") {
+    warnings.push(
+      product === undefined
+        ? `portada: ningun producto del catalogo casa con el negocio; patron de respaldo ${resolved.pattern.id}`
+        : `portada: el patron "${product.landingPattern}" de ${product.id} no existe; patron de respaldo ${resolved.pattern.id}`,
+    );
+  }
+
+  // Tipos pedidos, en orden y sin repetir, con el motivo de cada uno.
+  const wanted: Array<{ type: string; reason: string }> = [];
+  const add = (type: string, reason: string) => {
+    if (!wanted.some((w) => w.type === type)) wanted.push({ type, reason });
+  };
+  for (const name of resolved.pattern.sections) {
+    if (name === "footer") continue; // El pie lo pinta siempre el renderer.
+    const type = PATTERN_SECTION_TYPE[name];
+    if (type === undefined || type === null) {
+      warnings.push(`portada: el patron pide "${name}" y no hay tipo de seccion equivalente; se omite`);
+      continue;
+    }
+    add(type, `patron_${resolved.pattern.id}`);
+  }
+  for (const c of product?.considerations ?? []) {
+    const type = considerationType(c);
+    if (type !== undefined) add(type, `producto_${product?.id ?? ""}`);
+  }
+  // Lo que el dueño aportó de verdad (cifras, planes, testimonios) se enseña
+  // aunque el patrón no lo pida: es su mejor argumento y no es inventado.
+  for (const type of ["metrics", "testimonials", "pricing"] as const) {
+    if (sectionSupported(type, text, galleryPhotos, brief)) add(type, "datos_del_dueno");
+  }
+
+  const sections: PlannedSection[] = [];
+  for (const { type, reason } of wanted) {
+    if (type === "gallery") continue; // Las fotos de galería van en /servicios (T-022).
+    if (sectionSupported(type, text, galleryPhotos, brief)) {
+      sections.push(write(type, type, reason));
+    } else if (type === "testimonials" || type === "pricing" || type === "metrics") {
+      warnings.push(`portada: "${type}" requiere datos del dueno y no los dio; se omite sin inventar`);
+    }
+  }
+  const has = (type: string) => sections.some((s) => s.type === type);
+  if (!has("features") && sectionSupported("features", text, galleryPhotos, brief)) {
+    // Detrás del último bloque de texto o del hero, antes de cualquier otro contenido.
+    const at = sections.findIndex((s) => s.type !== "hero" && s.type !== "text");
+    const added = write("features", "features", "completitud");
+    sections.splice(at === -1 ? sections.length : at, 0, added);
+  }
+  const hero = sections.find((s) => s.type === "hero") ?? write("hero", "hero", "h1_obligatorio");
+  const content = sections.filter((s) => s.type !== "hero" && s.type !== "contact" && s.type !== "cta");
+  const contact = sections.filter((s) => s.type === "contact");
+  const cta = sections.find((s) => s.type === "cta") ?? write("cta", "cta", "cierre_obligatorio");
+
+  const composition: Composition =
+    product === undefined
+      ? { patternId: resolved.pattern.id, match: resolved.match }
+      : { productId: product.id, patternId: resolved.pattern.id, match: resolved.match };
+  return { sections: [hero, ...content, ...contact, cta], warnings, composition };
 }
 
 /**
@@ -323,6 +438,11 @@ function originFromSet(type: string, substituted: ReadonlySet<keyof SiteCopy>, b
       return sub("closingHeadline") || sub("closingCta") ? "copy_generico" : "copy_del_dueno";
     case "contact":
       return ownerContact(brief) === undefined ? "contacto_generico" : "contacto_del_dueno";
+    case "testimonials":
+    case "pricing":
+    case "metrics":
+      // Solo existen con datos del dueño (T-025): no hay versión genérica.
+      return "datos_del_dueno";
     default:
       // La galería lleva fotos, no texto: no tiene origen de texto.
       return undefined;
@@ -381,7 +501,7 @@ export function plannedTypes(plan: Plan): string[] {
  * Distinción respecto a `supports`: también acepta hero, contact y cta que
  * siempre se escriben, y gallery que depende de las fotos disponibles.
  */
-function sectionSupported(type: string, text: SiteCopy, galleryPhotos: number): boolean {
+function sectionSupported(type: string, text: SiteCopy, galleryPhotos: number, brief: QuickBrief): boolean {
   switch (type) {
     case "hero":
     case "contact":
@@ -397,6 +517,14 @@ function sectionSupported(type: string, text: SiteCopy, galleryPhotos: number): 
       return text.faq.length >= MIN_FAQ;
     case "gallery":
       return galleryPhotos >= GALLERY_MIN;
+    // T-025: solo con datos que dio el dueño. No hay respaldo genérico posible:
+    // un testimonio, un precio o una cifra «de ejemplo» afirmarían un hecho falso.
+    case "testimonials":
+      return (brief.proof?.testimonials?.length ?? 0) >= MIN_TESTIMONIALS;
+    case "pricing":
+      return (brief.proof?.plans?.length ?? 0) >= MIN_PLANS;
+    case "metrics":
+      return (brief.proof?.metrics?.length ?? 0) >= MIN_METRICS;
     default:
       return false;
   }
